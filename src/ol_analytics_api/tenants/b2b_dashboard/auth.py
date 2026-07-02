@@ -1,9 +1,12 @@
-"""FastAPI auth dependencies — org-manager and MIT-admin gates.
+"""This tenant's governance gates — org-manager and MIT-admin.
 
-See auth/mitxonline_client.py and auth/keycloak.py for the underlying checks.
-Phase 1 design per hq#10594: org-manager requires a round-trip to MITx
-Online (membership alone isn't sufficient); MIT-admin is a Keycloak realm
-role and needs no round-trip.
+Generic X-Userinfo decode lives in core/auth/userinfo.py, reused by any
+tenant behind the same APISIX/Keycloak trust boundary. Everything below is
+b2b_dashboard-specific policy: Phase 1 design per hq#10594, org-manager
+requires a round-trip to MITx Online (membership alone isn't sufficient);
+MIT-admin is a Keycloak realm role and needs no round-trip. A different
+tenant is free to define entirely different checks (API keys, a different
+realm role, no auth at all for a public tenant) in its own auth.py.
 """
 
 from __future__ import annotations
@@ -12,9 +15,9 @@ from typing import Annotated, Any
 
 from fastapi import Depends, HTTPException, Request, status
 
-from ol_analytics_api.auth.keycloak import get_userinfo
-from ol_analytics_api.auth.mitxonline_client import mitxonline_client
-from ol_analytics_api.config import settings
+from ol_analytics_api.core.auth.userinfo import get_userinfo
+from ol_analytics_api.tenants.b2b_dashboard.config import settings
+from ol_analytics_api.tenants.b2b_dashboard.mitxonline_client import mitxonline_client
 
 UserInfo = Annotated[dict[str, Any], Depends(get_userinfo)]
 

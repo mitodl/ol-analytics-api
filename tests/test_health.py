@@ -13,8 +13,8 @@ def app():
 
 async def test_health(app):
     with (
-        patch("ol_analytics_api.db.client.starrocks_pool.start", new=AsyncMock()),
-        patch("ol_analytics_api.db.client.starrocks_pool.stop", new=AsyncMock()),
+        patch("ol_analytics_api.core.db.client.starrocks_pool.start", new=AsyncMock()),
+        patch("ol_analytics_api.core.db.client.starrocks_pool.stop", new=AsyncMock()),
     ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/health")

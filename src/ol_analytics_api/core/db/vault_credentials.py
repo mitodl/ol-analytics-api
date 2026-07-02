@@ -7,7 +7,7 @@ to Vault via the Kubernetes auth method (its service account JWT), then reads
 dynamic credentials from `{vault_starrocks_mount}/creds/{role}` — StarRocks
 creates a scoped user for the lease and drops it on revocation.
 
-Vault role/mount names are never hardcoded — see config.py.
+Vault role/mount names are never hardcoded — see core/config.py.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from pathlib import Path
 
 import hvac
 
-from ol_analytics_api.config import settings
+from ol_analytics_api.core.config import settings
 
 _SERVICE_ACCOUNT_TOKEN_PATH = Path("/var/run/secrets/kubernetes.io/serviceaccount/token")
 

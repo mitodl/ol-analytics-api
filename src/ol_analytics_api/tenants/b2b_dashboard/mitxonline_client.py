@@ -22,7 +22,7 @@ from __future__ import annotations
 import httpx
 from cachetools import TTLCache
 
-from ol_analytics_api.config import settings
+from ol_analytics_api.tenants.b2b_dashboard.config import settings
 
 _cache: TTLCache[tuple[str, str], bool] = TTLCache(
     maxsize=10_000, ttl=settings.org_manager_cache_ttl_seconds

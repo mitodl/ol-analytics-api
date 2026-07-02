@@ -4,6 +4,11 @@ StarRocks exposes a MySQL-compatible protocol on port 9030. The official
 `starrocks` Python connector wraps PyMySQL and is sync-only; `aiomysql`
 speaks the same wire protocol and provides a native asyncio pool, so it's
 used here to keep the service fully async.
+
+One pool, shared by every mounted tenant — each tenant's queries qualify
+their own schema (e.g. `b2b_analytics.mv_...`) rather than relying on a
+connection-level default database, since different tenants may read from
+different schemas over the same StarRocks cluster.
 """
 
 from __future__ import annotations
@@ -14,7 +19,7 @@ from typing import Any
 
 import aiomysql
 
-from ol_analytics_api.config import settings
+from ol_analytics_api.core.config import settings
 
 
 class StarRocksPool:
@@ -27,7 +32,6 @@ class StarRocksPool:
             port=settings.starrocks_port,
             user=user,
             password=password,
-            db=settings.starrocks_database,
             minsize=settings.starrocks_pool_min_size,
             maxsize=settings.starrocks_pool_max_size,
             autocommit=True,
