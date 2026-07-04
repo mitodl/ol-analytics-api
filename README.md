@@ -27,14 +27,21 @@ dbt (organization_administration_report, Iceberg)
 ```
 src/ol_analytics_api/
   main.py                    # root app: shared lifespan (StarRocks pool via Vault),
-                              # /health + /ready, TENANTS registry, mounts each sub-app
+                              # observability init, /health/*, TENANTS registry, mounts each sub-app
   core/                       # shared by every tenant, no tenant-specific policy
-    config.py                 # StarRocks host/port + Vault K8s-auth wiring
+    config.py                 # StarRocks host/port, Vault K8s-auth wiring, observability settings
+    health.py                  # tiered K8s health checks — /health/{startup,readiness,liveness}/
     db/client.py               # aiomysql connection pool (one pool, all tenants)
     db/vault_credentials.py    # dynamic StarRocks creds via Vault K8s auth
     db/identifiers.py          # SQL-identifier validation for schema names spliced into queries
     auth/userinfo.py           # generic X-Userinfo decode (APISIX forwards this to every tenant)
     anonymization.py           # generic k-anonymity-style row suppression, floor is a tenant param
+    observability/
+      processors.py             # structlog trace_id/span_id + k8s pod/namespace injection
+      logging.py                 # structlog config: JSON in prod, console in dev
+      telemetry.py                # OpenTelemetry SDK + auto-instrumentation (traces)
+      sentry.py                   # Sentry init
+      middleware.py                # structured per-request access log, shared by every app instance
   tenants/
     b2b_dashboard/
       app.py                   # FastAPI() sub-app instance, includes this tenant's routers
@@ -77,6 +84,46 @@ to MITx Online (`tenants/b2b_dashboard/mitxonline_client.py`) and its
 MIT-admin check uses a Keycloak realm role
 (`tenants/b2b_dashboard/auth.py`) — see hq#10594 for the full design. A
 different tenant is free to use a different governance model entirely.
+
+### Observability
+
+Everything here mirrors the conventions `mitol-django-observability` gives
+Django services (mitxonline, mit-learn, learn-ai), reimplemented without a
+Django dependency so a FastAPI-native service can share the same log shape,
+trace pipeline, and K8s probe contract:
+
+- **Structured logging** — `structlog`, JSON in production / colorized
+  console when `DEBUG=true`. Every log line carries `trace_id`/`span_id`
+  (when a span is active) and `pod_name`/`namespace`/`node_name` (when the
+  matching `KUBERNETES_*` env vars are set), via processors ported verbatim
+  from `mitol-django-observability` — same field names as every other
+  service's logs, so Loki/Grafana queries work identically here.
+- **Access logs** — one structured JSON line per request (method, path,
+  status, duration), via `core/observability/middleware.py`, added to the
+  root app and every tenant sub-app. uvicorn's own access log is disabled
+  (`--no-access-log`) to avoid duplicating this in a different, unstructured
+  format.
+- **Tracing** — OpenTelemetry, activated when `OTEL_EXPORTER_OTLP_ENDPOINT`
+  or `OPENTELEMETRY_ENDPOINT` is set (or `DEBUG=true`) — no separate
+  "enabled" flag, matching learn-ai's current convention. Exports via OTLP
+  HTTP to Grafana Alloy
+  (`http://grafana-k8s-monitoring-alloy-receiver.grafana.svc.cluster.local:4318`
+  in this cluster). FastAPI and httpx are auto-instrumented via OTel's
+  standard entry-point discovery — installing
+  `opentelemetry-instrumentation-<x>` is enough, no code change needed. No
+  separate OTel Logs pipeline: trace/log correlation happens via the
+  `trace_id`/`span_id` fields structlog injects into stdout JSON, which
+  Alloy scrapes as logs — same as the Django services.
+- **Errors** — Sentry, via `core/observability/sentry.py`. Initialized
+  first, before logging/OTel, so it can capture setup-time errors too (same
+  ordering as mitxonline/learn-ai's `settings.py`). `send_default_pii=False`
+  by default, matching this service's aggregated-only-no-PII posture.
+- **K8s health checks** — `/health/{startup,readiness,liveness}/`, matching
+  `ol-infrastructure`'s shared `OLApplicationK8s` component's probe paths
+  exactly (see `k8s/deployment.yaml`). Liveness never checks dependencies
+  (a slow StarRocks shouldn't get this pod killed); readiness/startup check
+  the shared StarRocks pool, extensible per-tenant via
+  `core.health.register_readiness_check()`.
 
 ## Local development
 

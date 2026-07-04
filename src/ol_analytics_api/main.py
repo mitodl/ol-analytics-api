@@ -1,4 +1,5 @@
-"""Root ASGI app: shared infra (StarRocks pool) + mounted tenant sub-apps.
+"""Root ASGI app: shared infra (StarRocks pool, observability) + mounted
+tenant sub-apps.
 
 Each tenant is a fully independent `FastAPI()` instance — its own routers,
 auth/governance model, OpenAPI docs — mounted at its own path prefix. This
@@ -11,10 +12,10 @@ without touching b2b_dashboard's code, auth, or URL surface at all.
 
 What's shared across every tenant lives in `core/`: the StarRocks
 connection pool (core/db/client.py, started once here and imported by
-each tenant's routers) and the generic X-Userinfo decode
-(core/auth/userinfo.py). Anything tenant-specific — which schema to query,
-what governance checks to run, suppression thresholds — stays inside that
-tenant's own package.
+each tenant's routers), the generic X-Userinfo decode
+(core/auth/userinfo.py), and observability (core/observability/,
+core/health.py) — structured logging, OpenTelemetry tracing, Sentry, and
+the tiered K8s health checks every service in this org exposes.
 """
 
 from __future__ import annotations
@@ -25,10 +26,37 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from ol_analytics_api.core import health
 from ol_analytics_api.core.config import settings
 from ol_analytics_api.core.db.client import starrocks_pool
 from ol_analytics_api.core.db.vault_credentials import fetch_starrocks_credentials
-from ol_analytics_api.tenants.b2b_dashboard.app import app as b2b_dashboard_app
+from ol_analytics_api.core.observability.logging import configure_structlog
+from ol_analytics_api.core.observability.middleware import add_request_logging
+from ol_analytics_api.core.observability.sentry import init_sentry
+from ol_analytics_api.core.observability.telemetry import configure_opentelemetry
+
+# Sentry first, so it can capture errors in the setup that follows.
+init_sentry(
+    dsn=settings.sentry_dsn,
+    environment=settings.environment,
+    version=settings.service_version,
+    log_level=settings.sentry_log_level,
+    traces_sample_rate=settings.sentry_traces_sample_rate,
+    profiles_sample_rate=settings.sentry_profiles_sample_rate,
+)
+configure_structlog(debug=settings.debug, log_level=settings.log_level)
+configure_opentelemetry(
+    service_name=settings.service_name,
+    service_version=settings.service_version,
+    environment=settings.environment,
+    debug=settings.debug,
+)
+
+# Tenant sub-apps are imported only after configure_opentelemetry() runs:
+# FastAPI auto-instrumentation patches FastAPI.__init__, so a FastAPI()
+# instance constructed earlier — including each tenant's module-level
+# `app = create_app()` — would be silently uninstrumented.
+from ol_analytics_api.tenants.b2b_dashboard.app import app as b2b_dashboard_app  # noqa: E402
 
 # (mount_path, sub_app) — add a new tenant by appending here.
 TENANTS: list[tuple[str, FastAPI]] = [
@@ -61,14 +89,8 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    @app.get("/health", tags=["infra"])
-    async def health() -> dict[str, str]:
-        return {"status": "ok"}
-
-    @app.get("/ready", tags=["infra"])
-    async def ready() -> dict[str, str]:
-        await starrocks_pool.ping()
-        return {"status": "ready"}
+    add_request_logging(app)
+    app.include_router(health.router)
 
     for mount_path, tenant_app in TENANTS:
         app.mount(mount_path, tenant_app)

@@ -12,6 +12,13 @@ dependencies = [
     "httpx>=0.27",
     "cachetools>=5.5",
     "hvac>=2.3",
+    "structlog>=24.0.0",
+    "sentry-sdk[fastapi]>=2.0",
+    "opentelemetry-api>=1.31.0",
+    "opentelemetry-sdk>=1.31.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.31.0",
+    "opentelemetry-instrumentation-fastapi>=0.52b0",
+    "opentelemetry-instrumentation-httpx>=0.52b0",
 ]
 
 [dependency-groups]
@@ -52,6 +59,9 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101", "ANN", "PLR2004"]
+# structlog's processor signature is conventionally (logger: Any, method_name: str,
+# event_dict: dict) — matches mitol-django-observability's own typing, ported verbatim.
+"src/ol_analytics_api/core/observability/processors.py" = ["ANN401"]
 
 [tool.mypy]
 python_version = "3.12"

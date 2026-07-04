@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
+from ol_analytics_api.core.observability.middleware import add_request_logging
 from ol_analytics_api.tenants.b2b_dashboard.routers import admin, organizations
 
 
@@ -23,6 +24,7 @@ def create_app() -> FastAPI:
             "contract admins. No individual learner PII."
         ),
     )
+    add_request_logging(app)
     app.include_router(organizations.router)
     app.include_router(admin.router)
     return app
