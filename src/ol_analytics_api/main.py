@@ -20,6 +20,7 @@ the tiered K8s health checks every service in this org exposes.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -64,9 +65,12 @@ TENANTS: list[tuple[str, FastAPI]] = [
 ]
 
 
-def _resolve_starrocks_credentials() -> tuple[str, str]:
+async def _resolve_starrocks_credentials() -> tuple[str, str]:
     if settings.vault_addr:
-        return fetch_starrocks_credentials()
+        # fetch_starrocks_credentials() is fully synchronous (file read +
+        # hvac/requests HTTP calls) — offload it so a slow Vault doesn't
+        # block the event loop during startup.
+        return await asyncio.to_thread(fetch_starrocks_credentials)
     # Local dev fallback — matches bin/starrocks-auth --output env's
     # STARROCKS_USER / STARROCKS_PASSWORD, no OL_ANALYTICS_API_ prefix.
     return os.environ["STARROCKS_USER"], os.environ["STARROCKS_PASSWORD"]
@@ -74,7 +78,7 @@ def _resolve_starrocks_credentials() -> tuple[str, str]:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    user, password = _resolve_starrocks_credentials()
+    user, password = await _resolve_starrocks_credentials()
     await starrocks_pool.start(user, password)
     try:
         yield
@@ -93,6 +97,12 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
 
     for mount_path, tenant_app in TENANTS:
+        # No add_request_logging() call on tenant_app here or in any
+        # tenant's own app.py: BaseHTTPMiddleware wraps the whole ASGI call,
+        # so root's middleware already sees the tenant's final response
+        # (correct status code, full duration) for anything Starlette's
+        # Mount delegates to it — adding the same middleware to the tenant
+        # too would log every tenant request twice.
         app.mount(mount_path, tenant_app)
 
     return app

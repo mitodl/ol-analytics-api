@@ -39,10 +39,16 @@ def register_readiness_check(check: ReadinessCheck) -> None:
     _readiness_checks.append(check)
 
 
-async def _check_ready() -> None:
-    await starrocks_pool.ping()
-    for check in _readiness_checks:
-        await check()
+async def _ready_response(status_label: str) -> dict[str, str]:
+    try:
+        await starrocks_pool.ping()
+        for check in _readiness_checks:
+            await check()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
+    return {"status": status_label}
 
 
 @router.get("/liveness/")
@@ -52,21 +58,9 @@ async def liveness() -> dict[str, str]:
 
 @router.get("/readiness/")
 async def readiness() -> dict[str, str]:
-    try:
-        await _check_ready()
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
-        ) from exc
-    return {"status": "ready"}
+    return await _ready_response("ready")
 
 
 @router.get("/startup/")
 async def startup() -> dict[str, str]:
-    try:
-        await _check_ready()
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
-        ) from exc
-    return {"status": "started"}
+    return await _ready_response("started")

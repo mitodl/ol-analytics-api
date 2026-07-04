@@ -58,6 +58,11 @@ def init_sentry(  # noqa: PLR0913 -- matches the org's established init_sentry()
         integrations=[
             StarletteIntegration(),
             FastApiIntegration(),
-            LoggingIntegration(level=getattr(logging, log_level.upper(), logging.ERROR)),
+            # LoggingIntegration has two independent thresholds: `level`
+            # (breadcrumb capture, kept at the library default of INFO so
+            # events have useful context leading up to them) and
+            # `event_level` (creates a Sentry issue) — SENTRY_LOG_LEVEL
+            # is meant to control the latter, not the former.
+            LoggingIntegration(event_level=getattr(logging, log_level.upper(), logging.ERROR)),
         ],
     )

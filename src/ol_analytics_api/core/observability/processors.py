@@ -34,10 +34,8 @@ def inject_otel_context(
 ) -> dict[str, Any]:
     """Inject OpenTelemetry trace context into structlog event dict.
 
-    Performance notes:
-    - Skips work if trace_id/span_id already present (e.g., bound via contextvars)
-    - Uses OTel's built-in formatters (no lru_cache lock overhead)
-    - Checks is_valid before is_recording for faster invalid-context fast-path
+    is_valid is checked before is_recording so an invalid (never-started)
+    context short-circuits without the extra is_recording call.
     """
     if "trace_id" in event_dict and "span_id" in event_dict:
         return event_dict
@@ -61,12 +59,7 @@ def inject_k8s_context(
     _method: str,
     event_dict: dict[str, Any],
 ) -> dict[str, Any]:
-    """Inject Kubernetes metadata into structlog event dict.
-
-    Performance notes:
-    - Uses precomputed dict with single update() call
-    - Fast-path skip when no K8s env vars are set
-    """
+    """Inject Kubernetes metadata into structlog event dict."""
     if _K8S_CONTEXT:
         event_dict.update(_K8S_CONTEXT)
     return event_dict

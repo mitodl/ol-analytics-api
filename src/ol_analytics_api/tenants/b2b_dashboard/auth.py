@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
+import httpx
 from fastapi import Depends, HTTPException, Request, status
 
 from ol_analytics_api.core.auth.userinfo import get_userinfo
@@ -36,7 +37,19 @@ async def require_org_manager(
 
     sub = userinfo.get("sub")
     raw_header = request.headers.get("X-Userinfo", "")
-    if not sub or not await mitxonline_client.is_org_manager(sub, org_slug, raw_header):
+    try:
+        is_manager = sub is not None and await mitxonline_client.is_org_manager(
+            sub, org_slug, raw_header
+        )
+    except httpx.HTTPError as exc:
+        # A network-level failure talking to MITx Online is not the caller's
+        # fault — surface it as an upstream-unavailable error, not a bare 500.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not verify organization-manager status: MITx Online unreachable",
+        ) from exc
+
+    if not is_manager:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Not a manager of organization '{org_slug}'",

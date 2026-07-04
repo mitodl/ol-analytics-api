@@ -26,6 +26,10 @@ class StarRocksPool:
     def __init__(self) -> None:
         self._pool: aiomysql.Pool | None = None
 
+    @property
+    def is_started(self) -> bool:
+        return self._pool is not None
+
     async def start(self, user: str, password: str) -> None:
         self._pool = await aiomysql.create_pool(
             host=settings.starrocks_host,
@@ -58,13 +62,14 @@ class StarRocksPool:
             await cur.execute(query, params)
             return list(await cur.fetchall())
 
-    async def ping(self) -> bool:
-        if self._pool is None:
-            return False
+    async def ping(self) -> None:
+        # No self._pool-is-None special case here — cursor() already raises
+        # a clear RuntimeError in that case, which is exactly the "not
+        # ready" signal a health check should propagate as a failure, not
+        # silently swallow into a falsy-but-still-200 response.
         async with self.cursor() as cur:
             await cur.execute("SELECT 1")
             await cur.fetchone()
-        return True
 
 
 starrocks_pool = StarRocksPool()

@@ -1,9 +1,15 @@
-"""Structured access-log middleware, shared by the root app and every tenant.
+"""Structured access-log middleware for the root app.
 
 uvicorn's own access logger is disabled (see main.py / Dockerfile — run with
 `--no-access-log`) in favor of this, so each request produces exactly one
 structured JSON log line carrying method/path/status/duration plus whatever
 trace_id/span_id/k8s context observability/processors.py injects.
+
+Applied to the root app only, never to a tenant sub-app — Starlette's Mount
+wraps a tenant's whole ASGI callable inside the root app's request
+lifecycle, so this middleware already sees a tenant's final response for
+anything delegated to it. Adding it to a tenant too would log every request
+to that tenant twice.
 """
 
 from __future__ import annotations
