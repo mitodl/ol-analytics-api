@@ -30,6 +30,7 @@ dev = [
     "pytest-httpx>=0.35",
     "types-cachetools>=5.5",
     "types-hvac>=2.3",
+    "asgi-lifespan>=2.1.0",
 ]
 
 [build-system]

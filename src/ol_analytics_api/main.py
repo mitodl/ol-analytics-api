@@ -7,7 +7,7 @@ is what lets ol-analytics-api serve more than one audience: the first
 consumer is the b2b_dashboard tenant (org managers + MIT contract admins),
 but a future consumer (a different internal tool, a partner integration,
 a public read-only feed) is added by writing a new package under
-`tenants/` with its own `app.py`, and adding one line to TENANTS below —
+`tenants/` with its own `app.py`, and adding one entry to TENANTS below —
 without touching b2b_dashboard's code, auth, or URL surface at all.
 
 What's shared across every tenant lives in `core/`: the StarRocks
@@ -16,14 +16,24 @@ each tenant's routers), the generic X-Userinfo decode
 (core/auth/userinfo.py), and observability (core/observability/,
 core/health.py) — structured logging, OpenTelemetry tracing, Sentry, and
 the tiered K8s health checks every service in this org exposes.
+
+A mounted sub-app's own `lifespan=` is never invoked by the ASGI protocol —
+only the top-level app uvicorn points at receives lifespan.startup/shutdown
+messages (Starlette's Router.lifespan() only ever runs its own
+lifespan_context, with no propagation into routes/Mounts). So a tenant's
+startup/shutdown hooks (e.g. b2b_dashboard's MITx Online client) are
+plain async functions the root lifespan calls explicitly, once per tenant,
+via the TENANTS registry below — not something each tenant's own app.py can
+wire up on its own.
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 
 from fastapi import FastAPI
 
@@ -57,11 +67,25 @@ configure_opentelemetry(
 # FastAPI auto-instrumentation patches FastAPI.__init__, so a FastAPI()
 # instance constructed earlier — including each tenant's module-level
 # `app = create_app()` — would be silently uninstrumented.
-from ol_analytics_api.tenants.b2b_dashboard.app import app as b2b_dashboard_app  # noqa: E402
+from ol_analytics_api.tenants.b2b_dashboard import app as b2b_dashboard  # noqa: E402
 
-# (mount_path, sub_app) — add a new tenant by appending here.
-TENANTS: list[tuple[str, FastAPI]] = [
-    ("/api/v1/analytics", b2b_dashboard_app),
+
+@dataclass(frozen=True)
+class Tenant:
+    mount_path: str
+    app: FastAPI
+    on_startup: Callable[[], Awaitable[None]] | None = None
+    on_shutdown: Callable[[], Awaitable[None]] | None = None
+
+
+# Add a new tenant by appending a Tenant() entry here.
+TENANTS: list[Tenant] = [
+    Tenant(
+        "/api/v1/analytics",
+        b2b_dashboard.app,
+        on_startup=b2b_dashboard.on_startup,
+        on_shutdown=b2b_dashboard.on_shutdown,
+    ),
 ]
 
 
@@ -80,9 +104,15 @@ async def _resolve_starrocks_credentials() -> tuple[str, str]:
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     user, password = await _resolve_starrocks_credentials()
     await starrocks_pool.start(user, password)
+    for tenant in TENANTS:
+        if tenant.on_startup is not None:
+            await tenant.on_startup()
     try:
         yield
     finally:
+        for tenant in TENANTS:
+            if tenant.on_shutdown is not None:
+                await tenant.on_shutdown()
         await starrocks_pool.stop()
 
 
@@ -96,14 +126,14 @@ def create_app() -> FastAPI:
     add_request_logging(app)
     app.include_router(health.router)
 
-    for mount_path, tenant_app in TENANTS:
-        # No add_request_logging() call on tenant_app here or in any
+    for tenant in TENANTS:
+        # No add_request_logging() call on tenant.app here or in any
         # tenant's own app.py: BaseHTTPMiddleware wraps the whole ASGI call,
         # so root's middleware already sees the tenant's final response
         # (correct status code, full duration) for anything Starlette's
         # Mount delegates to it — adding the same middleware to the tenant
         # too would log every tenant request twice.
-        app.mount(mount_path, tenant_app)
+        app.mount(tenant.mount_path, tenant.app)
 
     return app
 

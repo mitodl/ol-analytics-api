@@ -12,44 +12,31 @@ tenant's final response — status code, full duration — for every request
 delegated here. Adding the same middleware here too would log every
 request to this tenant twice.
 
-It shares the root app's StarRocks connection pool (core/db/client.py,
-started once in main.py's lifespan) but owns its own lifespan for
-resources genuinely private to this tenant: the MITx Online httpx client,
-and its own contribution to /health/readiness/.
+Also deliberately does NOT pass its own `lifespan=` to FastAPI(): a mounted
+sub-app's lifespan is never invoked by the ASGI protocol at all — only the
+top-level app uvicorn is pointed at receives lifespan.startup/shutdown
+messages (confirmed by reading Starlette's Router.lifespan(), which only
+ever runs its own app's lifespan_context, with no propagation to routes).
+Startup/shutdown for this tenant's own resources (the MITx Online client)
+is instead exposed as on_startup()/on_shutdown() below, which main.py's
+root lifespan calls explicitly via the TENANTS registry — see main.py.
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
-
 from fastapi import FastAPI
 
-from ol_analytics_api.core.db.client import starrocks_pool
 from ol_analytics_api.core.health import register_readiness_check
 from ol_analytics_api.tenants.b2b_dashboard.mitxonline_client import mitxonline_client
 from ol_analytics_api.tenants.b2b_dashboard.routers import admin, organizations
 
 
-@asynccontextmanager
-async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    # Fail fast and clearly if this app is ever served on its own (bypassing
-    # main:app) instead of the confusing "RuntimeError from inside a query"
-    # a request would otherwise hit — the StarRocks pool is shared/root-owned
-    # and can't be started from here.
-    if not starrocks_pool.is_started:
-        msg = (
-            "b2b_dashboard's StarRocks pool isn't started. This tenant must be "
-            "served via ol_analytics_api.main:app, which owns the shared "
-            "StarRocksPool lifecycle — not tenants.b2b_dashboard.app:app directly."
-        )
-        raise RuntimeError(msg)
-
+async def on_startup() -> None:
     mitxonline_client.start()
-    try:
-        yield
-    finally:
-        await mitxonline_client.aclose()
+
+
+async def on_shutdown() -> None:
+    await mitxonline_client.aclose()
 
 
 def create_app() -> FastAPI:
@@ -59,7 +46,6 @@ def create_app() -> FastAPI:
             "Aggregated-only B2B site-license analytics for org managers and MIT "
             "contract admins. No individual learner PII."
         ),
-        lifespan=lifespan,
     )
     app.include_router(organizations.router)
     app.include_router(admin.router)
