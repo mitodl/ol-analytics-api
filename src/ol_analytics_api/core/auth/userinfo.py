@@ -25,7 +25,12 @@ def get_userinfo(request: Request) -> dict[str, Any]:
             detail="Missing X-Userinfo header",
         )
     try:
-        decoded = base64.b64decode(raw)
+        # validate=True: b64decode() silently discards non-alphabet
+        # characters by default, which would let malformed input mask
+        # itself as valid until the JSON parse (or worse, decode to
+        # different bytes than intended). Reject it as unambiguously
+        # invalid instead.
+        decoded = base64.b64decode(raw, validate=True)
         userinfo: dict[str, Any] = json.loads(decoded)
     except (binascii.Error, ValueError, json.JSONDecodeError) as exc:
         raise HTTPException(

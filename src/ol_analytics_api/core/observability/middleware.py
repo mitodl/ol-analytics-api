@@ -27,7 +27,20 @@ async def _log_requests(
     request: Request, call_next: Callable[[Request], Awaitable[Response]]
 ) -> Response:
     start = time.monotonic()
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception:
+        # An unhandled exception (or a cancelled/disconnected request) means
+        # call_next() never returns a Response — without this, that request
+        # would go completely unlogged instead of showing up as a failure.
+        duration_ms = round((time.monotonic() - start) * 1000, 2)
+        log.exception(
+            "request_failed",
+            method=request.method,
+            path=request.url.path,
+            duration_ms=duration_ms,
+        )
+        raise
     duration_ms = round((time.monotonic() - start) * 1000, 2)
     log.info(
         "request",

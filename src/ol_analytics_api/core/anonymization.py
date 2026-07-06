@@ -18,4 +18,8 @@ from typing import Any
 def suppress_small_cohorts(
     rows: list[dict[str, Any]], cohort_size_field: str, floor: int
 ) -> list[dict[str, Any]]:
-    return [row for row in rows if row.get(cohort_size_field, 0) >= floor]
+    # `.get(field, 0)` only substitutes 0 when the key is *absent* — a NULL
+    # cohort-size column (a real possibility from a LEFT JOIN in the source
+    # MV) comes back as `None`, and `None >= floor` raises TypeError. Treat
+    # an unknown cohort size the same as a too-small one: suppress it.
+    return [row for row in rows if (row.get(cohort_size_field) or 0) >= floor]

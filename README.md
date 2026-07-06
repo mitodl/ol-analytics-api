@@ -62,12 +62,21 @@ shape as `b2b_dashboard/`: an `app.py` exposing a `FastAPI()` instance, its
 own `config.py`/`auth.py`/`routers/`. It can define completely different
 auth (API keys, no auth, a different Keycloak realm role), a different
 StarRocks schema, and its own suppression policy — none of that is shared
-state. Wire it up with one line in `main.py`'s `TENANTS` list:
+state. Wire it up with one entry in `main.py`'s `TENANTS` list — a `Tenant`
+also carries optional `on_startup`/`on_shutdown` hooks, since a mounted
+sub-app's own `lifespan=` is never invoked by the ASGI server (only the
+root app's is), so tenant-owned resources (e.g. an httpx client) start up
+and shut down via hooks the root lifespan calls explicitly:
 
 ```python
-TENANTS: list[tuple[str, FastAPI]] = [
-    ("/api/v1/analytics", b2b_dashboard_app),
-    ("/api/v1/<new-tenant>", new_tenant_app),
+TENANTS: list[Tenant] = [
+    Tenant(
+        "/api/v1/analytics",
+        b2b_dashboard.app,
+        on_startup=b2b_dashboard.on_startup,
+        on_shutdown=b2b_dashboard.on_shutdown,
+    ),
+    Tenant("/api/v1/<new-tenant>", new_tenant.app),
 ]
 ```
 
@@ -100,7 +109,10 @@ trace pipeline, and K8s probe contract:
   service's logs, so Loki/Grafana queries work identically here.
 - **Access logs** — one structured JSON line per request (method, path,
   status, duration), via `core/observability/middleware.py`, added to the
-  root app and every tenant sub-app. uvicorn's own access log is disabled
+  root app only — Starlette's `Mount` runs a tenant sub-app inside the root
+  app's request lifecycle, so the root app's middleware already sees a
+  tenant's final response; adding it to tenant sub-apps too would log every
+  tenant request twice. uvicorn's own access log is disabled
   (`--no-access-log`) to avoid duplicating this in a different, unstructured
   format.
 - **Tracing** — OpenTelemetry, activated when `OTEL_EXPORTER_OTLP_ENDPOINT`

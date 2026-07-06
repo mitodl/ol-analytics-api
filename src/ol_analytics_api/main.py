@@ -30,11 +30,13 @@ wire up on its own.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
+import structlog
 from fastapi import FastAPI
 
 from ol_analytics_api.core import health
@@ -63,6 +65,8 @@ configure_opentelemetry(
     debug=settings.debug,
 )
 
+log = structlog.get_logger(__name__)
+
 # Tenant sub-apps are imported only after configure_opentelemetry() runs:
 # FastAPI auto-instrumentation patches FastAPI.__init__, so a FastAPI()
 # instance constructed earlier — including each tenant's module-level
@@ -89,7 +93,23 @@ TENANTS: list[Tenant] = [
 ]
 
 
-async def _resolve_starrocks_credentials() -> tuple[str, str]:
+# Vault-issued StarRocks credentials are a dynamic user with a lease — once
+# it expires, Vault revokes that user and new connection attempts with
+# those credentials start failing authentication. The refresh loop below
+# re-fetches (a new lease, a new dynamic user) well before that happens and
+# rotates the pool over, rather than waiting for expiry-driven auth
+# failures. Refreshing at 80% of the lease lifetime leaves headroom for a
+# slow Vault round-trip or a retry; the floor keeps a very short lease
+# (e.g. in a test environment) from turning into a busy-loop.
+_CREDENTIAL_REFRESH_SAFETY_MARGIN = 0.8
+_CREDENTIAL_REFRESH_MIN_INTERVAL_SECONDS = 60.0
+_CREDENTIAL_REFRESH_RETRY_SECONDS = 60.0
+
+
+async def _resolve_starrocks_credentials() -> tuple[str, str, int | None]:
+    """Returns (user, password, lease_duration_seconds). lease_duration is
+    None for the local-dev static-credential fallback, which never expires
+    and therefore never needs the refresh loop below."""
     if settings.vault_addr:
         # fetch_starrocks_credentials() is fully synchronous (file read +
         # hvac/requests HTTP calls) — offload it so a slow Vault doesn't
@@ -97,19 +117,59 @@ async def _resolve_starrocks_credentials() -> tuple[str, str]:
         return await asyncio.to_thread(fetch_starrocks_credentials)
     # Local dev fallback — matches bin/starrocks-auth --output env's
     # STARROCKS_USER / STARROCKS_PASSWORD, no OL_ANALYTICS_API_ prefix.
-    return os.environ["STARROCKS_USER"], os.environ["STARROCKS_PASSWORD"]
+    return os.environ["STARROCKS_USER"], os.environ["STARROCKS_PASSWORD"], None
+
+
+def _next_refresh_delay(lease_duration: int) -> float:
+    return max(
+        lease_duration * _CREDENTIAL_REFRESH_SAFETY_MARGIN,
+        _CREDENTIAL_REFRESH_MIN_INTERVAL_SECONDS,
+    )
+
+
+async def _refresh_starrocks_credentials_forever(initial_lease_duration: int) -> None:
+    sleep_for = _next_refresh_delay(initial_lease_duration)
+    while True:
+        await asyncio.sleep(sleep_for)
+        try:
+            user, password, lease_duration = await _resolve_starrocks_credentials()
+            if lease_duration is None:
+                # Only reachable if settings.vault_addr somehow became unset
+                # after this loop started — it can't otherwise, since the
+                # loop is only spawned when the initial fetch returned a
+                # real lease. Treat it as a transient failure and retry
+                # rather than crash the whole background task.
+                msg = "Vault refresh returned no lease_duration"
+                raise RuntimeError(msg)  # noqa: TRY301
+            await starrocks_pool.rotate(user, password)
+        except Exception:
+            log.exception("Failed to refresh StarRocks Vault credentials; will retry")
+            sleep_for = _CREDENTIAL_REFRESH_RETRY_SECONDS
+            continue
+        log.info("Rotated StarRocks pool onto freshly-issued Vault credentials")
+        sleep_for = _next_refresh_delay(lease_duration)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    user, password = await _resolve_starrocks_credentials()
+    user, password, lease_duration = await _resolve_starrocks_credentials()
     await starrocks_pool.start(user, password)
     for tenant in TENANTS:
         if tenant.on_startup is not None:
             await tenant.on_startup()
+
+    refresh_task = (
+        asyncio.create_task(_refresh_starrocks_credentials_forever(lease_duration))
+        if lease_duration is not None
+        else None
+    )
     try:
         yield
     finally:
+        if refresh_task is not None:
+            refresh_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await refresh_task
         for tenant in TENANTS:
             if tenant.on_shutdown is not None:
                 await tenant.on_shutdown()

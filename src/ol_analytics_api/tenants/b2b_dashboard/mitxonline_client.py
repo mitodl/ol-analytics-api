@@ -66,7 +66,16 @@ class MITxOnlineClient:
         )
         response.raise_for_status()
         managed_orgs = response.json()
-        is_manager = any(org.get("slug") == org_slug for org in managed_orgs)
+        if not isinstance(managed_orgs, list):
+            # Unexpected upstream shape (e.g. an error payload) — fail
+            # closed rather than let `.get()` raise AttributeError on a
+            # non-dict. Not cached: this is an error condition, not a real
+            # authorization answer, so a transient glitch shouldn't lock a
+            # legitimate manager out for the rest of the cache TTL.
+            return False
+        is_manager = any(
+            isinstance(org, dict) and org.get("slug") == org_slug for org in managed_orgs
+        )
 
         _cache[cache_key] = is_manager
         return is_manager

@@ -30,8 +30,8 @@ class StarRocksPool:
     def is_started(self) -> bool:
         return self._pool is not None
 
-    async def start(self, user: str, password: str) -> None:
-        self._pool = await aiomysql.create_pool(
+    async def _create_pool(self, user: str, password: str) -> aiomysql.Pool:
+        return await aiomysql.create_pool(
             host=settings.starrocks_host,
             port=settings.starrocks_port,
             user=user,
@@ -42,12 +42,27 @@ class StarRocksPool:
             cursorclass=aiomysql.cursors.DictCursor,
         )
 
+    async def start(self, user: str, password: str) -> None:
+        self._pool = await self._create_pool(user, password)
+
     async def stop(self) -> None:
         if self._pool is None:
             return
         self._pool.close()
         await self._pool.wait_closed()
         self._pool = None
+
+    async def rotate(self, user: str, password: str) -> None:
+        """Swap in a new pool built from fresh credentials, then close the
+        old one. Used to move off Vault-issued credentials before their
+        lease expires — see main.py's background refresh loop. New queries
+        start using the new pool immediately; connections already checked
+        out of the old pool finish naturally before it closes."""
+        new_pool = await self._create_pool(user, password)
+        old_pool, self._pool = self._pool, new_pool
+        if old_pool is not None:
+            old_pool.close()
+            await old_pool.wait_closed()
 
     @asynccontextmanager
     async def cursor(self) -> AsyncIterator[aiomysql.cursors.DictCursor]:

@@ -25,8 +25,12 @@ def _read_service_account_token() -> str:
     return _SERVICE_ACCOUNT_TOKEN_PATH.read_text().strip()
 
 
-def fetch_starrocks_credentials() -> tuple[str, str]:
-    """Return (username, password) for the `app` StarRocks role via Vault."""
+def fetch_starrocks_credentials() -> tuple[str, str, int]:
+    """Return (username, password, lease_duration_seconds) for the `app`
+    StarRocks role via Vault. The credentials are only valid for
+    lease_duration_seconds — see main.py's background refresh loop, which
+    re-fetches (a new lease, new dynamic user) before this one expires and
+    rotates the StarRocks connection pool over to it."""
     client = hvac.Client(url=settings.vault_addr)
     client.auth.kubernetes.login(
         role=settings.vault_role,
@@ -43,4 +47,4 @@ def fetch_starrocks_credentials() -> tuple[str, str]:
         )
         raise RuntimeError(msg)  # noqa: TRY004 -- isinstance narrows a "not found" response
     data = response["data"]
-    return data["username"], data["password"]
+    return data["username"], data["password"], response["lease_duration"]

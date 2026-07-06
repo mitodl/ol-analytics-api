@@ -45,6 +45,27 @@ async def test_is_org_manager_reuses_one_httpx_client_across_calls(client, httpx
     assert client._client is client_before  # noqa: SLF001
 
 
+async def test_is_org_manager_fails_closed_on_non_list_response(client, httpx_mock):
+    # Regression test: an unexpected upstream shape (e.g. an error payload
+    # that's a dict, not a list) used to crash with AttributeError inside
+    # `.get()` instead of failing closed. Distinct (sub, org) pair from
+    # other tests in this file — the TTLCache is module-level shared state,
+    # so reusing a key another test already cached would mask this path.
+    httpx_mock.add_response(
+        url="https://mitxonline.example.test/api/v0/b2b/manager/organizations/",
+        json={"error": "internal server error"},
+    )
+    assert await client.is_org_manager("user-non-list", "org-non-list", "header-1") is False
+
+
+async def test_is_org_manager_ignores_non_dict_list_items(client, httpx_mock):
+    httpx_mock.add_response(
+        url="https://mitxonline.example.test/api/v0/b2b/manager/organizations/",
+        json=["not-a-dict", {"slug": "org-mixed-list"}],
+    )
+    assert await client.is_org_manager("user-mixed-list", "org-mixed-list", "header-1") is True
+
+
 async def test_require_org_manager_returns_503_not_raw_500_when_mitxonline_unreachable():
     userinfo = {"organization": {"my-org": {"id": "some-id"}}, "sub": "user-x"}
     request = SimpleNamespace(headers={"X-Userinfo": "fake-header"})
