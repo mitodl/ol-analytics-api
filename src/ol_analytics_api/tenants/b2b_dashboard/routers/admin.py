@@ -9,9 +9,13 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 
 from ol_analytics_api.core.db.query import fetch_and_suppress
+from ol_analytics_api.core.db.refresh_metadata import latest_refresh_timestamp
 from ol_analytics_api.tenants.b2b_dashboard.auth import require_mit_admin
 from ol_analytics_api.tenants.b2b_dashboard.config import settings
-from ol_analytics_api.tenants.b2b_dashboard.models import MitAdminContractHealth
+from ol_analytics_api.tenants.b2b_dashboard.models import (
+    AdminAnalyticsResponse,
+    MitAdminContractHealth,
+)
 
 router = APIRouter(
     prefix="/admin",
@@ -21,13 +25,18 @@ router = APIRouter(
 
 
 @router.get("/contract-health")
-async def contract_health() -> list[MitAdminContractHealth]:
+async def contract_health() -> AdminAnalyticsResponse[MitAdminContractHealth]:
     # settings.starrocks_schema is validated as a safe SQL identifier at
-    # settings-load time (B2BDashboardSettings field_validator).
-    return await fetch_and_suppress(
+    # settings-load time (B2BDashboardSettings field_validator). This
+    # endpoint spans all orgs, so the envelope carries no organization_key.
+    rows = await fetch_and_suppress(
         f"SELECT * FROM {settings.starrocks_schema}.mv_b2b_mit_admin_contract_health",  # noqa: S608
         (),
         MitAdminContractHealth,
         "seats_consumed",
         settings.anonymization_floor,
+    )
+    return AdminAnalyticsResponse(
+        as_of=await latest_refresh_timestamp(settings.starrocks_schema),
+        data=rows,
     )
