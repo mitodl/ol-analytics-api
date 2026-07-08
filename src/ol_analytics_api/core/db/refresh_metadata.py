@@ -14,11 +14,20 @@ which qualify ``schema.table`` and must go through validate_sql_identifier).
 Because the value only moves once per daily refresh, it's cached per schema
 with a short TTL rather than re-queried on every analytics request — the
 same bound-latency reasoning as the org-manager check cache.
+
+A dashboard page load fires several org-scoped requests concurrently, so a
+cold cache would otherwise let all of them race past the cache check and
+each issue the same query. A per-schema lock serializes the cold-cache case
+onto a single query; double-checked locking (`if schema in _cache` again
+after acquiring the lock) means a caller that had to wait still gets a
+cache hit instead of querying again.
 """
 
 from __future__ import annotations
 
+import asyncio
 import datetime
+from collections import defaultdict
 
 from cachetools import TTLCache
 
@@ -29,6 +38,7 @@ from ol_analytics_api.core.db.client import starrocks_pool
 # keeps the extra information_schema round-trip off the hot path.
 _AS_OF_CACHE_TTL_SECONDS = 300
 _cache: TTLCache[str, datetime.datetime | None] = TTLCache(maxsize=64, ttl=_AS_OF_CACHE_TTL_SECONDS)
+_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 _LATEST_REFRESH_QUERY = (
     "SELECT MAX(LAST_REFRESH_FINISHED_TIME) AS as_of "
@@ -43,13 +53,17 @@ async def latest_refresh_timestamp(schema: str) -> datetime.datetime | None:
     if schema in _cache:
         return _cache[schema]
 
-    rows = await starrocks_pool.fetch_all(_LATEST_REFRESH_QUERY, (schema,))
-    as_of = rows[0]["as_of"] if rows else None
-    _cache[schema] = as_of
-    return as_of
+    async with _locks[schema]:
+        if schema in _cache:
+            return _cache[schema]
+        rows = await starrocks_pool.fetch_all(_LATEST_REFRESH_QUERY, (schema,))
+        as_of = rows[0]["as_of"] if rows else None
+        _cache[schema] = as_of
+        return as_of
 
 
 def _clear_cache() -> None:
     """Test hook — the cache is process-global, so a test that stubs a
     particular as_of must start from an empty cache."""
     _cache.clear()
+    _locks.clear()
