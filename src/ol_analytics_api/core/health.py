@@ -43,14 +43,21 @@ ReadinessCheck = Callable[[], Awaitable[None]]
 _tenant_readiness_checks: dict[str, list[ReadinessCheck]] = {}
 
 
-def register_readiness_check(tenant: str, check: ReadinessCheck) -> None:
+def register_readiness_check(tenant: str, check: ReadinessCheck | None = None) -> None:
     """Register an async dependency check scoped to a single tenant. The
     check must succeed (raise nothing) for that tenant's
     /health/readiness/{tenant}/ sub-path to report ready. It has NO effect on
     the shared /health/readiness/ and /health/startup/ probes K8s uses to
     decide the whole pod's rotation — so a tenant's private upstream going
-    down degrades only that tenant's sub-path, never the pod."""
-    _tenant_readiness_checks.setdefault(tenant, []).append(check)
+    down degrades only that tenant's sub-path, never the pod.
+
+    `check` is optional so a tenant with no custom upstream dependencies can
+    still register its existence — without this, /health/readiness/{tenant}/
+    would 404 for a perfectly healthy tenant that only relies on shared
+    infra, instead of reporting 200."""
+    checks = _tenant_readiness_checks.setdefault(tenant, [])
+    if check is not None:
+        checks.append(check)
 
 
 async def _check_shared_infra() -> None:
@@ -95,7 +102,7 @@ async def tenant_readiness(tenant: str) -> dict[str, str]:
     if checks is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No readiness checks registered for tenant {tenant!r}",
+            detail=f"Tenant {tenant!r} is not registered",
         )
     try:
         await _check_shared_infra()

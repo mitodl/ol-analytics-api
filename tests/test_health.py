@@ -3,8 +3,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 
+from ol_analytics_api.core import health
 from ol_analytics_api.main import create_app
 from ol_analytics_api.tenants.b2b_dashboard.app import TENANT_NAME
 from ol_analytics_api.tenants.b2b_dashboard.mitxonline_client import mitxonline_client
@@ -153,3 +155,28 @@ async def test_tenant_readiness_404_for_unknown_tenant(app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/health/readiness/does-not-exist/")
     assert response.status_code == 404
+
+
+async def test_register_readiness_check_with_no_check_still_registers_tenant():
+    # A tenant with no custom upstream dependencies can still register its
+    # existence (register_readiness_check(tenant) with no `check`) so its
+    # /health/readiness/{tenant}/ sub-path reports ready — rather than 404
+    # as if the tenant didn't exist at all.
+    tenant = "no-custom-checks-tenant"
+    health.register_readiness_check(tenant)
+    try:
+        with patch(
+            "ol_analytics_api.core.health.starrocks_pool.ping", new=AsyncMock(return_value=None)
+        ):
+            result = await health.tenant_readiness(tenant)
+    finally:
+        del health._tenant_readiness_checks[tenant]  # noqa: SLF001
+    assert result == {"status": "ready"}
+
+
+async def test_tenant_readiness_404_detail_names_the_unregistered_tenant():
+    with pytest.raises(HTTPException) as exc_info:
+        await health.tenant_readiness("does-not-exist")
+    assert exc_info.value.status_code == 404
+    assert "does-not-exist" in exc_info.value.detail
+    assert "is not registered" in exc_info.value.detail
