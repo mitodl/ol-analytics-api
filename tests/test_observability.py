@@ -1,6 +1,8 @@
+from unittest.mock import MagicMock, patch
+
 from ol_analytics_api.core.observability import logging as obs_logging
 from ol_analytics_api.core.observability import telemetry
-from ol_analytics_api.core.observability.sentry import init_sentry
+from ol_analytics_api.core.observability.sentry import _before_send, init_sentry
 
 
 def test_configure_structlog_is_idempotent():
@@ -31,6 +33,112 @@ def test_configure_opentelemetry_configures_when_debug(monkeypatch):
     telemetry.reset_configuration()
 
 
+def test_configure_opentelemetry_is_idempotent(monkeypatch):
+    # OTel's global tracer provider can only ever be set once per process
+    # (later calls are silently ignored, by design) — so this test can't
+    # rely on the real global to observe main.py's own `_configured` guard.
+    # It instead mocks trace.set_tracer_provider/get_tracer_provider to
+    # verify configure_opentelemetry's second-call branch specifically:
+    # `_configured` is True -> return the existing provider without
+    # rebuilding one.
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
+    monkeypatch.delenv("OPENTELEMETRY_ENDPOINT", raising=False)
+    telemetry.reset_configuration()
+    with patch("ol_analytics_api.core.observability.telemetry.trace.set_tracer_provider"):
+        first = telemetry.configure_opentelemetry(
+            service_name="test", service_version="0", environment="test", debug=True
+        )
+    with patch(
+        "ol_analytics_api.core.observability.telemetry.trace.get_tracer_provider",
+        return_value=first,
+    ):
+        second = telemetry.configure_opentelemetry(
+            service_name="test", service_version="0", environment="test", debug=True
+        )
+    assert second is first
+    telemetry.reset_configuration()
+
+
+def test_configure_opentelemetry_adds_console_exporter_when_enabled(monkeypatch):
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
+    monkeypatch.delenv("OPENTELEMETRY_ENDPOINT", raising=False)
+    monkeypatch.setenv("OPENTELEMETRY_CONSOLE_EXPORTER", "true")
+    telemetry.reset_configuration()
+    provider = telemetry.configure_opentelemetry(
+        service_name="test", service_version="0", environment="test", debug=True
+    )
+    assert provider is not None
+    telemetry.reset_configuration()
+
+
+def test_configure_opentelemetry_adds_otlp_exporter_when_endpoint_set(monkeypatch):
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.example.test:4318")
+    telemetry.reset_configuration()
+    with patch("ol_analytics_api.core.observability.telemetry.OTLPSpanExporter") as exporter:
+        provider = telemetry.configure_opentelemetry(
+            service_name="test", service_version="0", environment="test", debug=False
+        )
+    assert provider is not None
+    exporter.assert_called_once_with(endpoint="http://collector.example.test:4318")
+    telemetry.reset_configuration()
+
+
+def test_configure_opentelemetry_logs_but_does_not_raise_when_otlp_exporter_fails(
+    monkeypatch, caplog
+):
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.example.test:4318")
+    telemetry.reset_configuration()
+    with patch(
+        "ol_analytics_api.core.observability.telemetry.OTLPSpanExporter",
+        side_effect=RuntimeError("boom"),
+    ):
+        provider = telemetry.configure_opentelemetry(
+            service_name="test", service_version="0", environment="test", debug=False
+        )
+    assert provider is not None
+    assert "failed to configure OTLP exporter" in caplog.text
+    telemetry.reset_configuration()
+
+
+def test_auto_instrument_is_idempotent():
+    telemetry.reset_configuration()
+    with patch(
+        "ol_analytics_api.core.observability.telemetry.importlib.metadata.entry_points",
+        return_value=[],
+    ) as entry_points:
+        telemetry._auto_instrument()  # noqa: SLF001
+        telemetry._auto_instrument()  # noqa: SLF001
+    entry_points.assert_called_once()
+    telemetry.reset_configuration()
+
+
+def _fake_entry_point(name, *, raises=False):
+    ep = MagicMock()
+    ep.name = name
+    if raises:
+        ep.load.return_value.side_effect = RuntimeError("instrument failed")
+    return ep
+
+
+def test_auto_instrument_skips_configured_instrumentors_and_survives_a_failure(monkeypatch, caplog):
+    telemetry.reset_configuration()
+    monkeypatch.setenv("OL_ANALYTICS_API_OTEL_SKIP_INSTRUMENTORS", "skip-me")
+    skip_ep = _fake_entry_point("skip-me")
+    ok_ep = _fake_entry_point("instrument-me")
+    failing_ep = _fake_entry_point("fails-to-instrument", raises=True)
+
+    with patch(
+        "ol_analytics_api.core.observability.telemetry.importlib.metadata.entry_points",
+        return_value=[skip_ep, ok_ep, failing_ep],
+    ):
+        telemetry._auto_instrument()  # noqa: SLF001
+
+    skip_ep.load.assert_not_called()
+    ok_ep.load.assert_called_once()
+    assert "Failed to auto-instrument" in caplog.text
+    telemetry.reset_configuration()
+
+
 def test_init_sentry_with_empty_dsn_does_not_raise():
     # sentry-sdk treats an empty DSN as "disabled" — this should be a safe no-op,
     # matching how every other service here calls init_sentry() unconditionally.
@@ -55,3 +163,19 @@ def test_init_sentry_clamps_out_of_range_sample_rates(caplog):
     )
     assert "SENTRY_TRACES_SAMPLE_RATE" in caplog.text
     assert "SENTRY_PROFILES_SAMPLE_RATE" in caplog.text
+
+
+def test_before_send_drops_shutdown_errors():
+    event = {"event_id": "abc"}
+    assert _before_send(event, {"exc_info": (SystemExit, SystemExit(), None)}) is None
+
+
+def test_before_send_passes_through_other_errors():
+    event = {"event_id": "abc"}
+    hint = {"exc_info": (ValueError, ValueError("boom"), None)}
+    assert _before_send(event, hint) is event
+
+
+def test_before_send_passes_through_when_no_exc_info():
+    event = {"event_id": "abc"}
+    assert _before_send(event, {}) is event

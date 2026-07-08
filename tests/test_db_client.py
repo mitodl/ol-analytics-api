@@ -91,6 +91,69 @@ async def test_cursor_raises_pool_acquire_timeout_when_pool_saturated():
             pass
 
 
+async def test_stop_is_a_noop_when_never_started():
+    pool = StarRocksPool()
+    await pool.stop()  # must not raise
+    assert pool.is_started is False
+
+
+async def test_stop_closes_the_pool_when_started():
+    fake_pool = AsyncMock()
+    fake_pool.close = MagicMock()
+
+    pool = StarRocksPool()
+    with patch.object(pool, "_create_pool", new=AsyncMock(return_value=fake_pool)):
+        await pool.start("user", "password")
+    assert pool.is_started is True
+
+    await pool.stop()
+
+    fake_pool.close.assert_called_once()
+    fake_pool.wait_closed.assert_awaited_once()
+    assert pool.is_started is False
+
+
+def _fake_cursor(rows):
+    cur = MagicMock()
+    cur.execute = AsyncMock()
+    cur.fetchall = AsyncMock(return_value=rows)
+    cur.fetchone = AsyncMock(return_value=rows[0] if rows else None)
+
+    cur_cm = MagicMock()
+    cur_cm.__aenter__ = AsyncMock(return_value=cur)
+    cur_cm.__aexit__ = AsyncMock(return_value=False)
+
+    conn = MagicMock()
+    conn.cursor = MagicMock(return_value=cur_cm)
+
+    fake_pool = MagicMock()
+    fake_pool.acquire = AsyncMock(return_value=conn)
+    fake_pool.release = MagicMock()
+    return fake_pool, cur
+
+
+async def test_fetch_all_executes_query_and_returns_rows():
+    fake_pool, cur = _fake_cursor([{"a": 1}, {"a": 2}])
+    pool = StarRocksPool()
+    pool._pool = fake_pool  # noqa: SLF001
+
+    rows = await pool.fetch_all("SELECT a FROM t WHERE b = %s", ("x",))
+
+    cur.execute.assert_awaited_once_with("SELECT a FROM t WHERE b = %s", ("x",))
+    assert rows == [{"a": 1}, {"a": 2}]
+
+
+async def test_ping_executes_select_1_when_pool_started():
+    fake_pool, cur = _fake_cursor([{"1": 1}])
+    pool = StarRocksPool()
+    pool._pool = fake_pool  # noqa: SLF001
+
+    await pool.ping()  # must not raise
+
+    cur.execute.assert_awaited_once_with("SELECT 1")
+    cur.fetchone.assert_awaited_once()
+
+
 async def test_cursor_releases_connection_back_to_pool():
     # The connection must be returned to the pool even though acquire is now
     # done manually (not via aiomysql's own context manager).
