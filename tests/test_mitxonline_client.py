@@ -58,6 +58,20 @@ async def test_is_org_manager_fails_closed_on_non_list_response(client, httpx_mo
     assert await client.is_org_manager("user-non-list", "org-non-list", "header-1") is False
 
 
+async def test_is_org_manager_caches_by_sub_and_org(client, httpx_mock):
+    # Second call for the same (sub, org_slug) must hit the cache, not issue
+    # a second HTTP request — httpx_mock raises if a registered response is
+    # never consumed, but here we assert the positive: only one was queued
+    # and both calls still succeed.
+    httpx_mock.add_response(
+        url="https://mitxonline.example.test/api/v0/b2b/manager/organizations/",
+        json=[{"slug": "org-cache"}],
+    )
+    assert await client.is_org_manager("user-cache", "org-cache", "header-1") is True
+    assert await client.is_org_manager("user-cache", "org-cache", "header-1") is True
+    assert len(httpx_mock.get_requests()) == 1
+
+
 async def test_is_org_manager_ignores_non_dict_list_items(client, httpx_mock):
     httpx_mock.add_response(
         url="https://mitxonline.example.test/api/v0/b2b/manager/organizations/",

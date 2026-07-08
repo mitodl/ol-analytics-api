@@ -31,6 +31,7 @@ dev = [
     "types-cachetools>=5.5",
     "types-hvac>=2.3",
     "asgi-lifespan>=2.1.0",
+    "pytest-cov>=7.1.0",
 ]
 
 [build-system]
@@ -43,6 +44,13 @@ packages = ["src/ol_analytics_api"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["ol_analytics_api"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
 
 [tool.ruff]
 line-length = 100

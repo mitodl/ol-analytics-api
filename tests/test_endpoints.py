@@ -187,6 +187,18 @@ async def test_org_endpoint_403_for_member_who_is_not_a_manager(app):
     assert response.status_code == 403
 
 
+async def test_org_endpoint_403_for_non_member(app):
+    # org_slug isn't in the caller's organization claim at all — rejected
+    # before ever reaching the MITx Online manager round-trip.
+    async with _client(app) as client:
+        response = await client.get(
+            "/api/v1/analytics/organizations/org-a/contract-utilization",
+            headers={"X-Userinfo": _manager_header("some-other-org")},
+        )
+    assert response.status_code == 403
+    assert "Not a member" in response.json()["detail"]
+
+
 async def test_org_endpoint_authorized_but_empty_returns_empty_data_not_404(app):
     with (
         patch(

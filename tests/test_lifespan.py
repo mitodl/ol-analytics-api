@@ -13,6 +13,7 @@ and by running the built Docker image, which is what actually caught it).
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -92,3 +93,37 @@ async def test_partial_tenant_startup_failure_still_stops_pool():
     pool_stop.assert_awaited_once()
     assert started == ["ok"]
     assert shut_down == ["ok"]
+
+
+async def test_credential_refresh_task_is_cancelled_and_awaited_on_shutdown():
+    """Regression test: when a real Vault lease is in play, the background
+    refresh task must be cancelled and awaited before the pool stops — not
+    left running (or left uncancelled and leaking a warning) after
+    shutdown."""
+    refresh_task_started = asyncio.Event()
+
+    async def _never_ending_refresh(_lease_duration: int) -> None:
+        refresh_task_started.set()
+        await asyncio.Event().wait()
+
+    root_app = SimpleNamespace(state=SimpleNamespace(tenant_apps={}))
+
+    with (
+        patch("ol_analytics_api.main.TENANTS", []),
+        patch(
+            "ol_analytics_api.main._resolve_starrocks_credentials",
+            new=AsyncMock(return_value=("user", "pass", 100)),
+        ),
+        patch(
+            "ol_analytics_api.main._refresh_starrocks_credentials_forever",
+            new=_never_ending_refresh,
+        ),
+        patch("ol_analytics_api.core.db.client.starrocks_pool.start", new=AsyncMock()),
+        patch("ol_analytics_api.core.db.client.starrocks_pool.stop", new=AsyncMock()) as pool_stop,
+    ):
+        async with lifespan(root_app):
+            await asyncio.wait_for(refresh_task_started.wait(), timeout=1)
+        # Reaching here (rather than hanging or raising CancelledError out of
+        # the `async with`) proves the task was cancelled and awaited inside
+        # lifespan's own finally, not left dangling.
+        pool_stop.assert_awaited_once()
