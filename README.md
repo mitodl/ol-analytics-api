@@ -3,8 +3,18 @@
 Multi-tenant, read-only FastAPI analytics gateway over StarRocks. Each
 consumer of this service is a **tenant**: an independent FastAPI sub-app
 with its own routes, auth/governance model, and OpenAPI docs, mounted onto
-one root app. Tenants share only the underlying StarRocks connection pool —
-nothing else.
+one root app. Tenants share no application state — routers, auth, config,
+and suppression policy are all per-tenant.
+
+They do, however, currently share one StarRocks connection pool, and that
+pool authenticates as a single DB identity (the `app` Vault role) with one
+privilege set. So "tenant" is today an **application-layer** boundary, not a
+database-enforced one: nothing at the StarRocks level stops one tenant's
+queries from reading another tenant's schema — only the app-layer routing and
+each tenant's own `starrocks_schema` do. Making `tenant` a real security
+boundary (per-tenant Vault role / StarRocks user with schema-scoped grants,
+and per-tenant pools here) is tracked as follow-up work; see the
+tenant-isolation task in the architecture-review epic.
 
 The first tenant is `b2b_dashboard`: aggregated (no individual learner PII)
 B2B site-license analytics — contract utilization, enrollment/completion
