@@ -72,9 +72,7 @@ async def test_partial_tenant_startup_failure_still_stops_pool():
         patch(
             "ol_analytics_api.core.db.client.starrocks_pool.start", new=AsyncMock()
         ) as pool_start,
-        patch(
-            "ol_analytics_api.core.db.client.starrocks_pool.stop", new=AsyncMock()
-        ) as pool_stop,
+        patch("ol_analytics_api.core.db.client.starrocks_pool.stop", new=AsyncMock()) as pool_stop,
         pytest.raises(RuntimeError, match="boom"),
     ):
         async with lifespan(None):
