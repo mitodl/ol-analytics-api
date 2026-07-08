@@ -52,6 +52,23 @@ class CohortPolicy:
     secondary: tuple[str, ...] = ()
     derived: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        # A `derived` entry naming a cohort that's neither `primary` nor in
+        # `secondary` would silently skip suppression for that derived value
+        # — a typo or omission here is a k-anonymity leak, not a cosmetic
+        # bug, so it's caught at policy-definition time rather than at
+        # response time.
+        allowed = {self.primary, *self.secondary}
+        for column, cohorts in self.derived.items():
+            for cohort in cohorts:
+                if cohort not in allowed:
+                    msg = (
+                        f"Derived column {column!r} references unknown cohort {cohort!r}. "
+                        f"It must be either the primary cohort {self.primary!r} or in "
+                        "secondary cohorts."
+                    )
+                    raise ValueError(msg)
+
 
 def _is_disclosive(value: int | None, floor: int) -> bool:
     # NULL (unknown — e.g. a LEFT JOIN miss in the source MV) is treated as

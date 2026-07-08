@@ -1,3 +1,5 @@
+import pytest
+
 from ol_analytics_api.core.anonymization import CohortPolicy, suppress_small_cohorts
 
 
@@ -111,3 +113,22 @@ def test_input_rows_are_not_mutated():
     policy = CohortPolicy(primary="total_enrolled_learners", secondary=("certificates_earned",))
     suppress_small_cohorts(rows, policy, floor=5)
     assert rows[0]["certificates_earned"] == 1
+
+
+def test_derived_referencing_unknown_cohort_raises_at_construction():
+    # A typo/omission here would silently skip suppression for that derived
+    # value — a k-anonymity leak, not a cosmetic bug — so it must fail at
+    # policy-definition time rather than at response time.
+    with pytest.raises(ValueError, match="unknown cohort"):
+        CohortPolicy(
+            primary="total_enrolled_learners",
+            secondary=("engaged_learners",),
+            derived={"avg_videos_per_engaged_learner": ("typo_learners",)},
+        )
+
+
+def test_derived_referencing_primary_cohort_is_allowed():
+    CohortPolicy(
+        primary="total_enrolled_learners",
+        derived={"avg_videos_per_learner": ("total_enrolled_learners",)},
+    )

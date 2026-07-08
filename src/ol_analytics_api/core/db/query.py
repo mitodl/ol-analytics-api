@@ -17,7 +17,7 @@ instead of calling ``starrocks_pool.fetch_all`` directly.
 
 from __future__ import annotations
 
-from typing import Any, ClassVar, Protocol, runtime_checkable
+from typing import Any, ClassVar, Protocol, cast
 
 from sqlmodel import SQLModel
 
@@ -25,7 +25,6 @@ from ol_analytics_api.core.anonymization import CohortPolicy, suppress_small_coh
 from ol_analytics_api.core.db.client import starrocks_pool
 
 
-@runtime_checkable
 class SuppressibleModel(Protocol):
     """A row model that declares how the anonymization floor applies to it."""
 
@@ -38,12 +37,13 @@ async def fetch_and_suppress[ModelT: SQLModel](
     model_cls: type[ModelT],
     floor: int,
 ) -> list[ModelT]:
-    if not isinstance(model_cls, SuppressibleModel):
+    if not hasattr(model_cls, "cohort_policy"):
         msg = (
             f"{model_cls.__name__} must declare a `cohort_policy` to be returned "
             "through the anonymization chokepoint"
         )
         raise TypeError(msg)
+    suppressible_cls = cast("type[SuppressibleModel]", model_cls)
     rows = await starrocks_pool.fetch_all(query, params)
-    suppressed = suppress_small_cohorts(rows, model_cls.cohort_policy, floor)
+    suppressed = suppress_small_cohorts(rows, suppressible_cls.cohort_policy, floor)
     return [model_cls(**row) for row in suppressed]
