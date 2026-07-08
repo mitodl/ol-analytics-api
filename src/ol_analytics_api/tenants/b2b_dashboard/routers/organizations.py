@@ -46,13 +46,16 @@ async def _org_response[RowT: SQLModel](  # noqa: PLR0913
     base_query: str,
     params: tuple[Any, ...],
     model_cls: type[RowT],
-    cohort_field: str,
     order_by: str,
     page: Pagination,
 ) -> OrgAnalyticsResponse[RowT]:
     """Run one MV query -> suppress -> wrap in the org envelope. The as_of
     lookup is shared across the 5 endpoints so a single response reports the
     same freshness the caller sees in every panel of the dashboard.
+
+    Which columns the anonymization floor applies to is the row model's own
+    ``cohort_policy`` — ``fetch_and_suppress`` reads it, so endpoints only
+    name the model, not a cohort field.
 
     ``order_by`` is a hardcoded column list per endpoint (never caller input)
     — it makes LIMIT/OFFSET paging deterministic, and is safe to splice.
@@ -63,7 +66,6 @@ async def _org_response[RowT: SQLModel](  # noqa: PLR0913
         query,
         (*params, page.limit, page.offset),
         model_cls,
-        cohort_field,
         settings.anonymization_floor,
     )
     return OrgAnalyticsResponse(
@@ -82,7 +84,6 @@ async def contract_utilization(
         f"SELECT * FROM {_SCHEMA}.mv_b2b_contract_utilization WHERE organization_key = %s",  # noqa: S608
         (org_slug,),
         ContractUtilization,
-        "seats_consumed",
         "contract_pk",
         page,
     )
@@ -98,7 +99,6 @@ async def enrollment_funnel(
         " WHERE organization_key = %s",
         (org_slug,),
         EnrollmentCompletionFunnel,
-        "enrolled_learners",
         "contract_pk, courserun_pk",
         page,
     )
@@ -113,7 +113,6 @@ async def engagement_trend(
         f"SELECT * FROM {_SCHEMA}.mv_b2b_monthly_engagement_trend WHERE organization_key = %s",  # noqa: S608
         (org_slug,),
         MonthlyEngagementTrend,
-        "monthly_active_learners",
         "activity_year_and_month",
         page,
     )
@@ -128,7 +127,6 @@ async def program_funnel(
         f"SELECT * FROM {_SCHEMA}.mv_b2b_program_funnel WHERE organization_key = %s",  # noqa: S608
         (org_slug,),
         ProgramFunnel,
-        "enrolled_in_contract_courses",
         "contract_pk, program_pk",
         page,
     )
@@ -143,7 +141,6 @@ async def content_engagement(
         f"SELECT * FROM {_SCHEMA}.mv_b2b_content_engagement_depth WHERE organization_key = %s",  # noqa: S608
         (org_slug,),
         ContentEngagementDepth,
-        "total_enrolled_learners",
         "courserun_readable_id",
         page,
     )

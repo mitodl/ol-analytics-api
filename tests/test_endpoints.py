@@ -110,6 +110,62 @@ async def test_org_endpoint_returns_envelope_and_suppresses_small_cohorts(app):
     assert [row["contract_pk"] for row in body["data"]] == [1]
 
 
+async def test_content_engagement_suppresses_secondary_counts_and_derivatives(app):
+    # 50 enrolled clears the primary floor, so the row survives — but its
+    # secondary counts and their derivatives must be nulled: chatbot_users=2
+    # and certificates_earned=1 name too few learners, and the video totals
+    # and averages are computed over a single engaged learner.
+    row = {
+        "organization_key": "org-a",
+        "organization_name": "Org A",
+        "courserun_readable_id": "course-v1:MITx+6.00+2026",
+        "courserun_title": "Intro",
+        "total_enrolled_learners": 50,
+        "engaged_learners": 1,
+        "engagement_rate_pct": 2.0,
+        "total_videos_watched": 9,
+        "avg_videos_per_engaged_learner": 9.0,
+        "total_problems_attempted": 4,
+        "avg_problems_per_engaged_learner": 4.0,
+        "total_chatbot_interactions": 3,
+        "chatbot_users": 2,
+        "chatbot_adoption_pct": 4.0,
+        "certificates_earned": 1,
+    }
+    with (
+        patch(
+            "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
+            new=_fake_fetch_all([row]),
+        ),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                "/api/v1/analytics/organizations/org-a/content-engagement",
+                headers={"X-Userinfo": _manager_header("org-a")},
+            )
+    assert response.status_code == 200
+    (data,) = response.json()["data"]
+    # Primary cohort still visible.
+    assert data["total_enrolled_learners"] == 50
+    # Sub-floor secondary counts nulled.
+    assert data["engaged_learners"] is None
+    assert data["chatbot_users"] is None
+    assert data["certificates_earned"] is None
+    # Everything derived from engaged_learners.
+    assert data["engagement_rate_pct"] is None
+    assert data["total_videos_watched"] is None
+    assert data["avg_videos_per_engaged_learner"] is None
+    assert data["total_problems_attempted"] is None
+    assert data["avg_problems_per_engaged_learner"] is None
+    # Everything derived from chatbot_users.
+    assert data["total_chatbot_interactions"] is None
+    assert data["chatbot_adoption_pct"] is None
+
+
 async def test_org_endpoint_403_for_member_who_is_not_a_manager(app):
     # A member (org present in the claim) whose MITx Online manager check
     # comes back False is rejected — membership alone isn't enough.
