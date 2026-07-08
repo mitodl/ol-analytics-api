@@ -12,17 +12,22 @@ tenant's final response — status code, full duration — for every request
 delegated here. Adding the same middleware here too would log every
 request to this tenant twice.
 
-Also deliberately does NOT pass its own `lifespan=` to FastAPI(): a mounted
-sub-app's lifespan is never invoked by the ASGI protocol at all — only the
-top-level app uvicorn is pointed at receives lifespan.startup/shutdown
-messages (confirmed by reading Starlette's Router.lifespan(), which only
-ever runs its own app's lifespan_context, with no propagation to routes).
-Startup/shutdown for this tenant's own resources (the MITx Online client)
-is instead exposed as on_startup()/on_shutdown() below, which main.py's
-root lifespan calls explicitly via the TENANTS registry — see main.py.
+Does NOT pass this `lifespan` to its own FastAPI(): a mounted sub-app's
+lifespan is never invoked by the ASGI protocol at all — only the top-level app
+uvicorn is pointed at receives lifespan.startup/shutdown messages (confirmed by
+reading Starlette's Router.lifespan(), which only ever runs its own app's
+lifespan_context, with no propagation to routes). Instead this tenant declares
+`lifespan` as an ordinary context manager and hands it to main.py via the
+`Tenant` registry; the root lifespan drives it. Writing it as the same
+`@asynccontextmanager` idiom a FastAPI author already reaches for — rather than
+a bespoke on_startup/on_shutdown pair — is what keeps a tenant from forgetting
+to wire its lifecycle: the registry entry takes the lifespan by structure.
 """
 
 from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
@@ -35,12 +40,16 @@ from ol_analytics_api.tenants.b2b_dashboard.routers import admin, organizations
 TENANT_NAME = "b2b_dashboard"
 
 
-async def on_startup() -> None:
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    """Start/stop this tenant's own resources (the MITx Online HTTP client).
+    Driven by main.py's root lifespan via the Tenant registry, since a mounted
+    sub-app's own lifespan is never run by the ASGI server."""
     mitxonline_client.start()
-
-
-async def on_shutdown() -> None:
-    await mitxonline_client.aclose()
+    try:
+        yield
+    finally:
+        await mitxonline_client.aclose()
 
 
 def create_app() -> FastAPI:
@@ -68,6 +77,3 @@ def create_app() -> FastAPI:
     register_readiness_check(TENANT_NAME, mitxonline_client.check_reachable)
 
     return app
-
-
-app = create_app()
