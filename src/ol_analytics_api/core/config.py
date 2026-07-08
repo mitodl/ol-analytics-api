@@ -34,6 +34,29 @@ class CoreSettings(BaseSettings):
     starrocks_pool_min_size: int = 1
     starrocks_pool_max_size: int = 10
 
+    # DoS-surface bounds on the shared StarRocks pool. Without these a single
+    # heavy/hung query holds a pooled connection indefinitely; enough of them
+    # exhaust the fixed-size pool and every subsequent acquire — including the
+    # readiness ping() — blocks forever, cascading the whole pod out of
+    # rotation. See core/db/client.py.
+    #
+    # - acquire timeout: fail fast (surfaced as 503) instead of hanging when
+    #   the pool is saturated, so a caller — and the readiness probe — never
+    #   blocks on an exhausted pool.
+    # - query timeout: StarRocks server-side per-statement timeout (session
+    #   `query_timeout`, seconds), set on every connection. StarRocks aborts a
+    #   query exceeding it and frees the connection, bounding how long any one
+    #   query can hold a connection.
+    # - connect timeout: bound establishing a brand-new connection so a
+    #   slow/unreachable StarRocks can't wedge a pool fill.
+    # - pool recycle: drop and rebuild connections older than this so a
+    #   long-lived pool doesn't accumulate half-dead sockets (FE restarts,
+    #   load-balancer idle-reaping).
+    starrocks_pool_acquire_timeout_seconds: float = 5.0
+    starrocks_query_timeout_seconds: int = 30
+    starrocks_connect_timeout_seconds: float = 10.0
+    starrocks_pool_recycle_seconds: int = 3600
+
     # Vault Kubernetes-auth wiring for dynamic StarRocks credentials. Unset in
     # local dev, where STARROCKS_USER/STARROCKS_PASSWORD (no OL_ANALYTICS_API_
     # prefix, matching bin/starrocks-auth's --output env convention) are read

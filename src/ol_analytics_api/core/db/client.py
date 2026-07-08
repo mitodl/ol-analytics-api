@@ -13,6 +13,7 @@ different schemas over the same StarRocks cluster.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -20,6 +21,17 @@ from typing import Any
 import aiomysql
 
 from ol_analytics_api.core.config import settings
+
+
+class PoolAcquireTimeoutError(Exception):
+    """No StarRocks connection became free within
+    ``starrocks_pool_acquire_timeout_seconds`` — the pool is saturated.
+
+    Surfaced as HTTP 503 at the tenant-app boundary (see core/errors.py) so a
+    caller fails fast rather than hanging on an exhausted pool. Because
+    ping() acquires through the same path, this is also what keeps a
+    saturated pool from blocking the readiness probe indefinitely (which would
+    otherwise cascade the whole pod out of rotation)."""
 
 
 class StarRocksPool:
@@ -40,6 +52,17 @@ class StarRocksPool:
             maxsize=settings.starrocks_pool_max_size,
             autocommit=True,
             cursorclass=aiomysql.cursors.DictCursor,
+            # Bound new-connection establishment so a slow/unreachable
+            # StarRocks can't wedge a pool fill.
+            connect_timeout=settings.starrocks_connect_timeout_seconds,
+            # Recycle connections older than this to shed half-dead sockets.
+            pool_recycle=settings.starrocks_pool_recycle_seconds,
+            # Server-side per-statement timeout, set once per connection:
+            # StarRocks aborts any query running past `query_timeout` (seconds)
+            # and frees the connection, so a heavy or runaway query can't hold
+            # a pooled connection open indefinitely. The value is an int from
+            # validated settings — safe to splice.
+            init_command=f"SET query_timeout = {settings.starrocks_query_timeout_seconds}",
         )
 
     async def start(self, user: str, password: str) -> None:
@@ -66,11 +89,29 @@ class StarRocksPool:
 
     @asynccontextmanager
     async def cursor(self) -> AsyncIterator[aiomysql.cursors.DictCursor]:
-        if self._pool is None:
+        pool = self._pool
+        if pool is None:
             msg = "StarRocksPool.start() must be called before use"
             raise RuntimeError(msg)
-        async with self._pool.acquire() as conn, conn.cursor() as cur:
-            yield cur
+        # Bound the checkout: aiomysql's pool.acquire() waits forever on a
+        # saturated pool, so wrap it in a timeout that fails fast instead.
+        try:
+            conn = await asyncio.wait_for(
+                pool.acquire(), timeout=settings.starrocks_pool_acquire_timeout_seconds
+            )
+        except TimeoutError as exc:
+            msg = (
+                "Timed out acquiring a StarRocks connection after "
+                f"{settings.starrocks_pool_acquire_timeout_seconds}s (pool saturated)"
+            )
+            raise PoolAcquireTimeoutError(msg) from exc
+        try:
+            async with conn.cursor() as cur:
+                yield cur
+        finally:
+            # aiomysql's Pool.release is synchronous, not a coroutine —
+            # awaiting it raises TypeError and every checkout would fail.
+            pool.release(conn)
 
     async def fetch_all(self, query: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
         async with self.cursor() as cur:

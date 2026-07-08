@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
+from ol_analytics_api.core.errors import add_shared_error_handlers
 from ol_analytics_api.core.health import register_readiness_check
 from ol_analytics_api.tenants.b2b_dashboard.mitxonline_client import mitxonline_client
 from ol_analytics_api.tenants.b2b_dashboard.routers import admin, organizations
@@ -52,6 +53,11 @@ def create_app() -> FastAPI:
     )
     app.include_router(organizations.router)
     app.include_router(admin.router)
+
+    # Turn a saturated shared StarRocks pool into a fast 503 for this tenant's
+    # requests rather than a 500 (a mounted sub-app handles its own
+    # exceptions — a handler on the root app never sees these).
+    add_shared_error_handlers(app)
 
     # Exposes this tenant's live upstream dependency at its OWN readiness
     # sub-path (/health/readiness/b2b_dashboard/), for monitoring and

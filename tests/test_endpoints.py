@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from ol_analytics_api.core.db.client import PoolAcquireTimeoutError
 from ol_analytics_api.core.db.refresh_metadata import _clear_cache
 from ol_analytics_api.main import create_app
 
@@ -216,6 +217,121 @@ async def test_as_of_is_null_when_no_mv_has_refreshed(app):
             )
     assert response.status_code == 200
     assert response.json()["as_of"] is None
+
+
+async def test_org_endpoint_applies_default_pagination_to_query(app):
+    # A caller passing no page params still gets a bounded query — the whole
+    # point of the DoS fix: an unbounded grain can't be pulled whole.
+    captured = {}
+
+    async def fetch_all(query, params):
+        if "information_schema" in query:
+            return [{"as_of": _AS_OF}]
+        captured["query"] = query
+        captured["params"] = params
+        return []
+
+    with (
+        patch("ol_analytics_api.core.db.client.starrocks_pool.fetch_all", new=fetch_all),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                "/api/v1/analytics/organizations/org-a/content-engagement",
+                headers={"X-Userinfo": _manager_header("org-a")},
+            )
+    assert response.status_code == 200
+    assert "LIMIT %s OFFSET %s" in captured["query"]
+    assert "ORDER BY" in captured["query"]
+    # (org_slug, limit=default 100, offset=0)
+    assert captured["params"] == ("org-a", 100, 0)
+
+
+async def test_org_endpoint_honors_limit_and_offset(app):
+    captured = {}
+
+    async def fetch_all(query, params):
+        if "information_schema" in query:
+            return [{"as_of": _AS_OF}]
+        captured["params"] = params
+        return []
+
+    with (
+        patch("ol_analytics_api.core.db.client.starrocks_pool.fetch_all", new=fetch_all),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                "/api/v1/analytics/organizations/org-a/enrollment-funnel?limit=25&offset=50",
+                headers={"X-Userinfo": _manager_header("org-a")},
+            )
+    assert response.status_code == 200
+    assert captured["params"] == ("org-a", 25, 50)
+
+
+async def test_org_endpoint_rejects_out_of_range_limit(app):
+    # limit above max_page_size (1000) is a 422 before any query runs.
+    with patch(
+        "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+        new=AsyncMock(return_value=True),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                "/api/v1/analytics/organizations/org-a/content-engagement?limit=5000",
+                headers={"X-Userinfo": _manager_header("org-a")},
+            )
+    assert response.status_code == 422
+
+
+async def test_admin_endpoint_applies_pagination(app):
+    captured = {}
+
+    async def fetch_all(query, params):
+        if "information_schema" in query:
+            return [{"as_of": _AS_OF}]
+        captured["query"] = query
+        captured["params"] = params
+        return []
+
+    with patch("ol_analytics_api.core.db.client.starrocks_pool.fetch_all", new=fetch_all):
+        async with _client(app) as client:
+            response = await client.get(
+                "/api/v1/analytics/admin/contract-health?limit=10",
+                headers={"X-Userinfo": _admin_header()},
+            )
+    assert response.status_code == 200
+    assert "LIMIT %s OFFSET %s" in captured["query"]
+    assert captured["params"] == (10, 0)
+
+
+async def test_pool_saturation_returns_503(app):
+    # A saturated shared pool must fail fast as 503 for a tenant request, not
+    # bubble up as a 500.
+    async def fetch_all(query, _params):
+        if "information_schema" in query:
+            return [{"as_of": _AS_OF}]
+        msg = "pool saturated"
+        raise PoolAcquireTimeoutError(msg)
+
+    with (
+        patch("ol_analytics_api.core.db.client.starrocks_pool.fetch_all", new=fetch_all),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                "/api/v1/analytics/organizations/org-a/contract-utilization",
+                headers={"X-Userinfo": _manager_header("org-a")},
+            )
+    assert response.status_code == 503
 
 
 def _row_template() -> dict:
