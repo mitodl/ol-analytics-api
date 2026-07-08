@@ -132,3 +132,18 @@ def test_derived_referencing_primary_cohort_is_allowed():
         primary="total_enrolled_learners",
         derived={"avg_videos_per_learner": ("total_enrolled_learners",)},
     )
+
+
+def test_derived_mapping_is_not_mutable_after_construction():
+    # frozen=True only stops reassigning `derived`, not mutating a dict
+    # already stored in it — __post_init__ must defend against that too,
+    # since CohortPolicy instances are shared ClassVar state across
+    # requests.
+    source = {"avg_videos_per_learner": ("total_enrolled_learners",)}
+    policy = CohortPolicy(primary="total_enrolled_learners", derived=source)
+
+    source["sneaky"] = ("total_enrolled_learners",)
+    assert "sneaky" not in policy.derived
+
+    with pytest.raises(TypeError):
+        policy.derived["sneaky"] = ("total_enrolled_learners",)

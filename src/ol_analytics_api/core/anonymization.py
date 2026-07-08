@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any
 
 
@@ -68,6 +69,12 @@ class CohortPolicy:
                         "secondary cohorts."
                     )
                     raise ValueError(msg)
+        # `frozen=True` stops attribute *reassignment*, not mutation of a
+        # mutable object already stored in one — a plain dict handed in (or
+        # reused across CohortPolicy instances by a caller) could still be
+        # mutated in place afterwards. Copy into a read-only view so it
+        # can't be.
+        object.__setattr__(self, "derived", MappingProxyType(dict(self.derived)))
 
 
 def _is_disclosive(value: int | None, floor: int) -> bool:
