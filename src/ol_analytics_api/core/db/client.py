@@ -1,0 +1,90 @@
+"""Async connection pool for StarRocks over the MySQL wire protocol.
+
+StarRocks exposes a MySQL-compatible protocol on port 9030. The official
+`starrocks` Python connector wraps PyMySQL and is sync-only; `aiomysql`
+speaks the same wire protocol and provides a native asyncio pool, so it's
+used here to keep the service fully async.
+
+One pool, shared by every mounted tenant — each tenant's queries qualify
+their own schema (e.g. `b2b_analytics.mv_...`) rather than relying on a
+connection-level default database, since different tenants may read from
+different schemas over the same StarRocks cluster.
+"""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Any
+
+import aiomysql
+
+from ol_analytics_api.core.config import settings
+
+
+class StarRocksPool:
+    def __init__(self) -> None:
+        self._pool: aiomysql.Pool | None = None
+
+    @property
+    def is_started(self) -> bool:
+        return self._pool is not None
+
+    async def _create_pool(self, user: str, password: str) -> aiomysql.Pool:
+        return await aiomysql.create_pool(
+            host=settings.starrocks_host,
+            port=settings.starrocks_port,
+            user=user,
+            password=password,
+            minsize=settings.starrocks_pool_min_size,
+            maxsize=settings.starrocks_pool_max_size,
+            autocommit=True,
+            cursorclass=aiomysql.cursors.DictCursor,
+        )
+
+    async def start(self, user: str, password: str) -> None:
+        self._pool = await self._create_pool(user, password)
+
+    async def stop(self) -> None:
+        if self._pool is None:
+            return
+        self._pool.close()
+        await self._pool.wait_closed()
+        self._pool = None
+
+    async def rotate(self, user: str, password: str) -> None:
+        """Swap in a new pool built from fresh credentials, then close the
+        old one. Used to move off Vault-issued credentials before their
+        lease expires — see main.py's background refresh loop. New queries
+        start using the new pool immediately; connections already checked
+        out of the old pool finish naturally before it closes."""
+        new_pool = await self._create_pool(user, password)
+        old_pool, self._pool = self._pool, new_pool
+        if old_pool is not None:
+            old_pool.close()
+            await old_pool.wait_closed()
+
+    @asynccontextmanager
+    async def cursor(self) -> AsyncIterator[aiomysql.cursors.DictCursor]:
+        if self._pool is None:
+            msg = "StarRocksPool.start() must be called before use"
+            raise RuntimeError(msg)
+        async with self._pool.acquire() as conn, conn.cursor() as cur:
+            yield cur
+
+    async def fetch_all(self, query: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+        async with self.cursor() as cur:
+            await cur.execute(query, params)
+            return list(await cur.fetchall())
+
+    async def ping(self) -> None:
+        # No self._pool-is-None special case here — cursor() already raises
+        # a clear RuntimeError in that case, which is exactly the "not
+        # ready" signal a health check should propagate as a failure, not
+        # silently swallow into a falsy-but-still-200 response.
+        async with self.cursor() as cur:
+            await cur.execute("SELECT 1")
+            await cur.fetchone()
+
+
+starrocks_pool = StarRocksPool()

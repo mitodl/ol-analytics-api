@@ -1,0 +1,105 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ol-analytics-api
+  namespace: ol-analytics
+  labels:
+    app: ol-analytics-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ol-analytics-api
+  template:
+    metadata:
+      labels:
+        app: ol-analytics-api
+    spec:
+      # serviceAccountName must be bound to a Vault Kubernetes-auth role via
+      # OLEKSAuthBinding (ol-infrastructure) with read access to
+      # {vault_starrocks_mount}/creds/app — provisioned alongside this
+      # Deployment in the infra repo, not here.
+      serviceAccountName: ol-analytics-api
+      containers:
+        - name: ol-analytics-api
+          image: mitodl/ol-analytics-api:CI_COMMIT_SHORT_SHA
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: OL_ANALYTICS_API_ENVIRONMENT
+              value: "production"
+            - name: OL_ANALYTICS_API_VAULT_ADDR
+              value: "https://vault.qa.odl.mit.edu" # per-env override at deploy time
+            - name: OL_ANALYTICS_API_VAULT_ROLE
+              value: "ol-analytics-api"
+            - name: OL_ANALYTICS_API_VAULT_K8S_MOUNT
+              value: "k8s-data-qa" # per-env override at deploy time
+            - name: OL_ANALYTICS_API_VAULT_STARROCKS_MOUNT
+              value: "database-starrocks-qa" # per-env override at deploy time
+            # --- observability: bare (unprefixed) env vars, matching the
+            # cross-service convention shared with mitxonline/mit_learn/learn_ai
+            # (see ol-infrastructure's applications/{those}/Pulumi.*.yaml) ---
+            - name: LOG_LEVEL
+              value: "INFO"
+            - name: DEBUG
+              value: "false"
+            - name: OPENTELEMETRY_SERVICE_NAME
+              value: "ol-analytics-api"
+            - name: OPENTELEMETRY_ENDPOINT
+              value: "http://grafana-k8s-monitoring-alloy-receiver.grafana.svc.cluster.local:4318/v1/traces"
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "http/protobuf"
+            - name: OTEL_TRACES_SAMPLER
+              value: "parentbased_traceidratio"
+            - name: OTEL_TRACES_SAMPLER_ARG
+              value: "0.25"
+            - name: OTEL_PROPAGATORS
+              value: "tracecontext,baggage"
+            - name: OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT
+              value: "128"
+            # GIT_SHA and HOSTNAME are substituted by the real Pulumi wiring
+            # (ol-infrastructure's merge_otel_resource_attributes()), not this
+            # static file — see k8s/README.md.
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "deployment.environment=production,service.namespace=ol-analytics,service.version=${GIT_SHA:-unknown},service.instance.id=${HOSTNAME}"
+            # SENTRY_DSN comes from a Vault secret at deploy time — omitted here.
+            - name: SENTRY_LOG_LEVEL
+              value: "ERROR"
+            - name: SENTRY_TRACES_SAMPLE_RATE
+              value: "0.001"
+            - name: SENTRY_PROFILES_SAMPLE_RATE
+              value: "0.1"
+          # Probe paths match ol-infrastructure's shared OLApplicationK8s
+          # component exactly (components/services/k8s.py) — every service in
+          # this org exposes these same three tiers.
+          startupProbe:
+            httpGet:
+              path: /health/startup/
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 12
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /health/readiness/
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            failureThreshold: 3
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /health/liveness/
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
