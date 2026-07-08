@@ -43,5 +43,14 @@ class B2BDashboardSettings(BaseSettings):
     # suppressed from API responses entirely (see Verification & QA epic).
     anonymization_floor: int = 5
 
+    # Pagination bounds on every list endpoint. The org-scoped grains
+    # (content-engagement, enrollment-funnel) are otherwise unbounded — a
+    # large org would load its whole result set into a memory-limited pod,
+    # suppress in Python, and serialize it. Every endpoint LIMITs to
+    # default_page_size (client-overridable up to max_page_size) so no single
+    # request can pull an unbounded result (see the DoS-surface task).
+    default_page_size: int = 100
+    max_page_size: int = 1000
+
 
 settings = B2BDashboardSettings()
