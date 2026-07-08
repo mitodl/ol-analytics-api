@@ -142,6 +142,8 @@ async def _refresh_starrocks_credentials_forever(initial_lease_duration: int) ->
                 msg = "Vault refresh returned no lease_duration"
                 raise RuntimeError(msg)  # noqa: TRY301
             await starrocks_pool.rotate(user, password)
+        except asyncio.CancelledError:
+            raise
         except Exception:
             log.exception("Failed to refresh StarRocks Vault credentials; will retry")
             sleep_for = _CREDENTIAL_REFRESH_RETRY_SECONDS
@@ -153,27 +155,38 @@ async def _refresh_starrocks_credentials_forever(initial_lease_duration: int) ->
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     user, password, lease_duration = await _resolve_starrocks_credentials()
-    await starrocks_pool.start(user, password)
-    for tenant in TENANTS:
-        if tenant.on_startup is not None:
-            await tenant.on_startup()
 
-    refresh_task = (
-        asyncio.create_task(_refresh_starrocks_credentials_forever(lease_duration))
-        if lease_duration is not None
-        else None
-    )
+    # Startup happens inside the same try/finally as the yield so a partial
+    # failure (pool starts but a tenant's on_startup() raises) still tears
+    # down whatever did start, instead of leaking the pool/tenant resources
+    # that got past their own step.
+    pool_started = False
+    started_tenants: list[Tenant] = []
+    refresh_task: asyncio.Task[None] | None = None
     try:
+        await starrocks_pool.start(user, password)
+        pool_started = True
+        for tenant in TENANTS:
+            if tenant.on_startup is not None:
+                await tenant.on_startup()
+            started_tenants.append(tenant)
+
+        refresh_task = (
+            asyncio.create_task(_refresh_starrocks_credentials_forever(lease_duration))
+            if lease_duration is not None
+            else None
+        )
         yield
     finally:
         if refresh_task is not None:
             refresh_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await refresh_task
-        for tenant in TENANTS:
+        for tenant in reversed(started_tenants):
             if tenant.on_shutdown is not None:
                 await tenant.on_shutdown()
-        await starrocks_pool.stop()
+        if pool_started:
+            await starrocks_pool.stop()
 
 
 def create_app() -> FastAPI:

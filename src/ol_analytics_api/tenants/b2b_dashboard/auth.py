@@ -41,7 +41,16 @@ async def require_org_manager(
         is_manager = sub is not None and await mitxonline_client.is_org_manager(
             sub, org_slug, raw_header
         )
-    except httpx.HTTPError as exc:
+    except httpx.HTTPStatusError as exc:
+        # MITx Online responded with an error status — a real upstream
+        # problem (misconfigured client credentials, a 500 on their side),
+        # not a network outage, so it gets its own status rather than being
+        # folded into "unreachable".
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Could not verify organization-manager status: MITx Online returned an error",
+        ) from exc
+    except httpx.RequestError as exc:
         # A network-level failure talking to MITx Online is not the caller's
         # fault — surface it as an upstream-unavailable error, not a bare 500.
         raise HTTPException(

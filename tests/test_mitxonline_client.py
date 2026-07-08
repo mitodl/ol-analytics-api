@@ -80,3 +80,26 @@ async def test_require_org_manager_returns_503_not_raw_500_when_mitxonline_unrea
         await require_org_manager("my-org", request, userinfo)
 
     assert exc_info.value.status_code == 503
+
+
+async def test_require_org_manager_returns_502_when_mitxonline_returns_error_status():
+    userinfo = {"organization": {"my-org": {"id": "some-id"}}, "sub": "user-x"}
+    request = SimpleNamespace(headers={"X-Userinfo": "fake-header"})
+    upstream_response = httpx.Response(
+        500, request=httpx.Request("GET", "https://mitxonline.example.test")
+    )
+
+    with (
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(
+                side_effect=httpx.HTTPStatusError(
+                    "server error", request=upstream_response.request, response=upstream_response
+                )
+            ),
+        ),
+        pytest.raises(HTTPException) as exc_info,
+    ):
+        await require_org_manager("my-org", request, userinfo)
+
+    assert exc_info.value.status_code == 502
