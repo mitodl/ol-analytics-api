@@ -3,8 +3,18 @@
 Multi-tenant, read-only FastAPI analytics gateway over StarRocks. Each
 consumer of this service is a **tenant**: an independent FastAPI sub-app
 with its own routes, auth/governance model, and OpenAPI docs, mounted onto
-one root app. Tenants share only the underlying StarRocks connection pool —
-nothing else.
+one root app. Tenants share no application state — routers, auth, config,
+and suppression policy are all per-tenant.
+
+They do, however, currently share one StarRocks connection pool, and that
+pool authenticates as a single DB identity (the `app` Vault role) with one
+privilege set. So "tenant" is today an **application-layer** boundary, not a
+database-enforced one: nothing at the StarRocks level stops one tenant's
+queries from reading another tenant's schema — only the app-layer routing and
+each tenant's own `starrocks_schema` do. Making `tenant` a real security
+boundary (per-tenant Vault role / StarRocks user with schema-scoped grants,
+and per-tenant pools here) is tracked as follow-up work; see the
+tenant-isolation task in the architecture-review epic.
 
 The first tenant is `b2b_dashboard`: aggregated (no individual learner PII)
 B2B site-license analytics — contract utilization, enrollment/completion
@@ -58,27 +68,27 @@ src/ol_analytics_api/
 
 A new consumer — a different internal tool, a partner integration, a public
 read-only feed — gets its own package under `tenants/`, following the same
-shape as `b2b_dashboard/`: an `app.py` exposing a `FastAPI()` instance, its
+shape as `b2b_dashboard/`: an `app.py` exposing a `create_app()` factory, its
 own `config.py`/`auth.py`/`routers/`. It can define completely different
 auth (API keys, no auth, a different Keycloak realm role), a different
 StarRocks schema, and its own suppression policy — none of that is shared
-state. Wire it up with one entry in `main.py`'s `TENANTS` list — a `Tenant`
-also carries optional `on_startup`/`on_shutdown` hooks, since a mounted
-sub-app's own `lifespan=` is never invoked by the ASGI server (only the
-root app's is), so tenant-owned resources (e.g. an httpx client) start up
-and shut down via hooks the root lifespan calls explicitly:
+state. Wire it up with one entry in `main.py`'s `TENANTS` list:
 
 ```python
 TENANTS: list[Tenant] = [
-    Tenant(
-        "/api/v1/analytics",
-        b2b_dashboard.app,
-        on_startup=b2b_dashboard.on_startup,
-        on_shutdown=b2b_dashboard.on_shutdown,
-    ),
-    Tenant("/api/v1/<new-tenant>", new_tenant.app),
+    Tenant("/api/v1/analytics", b2b_dashboard.create_app, b2b_dashboard.lifespan),
+    Tenant("/api/v1/<new-tenant>", new_tenant.create_app),
 ]
 ```
+
+A `Tenant` takes a `create_app` *factory* (not a pre-built instance) so the
+root app constructs every sub-app after OpenTelemetry is configured — a
+tenant is instrumented regardless of import order. If the tenant owns
+resources that need startup/shutdown (e.g. an httpx client), it exposes them
+as an ordinary `lifespan` context manager and passes it as the third
+argument: a mounted sub-app's own `lifespan=` is never invoked by the ASGI
+server (only the root app's is), so the root lifespan enters each tenant's
+explicitly.
 
 Each tenant gets independent OpenAPI docs at `<mount-path>/docs`.
 

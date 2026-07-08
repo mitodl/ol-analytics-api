@@ -65,6 +65,12 @@ class CoreSettings(BaseSettings):
     vault_role: str = ""
     vault_k8s_mount: str = ""
     vault_starrocks_mount: str = ""
+    # StarRocks credential role every tenant's queries run as. This is a single
+    # shared DB identity with one privilege set — so it is NOT a per-tenant
+    # security boundary: DB-level tenant isolation (a per-tenant role with
+    # schema-scoped grants, plus per-tenant pools) is follow-up work that also
+    # spans the Vault/StarRocks GRANT config in ol-infrastructure /
+    # ol-data-platform. See the tenant-isolation architecture-review task.
     vault_starrocks_credential_role: str = "app"
 
     # Observability — bare env var names matching the OTel/Sentry convention

@@ -23,6 +23,45 @@ from sqlmodel import SQLModel
 
 from ol_analytics_api.core.anonymization import CohortPolicy, suppress_small_cohorts
 from ol_analytics_api.core.db.client import starrocks_pool
+from ol_analytics_api.core.db.identifiers import validate_sql_identifier
+
+
+def build_select(
+    schema: str,
+    table: str,
+    model_cls: type[SQLModel],
+    *,
+    filter_column: str | None = None,
+    order_by: tuple[str, ...],
+) -> str:
+    """Build a paginated ``SELECT`` projecting exactly ``model_cls``'s columns.
+
+    This is the *single* place identifiers are spliced into SQL in this
+    service. StarRocks can't parameterize identifiers, so schema, table,
+    projected column, filter-column, and order-by names are interpolated — but
+    every one is first run through ``validate_sql_identifier``, so the returned
+    string provably contains nothing but validated identifiers and ``%s``
+    placeholders. Row *values* (the filter value, LIMIT, OFFSET) are always
+    bound params, never spliced. Collapsing the previous per-endpoint
+    ``SELECT * ... # noqa: S608`` lines into this one construct means there is
+    exactly one identifier-splicing site to review, not one per endpoint.
+
+    Projecting the model's own fields instead of ``SELECT *`` also makes the
+    query<->model column contract explicit (see the schema-drift task): a
+    column dbt adds but the model doesn't mirror is simply not selected, and a
+    column dbt drops surfaces as a query error naming that column, rather than
+    ``SELECT *`` silently feeding an unexpected column set into a strict model.
+    """
+    if not order_by:
+        msg = "order_by must contain at least one column for deterministic pagination"
+        raise ValueError(msg)
+    columns = ", ".join(validate_sql_identifier(name) for name in model_cls.model_fields)
+    schema_table = f"{validate_sql_identifier(schema)}.{validate_sql_identifier(table)}"
+    order = ", ".join(validate_sql_identifier(column) for column in order_by)
+    where = f" WHERE {validate_sql_identifier(filter_column)} = %s" if filter_column else ""
+    # The single S608 suppression in the service: justified because every
+    # interpolated token above is a validate_sql_identifier'd identifier.
+    return f"SELECT {columns} FROM {schema_table}{where} ORDER BY {order} LIMIT %s OFFSET %s"  # noqa: S608
 
 
 class SuppressibleModel(Protocol):
