@@ -109,7 +109,9 @@ class StarRocksPool:
             async with conn.cursor() as cur:
                 yield cur
         finally:
-            await pool.release(conn)
+            # aiomysql's Pool.release is synchronous, not a coroutine —
+            # awaiting it raises TypeError and every checkout would fail.
+            pool.release(conn)
 
     async def fetch_all(self, query: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
         async with self.cursor() as cur:

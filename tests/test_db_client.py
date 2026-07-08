@@ -102,10 +102,10 @@ async def test_cursor_releases_connection_back_to_pool():
 
     fake_pool = MagicMock()
     fake_pool.acquire = AsyncMock(return_value=conn)
-    fake_pool.release = AsyncMock()
+    fake_pool.release = MagicMock()
 
     pool = StarRocksPool()
     pool._pool = fake_pool  # noqa: SLF001
     async with pool.cursor():
         pass
-    fake_pool.release.assert_awaited_once_with(conn)
+    fake_pool.release.assert_called_once_with(conn)
