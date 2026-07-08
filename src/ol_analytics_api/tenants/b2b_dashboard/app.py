@@ -30,6 +30,9 @@ from ol_analytics_api.core.health import register_readiness_check
 from ol_analytics_api.tenants.b2b_dashboard.mitxonline_client import mitxonline_client
 from ol_analytics_api.tenants.b2b_dashboard.routers import admin, organizations
 
+# Names this tenant's readiness sub-path (/health/readiness/b2b_dashboard/).
+TENANT_NAME = "b2b_dashboard"
+
 
 async def on_startup() -> None:
     mitxonline_client.start()
@@ -50,11 +53,13 @@ def create_app() -> FastAPI:
     app.include_router(organizations.router)
     app.include_router(admin.router)
 
-    # Wires this tenant's live upstream dependency into the shared
-    # /health/readiness/ — an unreachable MITx Online means requests behind
-    # require_org_manager will fail, so the pod should be pulled from
-    # rotation rather than silently reporting healthy.
-    register_readiness_check(mitxonline_client.check_reachable)
+    # Exposes this tenant's live upstream dependency at its OWN readiness
+    # sub-path (/health/readiness/b2b_dashboard/), for monitoring and
+    # per-tenant routing. Scoped to this tenant on purpose: an unreachable
+    # MITx Online fails only requests behind require_org_manager here, so it
+    # must not be able to fail the shared /health/readiness/ probe and pull
+    # the whole pod — that would take down every other tenant mounted on it.
+    register_readiness_check(TENANT_NAME, mitxonline_client.check_reachable)
 
     return app
 
