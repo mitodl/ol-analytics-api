@@ -10,7 +10,30 @@ from __future__ import annotations
 
 import datetime
 
+from pydantic import BaseModel
 from sqlmodel import SQLModel
+
+
+class OrgAnalyticsResponse[RowT: SQLModel](BaseModel):
+    """Envelope for every org-scoped endpoint.
+
+    ``as_of`` is the last MV-refresh time (None until the first refresh
+    finishes); the dashboard displays it so a manager knows how fresh the
+    numbers are. ``data`` is post-suppression — a manager-authorized org
+    with no (or only sub-floor) rows returns ``data: []``, not a 404.
+    """
+
+    organization_key: str
+    as_of: datetime.datetime | None
+    data: list[RowT]
+
+
+class AdminAnalyticsResponse[RowT: SQLModel](BaseModel):
+    """Envelope for admin endpoints, which span all orgs — so no single
+    ``organization_key`` applies (see Analytics API Endpoints epic)."""
+
+    as_of: datetime.datetime | None
+    data: list[RowT]
 
 
 class ContractUtilization(SQLModel):
