@@ -35,7 +35,7 @@ src/ol_analytics_api/
     db/vault_credentials.py    # dynamic StarRocks creds via Vault K8s auth
     db/identifiers.py          # SQL-identifier validation for schema names spliced into queries
     auth/userinfo.py           # generic X-Userinfo decode (APISIX forwards this to every tenant)
-    anonymization.py           # generic k-anonymity-style row suppression, floor is a tenant param
+    anonymization.py           # k-anonymity floor per model CohortPolicy: drop sub-floor rows, null sub-floor secondary counts + derivatives
     observability/
       processors.py             # structlog trace_id/span_id + k8s pod/namespace injection
       logging.py                 # structlog config: JSON in prod, console in dev

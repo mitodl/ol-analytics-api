@@ -41,7 +41,6 @@ async def contract_health(
         " ORDER BY organization_key, contract_pk LIMIT %s OFFSET %s",
         (page.limit, page.offset),
         MitAdminContractHealth,
-        "seats_consumed",
         settings.anonymization_floor,
     )
     return AdminAnalyticsResponse(
