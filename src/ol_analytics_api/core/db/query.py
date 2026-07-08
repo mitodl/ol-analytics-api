@@ -52,6 +52,9 @@ def build_select(
     column dbt drops surfaces as a query error naming that column, rather than
     ``SELECT *`` silently feeding an unexpected column set into a strict model.
     """
+    if not order_by:
+        msg = "order_by must contain at least one column for deterministic pagination"
+        raise ValueError(msg)
     columns = ", ".join(validate_sql_identifier(name) for name in model_cls.model_fields)
     schema_table = f"{validate_sql_identifier(schema)}.{validate_sql_identifier(table)}"
     order = ", ".join(validate_sql_identifier(column) for column in order_by)

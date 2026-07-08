@@ -13,6 +13,8 @@ and by running the built Docker image, which is what actually caught it).
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -22,7 +24,7 @@ from ol_analytics_api.main import Tenant, create_app, lifespan
 from ol_analytics_api.tenants.b2b_dashboard.mitxonline_client import mitxonline_client
 
 
-async def test_tenant_on_startup_and_on_shutdown_actually_run(monkeypatch):
+async def test_tenant_lifespan_actually_runs(monkeypatch):
     monkeypatch.setenv("STARROCKS_USER", "test")
     monkeypatch.setenv("STARROCKS_PASSWORD", "test")
     app = create_app()
@@ -32,36 +34,44 @@ async def test_tenant_on_startup_and_on_shutdown_actually_run(monkeypatch):
     ):
         assert mitxonline_client._client is None  # noqa: SLF001
         async with LifespanManager(app):
-            # b2b_dashboard.on_startup() calls mitxonline_client.start() —
-            # if main.py's lifespan didn't call it (the bug this test
-            # guards against), _client would still be None here.
+            # b2b_dashboard.lifespan()'s startup half calls
+            # mitxonline_client.start() — if main.py's root lifespan didn't
+            # enter it (the bug this test guards against), _client would
+            # still be None here.
             assert mitxonline_client._client is not None  # noqa: SLF001
-        # on_shutdown() closes it back down.
+        # The shutdown half closes it back down.
         assert mitxonline_client._client is None  # noqa: SLF001
 
 
 async def test_partial_tenant_startup_failure_still_stops_pool():
     """Regression test: if starrocks_pool.start() succeeds but a later
-    tenant's on_startup() raises, the pool — and any tenant that did start
-    — must still be torn down, not abandoned because the failure happened
-    before the yield's try/finally."""
+    tenant's lifespan raises entering it, the pool — and any tenant lifespan
+    that did start — must still be torn down via AsyncExitStack's unwind,
+    not abandoned because the failure happened before the yield."""
     started: list[str] = []
     shut_down: list[str] = []
 
-    async def ok_startup() -> None:
+    @asynccontextmanager
+    async def ok_lifespan(_app: object):
         started.append("ok")
+        try:
+            yield
+        finally:
+            shut_down.append("ok")
 
-    async def ok_shutdown() -> None:
-        shut_down.append("ok")
-
-    async def failing_startup() -> None:
+    @asynccontextmanager
+    async def failing_lifespan(_app: object):
         msg = "boom"
         raise RuntimeError(msg)
+        yield  # unreachable, but keeps this an async generator
 
     fake_tenants = [
-        Tenant("/ok", app=object(), on_startup=ok_startup, on_shutdown=ok_shutdown),
-        Tenant("/broken", app=object(), on_startup=failing_startup),
+        Tenant("/ok", create_app=object, lifespan=ok_lifespan),
+        Tenant("/broken", create_app=object, lifespan=failing_lifespan),
     ]
+    root_app = SimpleNamespace(
+        state=SimpleNamespace(tenant_apps={"/ok": object(), "/broken": object()})
+    )
 
     with (
         patch("ol_analytics_api.main.TENANTS", fake_tenants),
@@ -75,7 +85,7 @@ async def test_partial_tenant_startup_failure_still_stops_pool():
         patch("ol_analytics_api.core.db.client.starrocks_pool.stop", new=AsyncMock()) as pool_stop,
         pytest.raises(RuntimeError, match="boom"),
     ):
-        async with lifespan(None):
+        async with lifespan(root_app):
             pass
 
     pool_start.assert_awaited_once()

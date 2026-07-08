@@ -103,3 +103,15 @@ def test_projected_columns_are_all_safe_identifiers(case):
     # interpolates is a validated identifier, nothing free-form.
     for column in _projected_columns(case.query):
         assert validate_sql_identifier(column) == column
+
+
+def test_build_select_rejects_empty_order_by():
+    # An empty order_by would emit "ORDER BY  LIMIT ..." — a SQL syntax
+    # error — and deterministic pagination requires an ordering anyway.
+    with pytest.raises(ValueError, match="order_by must contain at least one column"):
+        build_select(
+            "b2b_analytics",
+            "some_mv",
+            MitAdminContractHealth,
+            order_by=(),
+        )
