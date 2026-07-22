@@ -1,6 +1,6 @@
 [project]
 name = "ol-analytics-api"
-version = "0.1.0"
+version = "2026.7.22.1"
 description = "Read-only FastAPI service serving aggregated B2B site-license analytics to MIT Learn from StarRocks materialized views."
 requires-python = ">=3.12"
 dependencies = [
@@ -80,3 +80,32 @@ plugins = ["pydantic.mypy"]
 [[tool.mypy.overrides]]
 module = ["aiomysql", "aiomysql.*"]
 ignore_missing_imports = true
+
+[tool.bumpversion]
+current_version = "2026.7.22.1"
+commit = false
+tag = false
+parse = "(?P<release>(?:[1-9][0-9]{3})\\.(?:1[0-2]|[1-9])\\.(?:3[0-1]|[12][0-9]|[1-9]))\\.(?P<build>\\d+)"
+serialize = ["{release}.{build}"]
+
+[tool.bumpversion.parts.release]
+calver_format = "{YYYY}.{MM}.{DD}"
+
+[tool.bumpversion.parts.build]
+first_value = "1"
+
+[[tool.bumpversion.files]]
+filename = "pyproject.toml"
+search = 'version = "{current_version}"'
+replace = 'version = "{new_version}"'
+
+[[tool.bumpversion.files]]
+filename = "uv.lock"
+search = """
+name = "ol-analytics-api"
+version = "{current_version}"
+source = {{ editable = "." }}"""
+replace = """
+name = "ol-analytics-api"
+version = "{new_version}"
+source = {{ editable = "." }}"""

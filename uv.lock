@@ -595,7 +595,7 @@ wheels = [
 
 [[package]]
 name = "ol-analytics-api"
-version = "0.1.0"
+version = "2026.7.22.1"
 source = { editable = "." }
 dependencies = [
     { name = "aiomysql" },
