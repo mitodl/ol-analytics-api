@@ -26,8 +26,17 @@ def _userinfo_header(payload: dict) -> str:
     return base64.b64encode(json.dumps(payload).encode()).decode()
 
 
-def _manager_header(org_slug: str) -> str:
-    return _userinfo_header({"sub": "kc-uuid-1", "organization": {org_slug: {"id": "o1"}}})
+# The Keycloak org UUID (sso_organization_id) that require_org_manager matches on.
+ORG_A_ID = "11111111-1111-1111-1111-111111111111"
+OTHER_ORG_ID = "22222222-2222-2222-2222-222222222222"
+
+
+def _manager_header(organization_id: str) -> str:
+    # The `organization` claim is keyed by org alias; the org UUID rides in the
+    # value's `id` (Keycloak addOrganizationId mapper), which is what auth matches.
+    return _userinfo_header(
+        {"sub": "kc-uuid-1", "organization": {"an-alias": {"id": organization_id}}}
+    )
 
 
 def _admin_header() -> str:
@@ -98,13 +107,13 @@ async def test_org_endpoint_returns_envelope_and_suppresses_small_cohorts(app):
     ):
         async with _client(app) as client:
             response = await client.get(
-                "/api/v1/analytics/organizations/org-a/contract-utilization",
-                headers={"X-Userinfo": _manager_header("org-a")},
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/contract-utilization",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
             )
 
     assert response.status_code == 200
     body = response.json()
-    assert body["organization_key"] == "org-a"
+    assert body["organization_id"] == ORG_A_ID
     assert body["as_of"].startswith("2026-07-02T04:00:00")
     # The sub-floor contract_pk=2 row is suppressed; only contract_pk=1 remains.
     assert [row["contract_pk"] for row in body["data"]] == [1]
@@ -144,8 +153,8 @@ async def test_content_engagement_suppresses_secondary_counts_and_derivatives(ap
     ):
         async with _client(app) as client:
             response = await client.get(
-                "/api/v1/analytics/organizations/org-a/content-engagement",
-                headers={"X-Userinfo": _manager_header("org-a")},
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/content-engagement",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
             )
     assert response.status_code == 200
     (data,) = response.json()["data"]
@@ -181,8 +190,8 @@ async def test_org_endpoint_403_for_member_who_is_not_a_manager(app):
     ):
         async with _client(app) as client:
             response = await client.get(
-                "/api/v1/analytics/organizations/org-a/contract-utilization",
-                headers={"X-Userinfo": _manager_header("org-a")},
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/contract-utilization",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
             )
     assert response.status_code == 403
 
@@ -192,8 +201,8 @@ async def test_org_endpoint_403_for_non_member(app):
     # before ever reaching the MITx Online manager round-trip.
     async with _client(app) as client:
         response = await client.get(
-            "/api/v1/analytics/organizations/org-a/contract-utilization",
-            headers={"X-Userinfo": _manager_header("some-other-org")},
+            f"/api/v1/analytics/organizations/{ORG_A_ID}/contract-utilization",
+            headers={"X-Userinfo": _manager_header(OTHER_ORG_ID)},
         )
     assert response.status_code == 403
     assert "Not a member" in response.json()["detail"]
@@ -212,12 +221,12 @@ async def test_org_endpoint_authorized_but_empty_returns_empty_data_not_404(app)
     ):
         async with _client(app) as client:
             response = await client.get(
-                "/api/v1/analytics/organizations/org-a/enrollment-funnel",
-                headers={"X-Userinfo": _manager_header("org-a")},
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/enrollment-funnel",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
             )
     assert response.status_code == 200
     body = response.json()
-    assert body["organization_key"] == "org-a"
+    assert body["organization_id"] == ORG_A_ID
     assert body["data"] == []
     assert body["as_of"].startswith("2026-07-02T04:00:00")
 
@@ -251,7 +260,7 @@ async def test_admin_endpoint_envelope_has_no_organization_key(app):
             )
     assert response.status_code == 200
     body = response.json()
-    assert "organization_key" not in body
+    assert "organization_id" not in body
     assert body["as_of"].startswith("2026-07-02T04:00:00")
     assert len(body["data"]) == 1
 
@@ -260,7 +269,7 @@ async def test_admin_endpoint_403_without_realm_role(app):
     async with _client(app) as client:
         response = await client.get(
             "/api/v1/analytics/admin/contract-health",
-            headers={"X-Userinfo": _manager_header("org-a")},  # no admin realm role
+            headers={"X-Userinfo": _manager_header(ORG_A_ID)},  # no admin realm role
         )
     assert response.status_code == 403
 
@@ -280,8 +289,8 @@ async def test_as_of_is_null_when_no_mv_has_refreshed(app):
     ):
         async with _client(app) as client:
             response = await client.get(
-                "/api/v1/analytics/organizations/org-a/program-funnel",
-                headers={"X-Userinfo": _manager_header("org-a")},
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/program-funnel",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
             )
     assert response.status_code == 200
     assert response.json()["as_of"] is None
@@ -308,14 +317,14 @@ async def test_org_endpoint_applies_default_pagination_to_query(app):
     ):
         async with _client(app) as client:
             response = await client.get(
-                "/api/v1/analytics/organizations/org-a/content-engagement",
-                headers={"X-Userinfo": _manager_header("org-a")},
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/content-engagement",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
             )
     assert response.status_code == 200
     assert "LIMIT %s OFFSET %s" in captured["query"]
     assert "ORDER BY" in captured["query"]
-    # (org_slug, limit=default 100, offset=0)
-    assert captured["params"] == ("org-a", 100, 0)
+    # (organization_id, limit=default 100, offset=0)
+    assert captured["params"] == (ORG_A_ID, 100, 0)
 
 
 async def test_org_endpoint_honors_limit_and_offset(app):
@@ -336,11 +345,11 @@ async def test_org_endpoint_honors_limit_and_offset(app):
     ):
         async with _client(app) as client:
             response = await client.get(
-                "/api/v1/analytics/organizations/org-a/enrollment-funnel?limit=25&offset=50",
-                headers={"X-Userinfo": _manager_header("org-a")},
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/enrollment-funnel?limit=25&offset=50",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
             )
     assert response.status_code == 200
-    assert captured["params"] == ("org-a", 25, 50)
+    assert captured["params"] == (ORG_A_ID, 25, 50)
 
 
 async def test_org_endpoint_rejects_out_of_range_limit(app):
@@ -351,8 +360,8 @@ async def test_org_endpoint_rejects_out_of_range_limit(app):
     ):
         async with _client(app) as client:
             response = await client.get(
-                "/api/v1/analytics/organizations/org-a/content-engagement?limit=5000",
-                headers={"X-Userinfo": _manager_header("org-a")},
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/content-engagement?limit=5000",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
             )
     assert response.status_code == 422
 
@@ -396,8 +405,8 @@ async def test_pool_saturation_returns_503(app):
     ):
         async with _client(app) as client:
             response = await client.get(
-                "/api/v1/analytics/organizations/org-a/contract-utilization",
-                headers={"X-Userinfo": _manager_header("org-a")},
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/contract-utilization",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
             )
     assert response.status_code == 503
 

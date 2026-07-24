@@ -32,14 +32,14 @@ class OrgAnalyticsResponse[RowT: SQLModel](BaseModel):
     with no (or only sub-floor) rows returns ``data: []``, not a 404.
     """
 
-    organization_key: str
+    organization_id: str
     as_of: datetime.datetime | None
     data: list[RowT]
 
 
 class AdminAnalyticsResponse[RowT: SQLModel](BaseModel):
     """Envelope for admin endpoints, which span all orgs — so no single
-    ``organization_key`` applies (see Analytics API Endpoints epic)."""
+    ``organization_id`` applies (see Analytics API Endpoints epic)."""
 
     as_of: datetime.datetime | None
     data: list[RowT]

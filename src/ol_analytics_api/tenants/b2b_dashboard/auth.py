@@ -24,22 +24,27 @@ UserInfo = Annotated[dict[str, Any], Depends(get_userinfo)]
 
 
 async def require_org_manager(
-    org_slug: str,
+    organization_id: str,
     request: Request,
     userinfo: UserInfo,
 ) -> dict[str, Any]:
+    # `organization_id` is the Keycloak organization UUID (sso_organization_id) --
+    # the one identifier stable across the JWT, MITx Online, and StarRocks.
+    # Membership: the JWT `organization` claim is keyed by org *alias*, but each
+    # value carries the org UUID via `id` (addOrganizationId mapper), so match on
+    # the value's id rather than the dict key.
     orgs = userinfo.get("organization", {})
-    if org_slug not in orgs:
+    if not any(isinstance(org, dict) and org.get("id") == organization_id for org in orgs.values()):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Not a member of organization '{org_slug}'",
+            detail=f"Not a member of organization '{organization_id}'",
         )
 
     sub = userinfo.get("sub")
     raw_header = request.headers.get("X-Userinfo", "")
     try:
         is_manager = sub is not None and await mitxonline_client.is_org_manager(
-            sub, org_slug, raw_header
+            sub, organization_id, raw_header
         )
     except httpx.HTTPStatusError as exc:
         # MITx Online responded with an error status — a real upstream
@@ -61,7 +66,7 @@ async def require_org_manager(
     if not is_manager:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Not a manager of organization '{org_slug}'",
+            detail=f"Not a manager of organization '{organization_id}'",
         )
     return userinfo
 
