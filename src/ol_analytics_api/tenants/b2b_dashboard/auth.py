@@ -33,8 +33,12 @@ async def require_org_manager(
     # Membership: the JWT `organization` claim is keyed by org *alias*, but each
     # value carries the org UUID via `id` (addOrganizationId mapper), so match on
     # the value's id rather than the dict key.
-    orgs = userinfo.get("organization", {})
-    if not any(isinstance(org, dict) and org.get("id") == organization_id for org in orgs.values()):
+    orgs = userinfo.get("organization")
+    # get_userinfo only JSON-decodes the header, so `organization` may be any
+    # shape (or absent). A malformed claim must fail closed (403), never 500 on
+    # `.values()` -- treat anything that isn't a dict as "no memberships".
+    org_values = orgs.values() if isinstance(orgs, dict) else []
+    if not any(isinstance(org, dict) and org.get("id") == organization_id for org in org_values):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Not a member of organization '{organization_id}'",

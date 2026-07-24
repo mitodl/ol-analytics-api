@@ -62,10 +62,10 @@ class MITxOnlineClient:
 
         # Ask MITx Online whether this user manages the org with this Keycloak
         # UUID. The endpoint's queryset is already scoped to the caller's managed
-        # orgs; the `sso_organization_id` filter narrows it to the requested one,
-        # so a non-empty result means "yes, a manager of this org". MITx Online
-        # MUST honor the filter -- if an older deploy ignores it, it returns all
-        # of the user's managed orgs and this reads as a false grant.
+        # orgs; the `sso_organization_id` filter narrows it to the requested one.
+        # We don't trust a bare non-empty list, though -- see the match check
+        # below, which keeps this fail-closed even if an older deploy ignored the
+        # filter and returned all of the caller's managed orgs.
         response = await self._require_client().get(
             "/api/v0/b2b/manager/organizations/",
             params={"sso_organization_id": organization_id},
@@ -82,7 +82,16 @@ class MITxOnlineClient:
             # so a transient glitch shouldn't lock a legitimate manager out for
             # the rest of the cache TTL.
             return False
-        is_manager = len(results) > 0
+        # Verify a returned org actually carries the requested UUID rather than
+        # trusting a non-empty list. If an older MITx Online ignored the
+        # sso_organization_id filter it would return ALL of the caller's managed
+        # orgs, and a bare length check would fail *open*; matching on the
+        # serialized sso_organization_id makes this fail *closed* instead (an old
+        # serializer without the field yields None, which never matches).
+        is_manager = any(
+            isinstance(org, dict) and str(org.get("sso_organization_id")) == organization_id
+            for org in results
+        )
 
         _cache[cache_key] = is_manager
         return is_manager

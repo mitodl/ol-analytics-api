@@ -31,10 +31,13 @@ async def test_check_reachable_raises_when_not_started():
         await c.check_reachable()
 
 
-async def test_is_org_manager_true_when_filtered_result_non_empty(client, httpx_mock):
-    # MITx Online filters its managed-orgs queryset by sso_organization_id, so a
-    # non-empty (paginated) result means the user manages this specific org.
-    httpx_mock.add_response(url=_mgr_url(ORG_A), json={"count": 1, "results": [{"slug": "org-a"}]})
+async def test_is_org_manager_true_when_result_matches_requested_uuid(client, httpx_mock):
+    # A returned org carrying the requested sso_organization_id means the user
+    # manages this specific org.
+    httpx_mock.add_response(
+        url=_mgr_url(ORG_A),
+        json={"count": 1, "results": [{"slug": "org-a", "sso_organization_id": ORG_A}]},
+    )
     assert await client.is_org_manager("user-true", ORG_A, "header-1") is True
 
 
@@ -44,17 +47,34 @@ async def test_is_org_manager_false_when_filtered_result_empty(client, httpx_moc
     assert await client.is_org_manager("user-false", ORG_B, "header-1") is False
 
 
+async def test_is_org_manager_false_when_result_does_not_match_requested_uuid(client, httpx_mock):
+    # Fail closed if the response contains orgs but none carries the requested
+    # UUID -- e.g. an older MITx Online that ignored the filter and returned all
+    # managed orgs. A bare length check would have fooled us here.
+    httpx_mock.add_response(
+        url=_mgr_url(ORG_A),
+        json={"results": [{"slug": "org-b", "sso_organization_id": ORG_B}]},
+    )
+    assert await client.is_org_manager("user-mismatch", ORG_A, "header-1") is False
+
+
 async def test_is_org_manager_tolerates_bare_list_response(client, httpx_mock):
     # Defensive: if the endpoint ever returns an unpaginated bare list.
-    httpx_mock.add_response(url=_mgr_url(ORG_A), json=[{"slug": "org-a"}])
+    httpx_mock.add_response(
+        url=_mgr_url(ORG_A), json=[{"slug": "org-a", "sso_organization_id": ORG_A}]
+    )
     assert await client.is_org_manager("user-bare", ORG_A, "header-1") is True
 
 
 async def test_is_org_manager_reuses_one_httpx_client_across_calls(client, httpx_mock):
     # Two distinct (sub, org) pairs -> two real HTTP calls, no cache hit — the
     # assertion is on client *identity*, not just that requests succeed.
-    httpx_mock.add_response(url=_mgr_url(ORG_A), json={"results": [{"slug": "org-a"}]})
-    httpx_mock.add_response(url=_mgr_url(ORG_B), json={"results": [{"slug": "org-b"}]})
+    httpx_mock.add_response(
+        url=_mgr_url(ORG_A), json={"results": [{"slug": "org-a", "sso_organization_id": ORG_A}]}
+    )
+    httpx_mock.add_response(
+        url=_mgr_url(ORG_B), json={"results": [{"slug": "org-b", "sso_organization_id": ORG_B}]}
+    )
 
     client_before = client._client  # noqa: SLF001
     assert await client.is_org_manager("user-reuse-1", ORG_A, "header-1") is True
@@ -73,7 +93,10 @@ async def test_is_org_manager_fails_closed_on_unexpected_shape(client, httpx_moc
 async def test_is_org_manager_caches_by_sub_and_org(client, httpx_mock):
     # Second call for the same (sub, organization_id) hits the cache, not a
     # second HTTP request.
-    httpx_mock.add_response(url=_mgr_url("org-cache"), json={"results": [{"slug": "org-cache"}]})
+    httpx_mock.add_response(
+        url=_mgr_url("org-cache"),
+        json={"results": [{"slug": "org-cache", "sso_organization_id": "org-cache"}]},
+    )
     assert await client.is_org_manager("user-cache", "org-cache", "header-1") is True
     assert await client.is_org_manager("user-cache", "org-cache", "header-1") is True
     assert len(httpx_mock.get_requests()) == 1
