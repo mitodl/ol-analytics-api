@@ -30,18 +30,30 @@ class OrgAnalyticsResponse[RowT: SQLModel](BaseModel):
     finishes); the dashboard displays it so a manager knows how fresh the
     numbers are. ``data`` is post-suppression — a manager-authorized org
     with no (or only sub-floor) rows returns ``data: []``, not a 404.
+
+    ``total_count`` is how many rows this org has in the backing view *after*
+    the anonymization floor, i.e. across every page. Without it a client
+    cannot distinguish "this org has 200 course runs" from "this org has more
+    than the page cap and the rest were silently dropped", so a truncated
+    dashboard would look complete. Compare it against ``len(data)`` plus the
+    request's ``offset`` to decide whether to page further.
     """
 
     organization_key: str
     as_of: datetime.datetime | None
+    total_count: int
     data: list[RowT]
 
 
 class AdminAnalyticsResponse[RowT: SQLModel](BaseModel):
     """Envelope for admin endpoints, which span all orgs — so no single
-    ``organization_key`` applies (see Analytics API Endpoints epic)."""
+    ``organization_key`` applies (see Analytics API Endpoints epic).
+
+    ``total_count`` carries the same meaning as on ``OrgAnalyticsResponse``,
+    over all orgs rather than one."""
 
     as_of: datetime.datetime | None
+    total_count: int
     data: list[RowT]
 
 

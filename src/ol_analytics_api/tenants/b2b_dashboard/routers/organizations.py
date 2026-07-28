@@ -23,7 +23,12 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 from sqlmodel import SQLModel
 
-from ol_analytics_api.core.db.query import build_select, fetch_and_suppress
+from ol_analytics_api.core.db.query import (
+    build_count,
+    build_select,
+    fetch_and_suppress,
+    fetch_visible_count,
+)
 from ol_analytics_api.core.db.refresh_metadata import latest_refresh_timestamp
 from ol_analytics_api.tenants.b2b_dashboard.auth import require_org_manager
 from ol_analytics_api.tenants.b2b_dashboard.config import settings
@@ -112,10 +117,16 @@ def _register(spec: _OrgEndpoint) -> None:
     Which columns the anonymization floor applies to is the row model's own
     ``cohort_policy`` — ``fetch_and_suppress`` reads it, so the spec names only
     the model, not a cohort field.
+
+    ``total_count`` costs one more, cheap COUNT(*) against the same MV. It is
+    what lets a client say "showing 200 of 340" rather than truncating at the
+    page cap with nothing to show for it — worth a second round trip on an
+    endpoint whose data only changes when the MV refreshes, hours apart.
     """
     query = build_select(
         _SCHEMA, spec.mv, spec.model, filter_column=_ORG_FILTER_COLUMN, order_by=spec.order_by
     )
+    count_query = build_count(_SCHEMA, spec.mv, spec.model, filter_column=_ORG_FILTER_COLUMN)
 
     async def endpoint(
         org_slug: str, page: Annotated[Pagination, Depends(pagination)]
@@ -129,6 +140,9 @@ def _register(spec: _OrgEndpoint) -> None:
         return OrgAnalyticsResponse(
             organization_key=org_slug,
             as_of=await latest_refresh_timestamp(_SCHEMA, spec.mv),
+            total_count=await fetch_visible_count(
+                count_query, (org_slug, settings.anonymization_floor)
+            ),
             data=rows,
         )
 

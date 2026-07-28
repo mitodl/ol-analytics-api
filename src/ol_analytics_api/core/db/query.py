@@ -64,10 +64,53 @@ def build_select(
     return f"SELECT {columns} FROM {schema_table}{where} ORDER BY {order} LIMIT %s OFFSET %s"  # noqa: S608
 
 
+def build_count(
+    schema: str,
+    table: str,
+    model_cls: type[SQLModel],
+    *,
+    filter_column: str | None = None,
+) -> str:
+    """Build the ``COUNT(*)`` matching what ``build_select`` yields across all
+    pages, so a client can tell a full page from a truncated result set.
+
+    Deliberately not a plain ``COUNT(*)`` over the view. Rows whose primary
+    cohort is below the floor are dropped by ``suppress_small_cohorts`` after
+    the query returns, so a raw count would exceed anything paging can reach —
+    and subtracting the rows the caller does receive would tell them exactly
+    how many sub-floor cohorts their org has, which is the disclosure the floor
+    exists to prevent. Applying the same primary-cohort gate here in SQL keeps
+    the total consistent with the data and discloses nothing the rows don't.
+
+    Identifiers are spliced under ``build_select``'s rules — every token is
+    ``validate_sql_identifier``'d; the floor and the filter value are bound.
+    """
+    policy = _require_cohort_policy(model_cls).cohort_policy
+    schema_table = f"{validate_sql_identifier(schema)}.{validate_sql_identifier(table)}"
+    org_filter = f"{validate_sql_identifier(filter_column)} = %s AND " if filter_column else ""
+    cohort_gate = f"{validate_sql_identifier(policy.primary)} >= %s"
+    # Same justification as build_select: every interpolated token is a
+    # validate_sql_identifier'd identifier, and values are bound params.
+    return f"SELECT COUNT(*) AS total_count FROM {schema_table} WHERE {org_filter}{cohort_gate}"  # noqa: S608
+
+
 class SuppressibleModel(Protocol):
     """A row model that declares how the anonymization floor applies to it."""
 
     cohort_policy: ClassVar[CohortPolicy]
+
+
+def _require_cohort_policy(model_cls: type[SQLModel]) -> type[SuppressibleModel]:
+    """The chokepoint's gate. A model with no declared policy cannot be read
+    through this module at all — neither its rows nor a count of them, since
+    counting without applying the floor would leak what suppression hides."""
+    if not hasattr(model_cls, "cohort_policy"):
+        msg = (
+            f"{model_cls.__name__} must declare a `cohort_policy` to be returned "
+            "through the anonymization chokepoint"
+        )
+        raise TypeError(msg)
+    return cast("type[SuppressibleModel]", model_cls)
 
 
 async def fetch_and_suppress[ModelT: SQLModel](
@@ -76,13 +119,13 @@ async def fetch_and_suppress[ModelT: SQLModel](
     model_cls: type[ModelT],
     floor: int,
 ) -> list[ModelT]:
-    if not hasattr(model_cls, "cohort_policy"):
-        msg = (
-            f"{model_cls.__name__} must declare a `cohort_policy` to be returned "
-            "through the anonymization chokepoint"
-        )
-        raise TypeError(msg)
-    suppressible_cls = cast("type[SuppressibleModel]", model_cls)
+    suppressible_cls = _require_cohort_policy(model_cls)
     rows = await starrocks_pool.fetch_all(query, params)
     suppressed = suppress_small_cohorts(rows, suppressible_cls.cohort_policy, floor)
     return [model_cls(**row) for row in suppressed]
+
+
+async def fetch_visible_count(query: str, params: tuple[Any, ...]) -> int:
+    """Run a ``build_count`` query and return its single number."""
+    rows = await starrocks_pool.fetch_all(query, params)
+    return int(rows[0]["total_count"]) if rows else 0
