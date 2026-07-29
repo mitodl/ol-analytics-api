@@ -61,14 +61,38 @@ def _client(app):
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
-def _fake_fetch_all(data_rows):
+def _is_count_query(query):
+    return "COUNT(*)" in query
+
+
+def _fake_fetch_all(data_rows, total_count=0):
     """A fetch_all stub that answers the information_schema as_of probe with
-    _AS_OF and every other query with the given MV rows."""
+    _AS_OF, the envelope's total-count query with ``total_count``, and every
+    other query with the given MV rows."""
 
     async def fetch_all(query, *_args):
         if "information_schema" in query:
             return [{"as_of": _AS_OF}]
+        if _is_count_query(query):
+            return [{"total_count": total_count}]
         return list(data_rows)
+
+    return fetch_all
+
+
+def _capture_page_query(captured, rows=(), total_count=0):
+    """A fetch_all stub that records the *paged* SELECT specifically. The as_of
+    probe and the total-count query go through the same pool, so a stub that
+    captured every query would report whichever happened to run last."""
+
+    async def fetch_all(query, params):
+        if "information_schema" in query:
+            return [{"as_of": _AS_OF}]
+        if _is_count_query(query):
+            return [{"total_count": total_count}]
+        captured["query"] = query
+        captured["params"] = params
+        return list(rows)
 
     return fetch_all
 
@@ -117,6 +141,65 @@ async def test_org_endpoint_returns_envelope_and_suppresses_small_cohorts(app):
     assert body["as_of"].startswith("2026-07-02T04:00:00")
     # The sub-floor contract_pk=2 row is suppressed; only contract_pk=1 remains.
     assert [row["contract_pk"] for row in body["data"]] == [1]
+
+
+async def test_org_envelope_carries_the_total_row_count(app):
+    """Without this a client cannot tell a full page from a truncated one: a
+    response of exactly `limit` rows looks identical either way."""
+    rows = [{**_row_template(), "contract_pk": pk} for pk in (1, 2)]
+    with (
+        patch(
+            "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
+            new=_fake_fetch_all(rows, total_count=340),
+        ),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/contract-utilization?limit=2",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
+            )
+    body = response.json()
+    # The total is the whole result set, not this page — that difference is the
+    # entire signal the client needs to offer "load the rest".
+    assert body["total_count"] == 340
+    assert len(body["data"]) == 2
+
+
+async def test_total_count_query_applies_the_anonymization_floor(app):
+    """The count must be gated on the primary cohort like the rows are. A raw
+    COUNT(*) would exceed anything paging can reach, and the difference would
+    tell the caller precisely how many sub-floor cohorts their org has."""
+    captured = {}
+
+    async def fetch_all(query, params):
+        if "information_schema" in query:
+            return [{"as_of": _AS_OF}]
+        if _is_count_query(query):
+            captured["query"] = query
+            captured["params"] = params
+            return [{"total_count": 7}]
+        return []
+
+    with (
+        patch("ol_analytics_api.core.db.client.starrocks_pool.fetch_all", new=fetch_all),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/contract-utilization",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
+            )
+    assert response.status_code == 200
+    assert "seats_consumed >= %s" in captured["query"]
+    # (organization_id, floor) — both bound, never spliced.
+    assert captured["params"] == (ORG_A_ID, 5)
 
 
 async def test_content_engagement_suppresses_secondary_counts_and_derivatives(app):
@@ -251,7 +334,7 @@ async def test_admin_endpoint_envelope_has_no_organization_key(app):
     }
     with patch(
         "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
-        new=_fake_fetch_all([row]),
+        new=_fake_fetch_all([row], total_count=12),
     ):
         async with _client(app) as client:
             response = await client.get(
@@ -263,6 +346,8 @@ async def test_admin_endpoint_envelope_has_no_organization_key(app):
     assert "organization_id" not in body
     assert body["as_of"].startswith("2026-07-02T04:00:00")
     assert len(body["data"]) == 1
+    # Admin spans all orgs, but is paged the same way and needs the same signal.
+    assert body["total_count"] == 12
 
 
 async def test_admin_endpoint_403_without_realm_role(app):
@@ -301,15 +386,11 @@ async def test_org_endpoint_applies_default_pagination_to_query(app):
     # point of the DoS fix: an unbounded grain can't be pulled whole.
     captured = {}
 
-    async def fetch_all(query, params):
-        if "information_schema" in query:
-            return [{"as_of": _AS_OF}]
-        captured["query"] = query
-        captured["params"] = params
-        return []
-
     with (
-        patch("ol_analytics_api.core.db.client.starrocks_pool.fetch_all", new=fetch_all),
+        patch(
+            "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
+            new=_capture_page_query(captured),
+        ),
         patch(
             "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
             new=AsyncMock(return_value=True),
@@ -330,14 +411,11 @@ async def test_org_endpoint_applies_default_pagination_to_query(app):
 async def test_org_endpoint_honors_limit_and_offset(app):
     captured = {}
 
-    async def fetch_all(query, params):
-        if "information_schema" in query:
-            return [{"as_of": _AS_OF}]
-        captured["params"] = params
-        return []
-
     with (
-        patch("ol_analytics_api.core.db.client.starrocks_pool.fetch_all", new=fetch_all),
+        patch(
+            "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
+            new=_capture_page_query(captured),
+        ),
         patch(
             "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
             new=AsyncMock(return_value=True),
@@ -369,14 +447,10 @@ async def test_org_endpoint_rejects_out_of_range_limit(app):
 async def test_admin_endpoint_applies_pagination(app):
     captured = {}
 
-    async def fetch_all(query, params):
-        if "information_schema" in query:
-            return [{"as_of": _AS_OF}]
-        captured["query"] = query
-        captured["params"] = params
-        return []
-
-    with patch("ol_analytics_api.core.db.client.starrocks_pool.fetch_all", new=fetch_all):
+    with patch(
+        "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
+        new=_capture_page_query(captured),
+    ):
         async with _client(app) as client:
             response = await client.get(
                 "/api/v1/analytics/admin/contract-health?limit=10",

@@ -10,7 +10,12 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends
 
-from ol_analytics_api.core.db.query import build_select, fetch_and_suppress
+from ol_analytics_api.core.db.query import (
+    build_count,
+    build_select,
+    fetch_and_suppress,
+    fetch_visible_count,
+)
 from ol_analytics_api.core.db.refresh_metadata import latest_refresh_timestamp
 from ol_analytics_api.tenants.b2b_dashboard.auth import require_mit_admin
 from ol_analytics_api.tenants.b2b_dashboard.config import settings
@@ -47,5 +52,11 @@ async def contract_health(
         # Per-MV freshness: this endpoint's own backing MV, not a schema-wide
         # MAX that a fresher, unrelated MV could inflate.
         as_of=await latest_refresh_timestamp(settings.starrocks_schema, _MV),
+        # Same reasoning as the org endpoints: without it, a result truncated at
+        # the page cap is indistinguishable from a complete one.
+        total_count=await fetch_visible_count(
+            build_count(settings.starrocks_schema, _MV, MitAdminContractHealth),
+            (settings.anonymization_floor,),
+        ),
         data=rows,
     )
