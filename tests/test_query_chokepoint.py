@@ -1,6 +1,7 @@
 """The query chokepoint must refuse to read — as rows or as a count — for a
 model that has not declared how the k-anonymity floor applies to it."""
 
+import re
 from typing import ClassVar
 from unittest.mock import AsyncMock, patch
 
@@ -19,6 +20,12 @@ class _PolicyRow(SQLModel):
     cohort_policy: ClassVar[CohortPolicy] = CohortPolicy(primary="enrolled_learners")
 
     enrolled_learners: int
+
+
+# Shaped like what build_count emits, alias included: the driver is mocked in
+# these tests, so the string is never executed, but a bare "SELECT COUNT(*)"
+# here would model a query whose result fetch_visible_count could not read.
+_COUNT_QUERY = "SELECT COUNT(*) AS total_count FROM b2b.mv_thing WHERE x >= %s"
 
 
 async def test_fetch_and_suppress_rejects_model_without_cohort_policy():
@@ -63,7 +70,7 @@ async def test_fetch_visible_count_returns_the_count():
         "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
         new=AsyncMock(return_value=[{"total_count": 42}]),
     ):
-        assert await fetch_visible_count("SELECT COUNT(*)", ()) == 42
+        assert await fetch_visible_count(_COUNT_QUERY, ()) == 42
 
 
 async def test_fetch_visible_count_of_an_empty_result_is_zero():
@@ -71,4 +78,25 @@ async def test_fetch_visible_count_of_an_empty_result_is_zero():
         "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
         new=AsyncMock(return_value=[]),
     ):
-        assert await fetch_visible_count("SELECT COUNT(*)", ()) == 0
+        assert await fetch_visible_count(_COUNT_QUERY, ()) == 0
+
+
+async def test_count_alias_matches_the_column_fetch_visible_count_reads():
+    """``build_count``'s alias and ``fetch_visible_count``'s key are one
+    contract split across two functions.
+
+    Nothing else pins them together: the tests above mock the driver, so they
+    would keep passing if the alias were renamed, and ``build_count``'s own
+    test only checks the SQL string. If the two drifted apart, every endpoint
+    would raise a KeyError on a query that looks perfectly correct. So take the
+    alias from the query ``build_count`` actually emits and feed a row keyed by
+    it to ``fetch_visible_count``.
+    """
+    query = build_count("b2b", "mv_thing", _PolicyRow)
+    alias = re.search(r"\bAS (\w+)\b", query).group(1)
+
+    with patch(
+        "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
+        new=AsyncMock(return_value=[{alias: 7}]),
+    ):
+        assert await fetch_visible_count(query, ()) == 7
