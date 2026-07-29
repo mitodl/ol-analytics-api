@@ -39,7 +39,7 @@ class OrgAnalyticsResponse[RowT: SQLModel](BaseModel):
     request's ``offset`` to decide whether to page further.
     """
 
-    organization_key: str
+    organization_id: str
     as_of: datetime.datetime | None
     total_count: int
     data: list[RowT]
@@ -47,7 +47,7 @@ class OrgAnalyticsResponse[RowT: SQLModel](BaseModel):
 
 class AdminAnalyticsResponse[RowT: SQLModel](BaseModel):
     """Envelope for admin endpoints, which span all orgs — so no single
-    ``organization_key`` applies (see Analytics API Endpoints epic).
+    ``organization_id`` applies (see Analytics API Endpoints epic).
 
     ``total_count`` carries the same meaning as on ``OrgAnalyticsResponse``,
     over all orgs rather than one."""

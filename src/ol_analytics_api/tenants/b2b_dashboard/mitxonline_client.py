@@ -14,7 +14,7 @@ already filters to orgs the caller manages:
 This service forwards the original request's X-Userinfo header verbatim so
 MITx Online authenticates the call as the same user (mitol-django-authentication
 reads X-Userinfo the same way this service does). Results are cached briefly
-per (sub, org_slug) to bound added latency on every analytics request.
+per (sub, organization_id) to bound added latency on every analytics request.
 """
 
 from __future__ import annotations
@@ -55,26 +55,42 @@ class MITxOnlineClient:
             raise RuntimeError(msg)
         return self._client
 
-    async def is_org_manager(self, sub: str, org_slug: str, userinfo_header: str) -> bool:
-        cache_key = (sub, org_slug)
+    async def is_org_manager(self, sub: str, organization_id: str, userinfo_header: str) -> bool:
+        cache_key = (sub, organization_id)
         if cache_key in _cache:
             return _cache[cache_key]
 
+        # Ask MITx Online whether this user manages the org with this Keycloak
+        # UUID. The endpoint's queryset is already scoped to the caller's managed
+        # orgs; the `sso_organization_id` filter narrows it to the requested one.
+        # We don't trust a bare non-empty list, though -- see the match check
+        # below, which keeps this fail-closed even if an older deploy ignored the
+        # filter and returned all of the caller's managed orgs.
         response = await self._require_client().get(
             "/api/v0/b2b/manager/organizations/",
+            params={"sso_organization_id": organization_id},
             headers={"X-Userinfo": userinfo_header},
         )
         response.raise_for_status()
-        managed_orgs = response.json()
-        if not isinstance(managed_orgs, list):
-            # Unexpected upstream shape (e.g. an error payload) — fail
-            # closed rather than let `.get()` raise AttributeError on a
-            # non-dict. Not cached: this is an error condition, not a real
-            # authorization answer, so a transient glitch shouldn't lock a
-            # legitimate manager out for the rest of the cache TTL.
+        payload = response.json()
+        # The manager endpoint paginates (PageNumberPagination), so the list of
+        # orgs is under `results`; tolerate a bare list too.
+        results = payload.get("results") if isinstance(payload, dict) else payload
+        if not isinstance(results, list):
+            # Unexpected upstream shape (e.g. an error payload) — fail closed.
+            # Not cached: an error condition, not a real authorization answer,
+            # so a transient glitch shouldn't lock a legitimate manager out for
+            # the rest of the cache TTL.
             return False
+        # Verify a returned org actually carries the requested UUID rather than
+        # trusting a non-empty list. If an older MITx Online ignored the
+        # sso_organization_id filter it would return ALL of the caller's managed
+        # orgs, and a bare length check would fail *open*; matching on the
+        # serialized sso_organization_id makes this fail *closed* instead (an old
+        # serializer without the field yields None, which never matches).
         is_manager = any(
-            isinstance(org, dict) and org.get("slug") == org_slug for org in managed_orgs
+            isinstance(org, dict) and str(org.get("sso_organization_id")) == organization_id
+            for org in results
         )
 
         _cache[cache_key] = is_manager

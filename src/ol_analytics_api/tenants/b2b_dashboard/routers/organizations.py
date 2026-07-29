@@ -43,7 +43,7 @@ from ol_analytics_api.tenants.b2b_dashboard.models import (
 from ol_analytics_api.tenants.b2b_dashboard.pagination import Pagination, pagination
 
 router = APIRouter(
-    prefix="/organizations/{org_slug}",
+    prefix="/organizations/{organization_id}",
     tags=["organizations"],
     dependencies=[Depends(require_org_manager)],
 )
@@ -52,9 +52,11 @@ router = APIRouter(
 # field_validator); build_select re-validates it and every other spliced token.
 _SCHEMA = settings.starrocks_schema
 
-# Every org query filters to the caller's org via a bound param, never a
-# spliced value — the org_slug reaches StarRocks as %s, not as SQL text.
-_ORG_FILTER_COLUMN = "organization_key"
+# The path's {organization_id} is the Keycloak organization UUID
+# (sso_organization_id) -- the one identifier stable across the JWT, MITx
+# Online, and StarRocks. Every org query filters to the caller's org via a
+# bound param, never a spliced value -- the UUID reaches StarRocks as %s.
+_ORG_FILTER_COLUMN = "sso_organization_id"
 
 
 @dataclass(frozen=True)
@@ -129,19 +131,19 @@ def _register(spec: _OrgEndpoint) -> None:
     count_query = build_count(_SCHEMA, spec.mv, spec.model, filter_column=_ORG_FILTER_COLUMN)
 
     async def endpoint(
-        org_slug: str, page: Annotated[Pagination, Depends(pagination)]
+        organization_id: str, page: Annotated[Pagination, Depends(pagination)]
     ) -> OrgAnalyticsResponse[SQLModel]:
         rows = await fetch_and_suppress(
             query,
-            (org_slug, page.limit, page.offset),
+            (organization_id, page.limit, page.offset),
             spec.model,
             settings.anonymization_floor,
         )
         return OrgAnalyticsResponse(
-            organization_key=org_slug,
+            organization_id=organization_id,
             as_of=await latest_refresh_timestamp(_SCHEMA, spec.mv),
             total_count=await fetch_visible_count(
-                count_query, (org_slug, settings.anonymization_floor)
+                count_query, (organization_id, settings.anonymization_floor)
             ),
             data=rows,
         )
