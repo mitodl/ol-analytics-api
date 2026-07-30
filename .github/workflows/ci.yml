@@ -4,12 +4,25 @@ on:
   push:
     branches: [main]
   pull_request:
+  # GitHub silently drops a `pull_request` event when it cannot compute the PR's
+  # merge commit at push time -- e.g. when the base branch moved moments earlier
+  # and `refs/pull/N/merge` is still being recomputed. No run is created and none
+  # is retried, so the commit sits on the PR with no `test` check at all. Pass the
+  # PR number here to re-run against the same merge ref the dropped run would have
+  # used; leave it blank to test a branch as-is.
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "PR number to test via its merge commit (blank = this branch as-is)"
+        required: false
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.pr && format('refs/pull/{0}/merge', inputs.pr) || github.sha }}
       - uses: astral-sh/setup-uv@v3
         with:
           enable-cache: true
