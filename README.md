@@ -122,9 +122,8 @@ trace pipeline, and K8s probe contract:
   root app only — Starlette's `Mount` runs a tenant sub-app inside the root
   app's request lifecycle, so the root app's middleware already sees a
   tenant's final response; adding it to tenant sub-apps too would log every
-  tenant request twice. uvicorn's own access log is disabled
-  (`--no-access-log`) to avoid duplicating this in a different, unstructured
-  format.
+  tenant request twice. Granian's own access log stays off (its default) to
+  avoid duplicating this in a different, unstructured format.
 - **Tracing** — OpenTelemetry, activated when `OTEL_EXPORTER_OTLP_ENDPOINT`
   or `OPENTELEMETRY_ENDPOINT` is set (or `DEBUG=true`) — no separate
   "enabled" flag, matching learn-ai's current convention. Exports via OTLP
@@ -152,7 +151,7 @@ trace pipeline, and K8s probe contract:
 ```bash
 uv sync
 eval "$(starrocks-auth --env qa --mode vault --vault-role app --port-forward --output env)"
-uv run uvicorn ol_analytics_api.main:app --reload
+uv run granian --interface asgi --reload ol_analytics_api.main:app
 ```
 
 (`starrocks-auth` lives in `ol-data-platform/bin/`.)

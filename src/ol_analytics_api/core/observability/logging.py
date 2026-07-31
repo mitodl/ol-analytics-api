@@ -1,6 +1,6 @@
 """Structlog configuration, modeled on mitol-django-observability's
 configure_structlog() (ol-django:src/observability/mitol/observability/logging.py)
-but routing uvicorn's loggers instead of Django's — this service has no
+but routing Granian's loggers instead of Django's — this service has no
 Django dependency, so that plugin can't be imported directly, but the same
 processor chain, JSON-in-prod / console-in-dev split, and structured
 exception rendering are reproduced here so log shape matches every other
@@ -46,7 +46,7 @@ def _shared_processors() -> list[Any]:
 
 
 def configure_structlog(*, debug: bool, log_level: str = "INFO", force: bool = False) -> None:
-    """Configure structlog and route stdlib/uvicorn logging through it.
+    """Configure structlog and route stdlib/Granian logging through it.
 
     Idempotent — safe to call multiple times (e.g. under `--reload`).
     """
@@ -64,7 +64,7 @@ def configure_structlog(*, debug: bool, log_level: str = "INFO", force: bool = F
     else:
         # _EXCEPTION_RENDERER converts exc_info into a structured `exception`
         # dict before JSONRenderer serializes the event — needed for BOTH the
-        # structlog pipeline and foreign stdlib records (uvicorn's own
+        # structlog pipeline and foreign stdlib records (Granian's own
         # loggers), so it also appears in formatter_processors below.
         exc_processor = _EXCEPTION_RENDERER
         renderer = structlog.processors.JSONRenderer()
@@ -95,16 +95,27 @@ def configure_structlog(*, debug: bool, log_level: str = "INFO", force: bool = F
             "disable_existing_loggers": False,
             "handlers": {"console": {"()": lambda: handler}},
             "loggers": {
-                # uvicorn's own loggers are this service's equivalent of
+                # Granian's own loggers are this service's equivalent of
                 # Django's "django"/"django.request" — route them through the
-                # same structlog pipeline instead of uvicorn's default format.
-                "uvicorn": {"handlers": ["console"], "level": log_level, "propagate": False},
-                "uvicorn.error": {
-                    "handlers": ["console"],
-                    "level": log_level,
-                    "propagate": False,
-                },
-                "uvicorn.access": {
+                # same structlog pipeline instead of Granian's default plain
+                # format. Granian configures logging itself (granian/log.py's
+                # configure_logging(), with propagate=False and its own plain
+                # StreamHandler) before a worker imports the app, so this
+                # dictConfig runs second and wins. The names are Granian's,
+                # not guessable: the server logger is "_granian" (matching the
+                # Rust-side logger name), not "granian".
+                "_granian": {"handlers": ["console"], "level": log_level, "propagate": False},
+                # Granian's access log is disabled by default and the
+                # structured middleware in ./middleware.py replaces it, so
+                # this normally emits nothing. It is routed anyway so that
+                # turning --access-log on yields JSON rather than a second,
+                # differently-formatted line. Note this only *formats* the
+                # access log; unlike uvicorn (where re-attaching a handler
+                # here silently defeated --no-access-log, which works by
+                # stripping handlers), Granian gates access logging when
+                # building its request callback, so a handler here cannot
+                # re-enable it.
+                "granian.access": {
                     "handlers": ["console"],
                     "level": log_level,
                     "propagate": False,

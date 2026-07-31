@@ -14,7 +14,7 @@ request to this tenant twice.
 
 Does NOT pass this `lifespan` to its own FastAPI(): a mounted sub-app's
 lifespan is never invoked by the ASGI protocol at all — only the top-level app
-uvicorn is pointed at receives lifespan.startup/shutdown messages (confirmed by
+Granian is pointed at receives lifespan.startup/shutdown messages (confirmed by
 reading Starlette's Router.lifespan(), which only ever runs its own app's
 lifespan_context, with no propagation to routes). Instead this tenant declares
 `lifespan` as an ordinary context manager and hands it to main.py via the

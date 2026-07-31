@@ -1,7 +1,7 @@
 """Structured access-log middleware for the root app.
 
-uvicorn's own access logger is disabled (see main.py / Dockerfile — run with
-`--no-access-log`) in favor of this, so each request produces exactly one
+Granian's own access log is off by default (see the Dockerfile — it is never
+enabled) in favor of this, so each request produces exactly one
 structured JSON log line carrying method/path/status/duration plus whatever
 trace_id/span_id/k8s context observability/processors.py injects.
 

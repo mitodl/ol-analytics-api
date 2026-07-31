@@ -18,7 +18,7 @@ core/health.py) — structured logging, OpenTelemetry tracing, Sentry, and
 the tiered K8s health checks every service in this org exposes.
 
 A mounted sub-app's own `lifespan=` is never invoked by the ASGI protocol —
-only the top-level app uvicorn points at receives lifespan.startup/shutdown
+only the top-level app Granian points at receives lifespan.startup/shutdown
 messages (Starlette's Router.lifespan() only ever runs its own
 lifespan_context, with no propagation into routes/Mounts). So a tenant
 exposes its startup/shutdown as an ordinary `lifespan` context manager that

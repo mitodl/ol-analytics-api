@@ -5,7 +5,6 @@ description = "Read-only FastAPI service serving aggregated B2B site-license ana
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
-    "uvicorn[standard]>=0.32",
     "sqlmodel>=0.0.22",
     "aiomysql>=0.2.0",
     "pydantic-settings>=2.6",
@@ -19,6 +18,7 @@ dependencies = [
     "opentelemetry-exporter-otlp-proto-http>=1.31.0",
     "opentelemetry-instrumentation-fastapi>=0.52b0",
     "opentelemetry-instrumentation-httpx>=0.52b0",
+    "granian[reload,uvloop]>=2.7",
 ]
 
 [dependency-groups]

@@ -5,7 +5,7 @@ ASGITransport, which never sends the lifespan.startup/shutdown ASGI
 messages — so those tests can't catch a bug where a tenant's startup hook
 silently never runs. This file uses asgi-lifespan's LifespanManager to
 actually drive the real ASGI lifespan protocol end-to-end, the same way
-uvicorn does. This is exactly the gap that let a real bug through: a
+Granian does. This is exactly the gap that let a real bug through: a
 tenant's own `FastAPI(lifespan=...)` is never invoked when that tenant is
 mounted via app.mount() (confirmed by reading Starlette's Router.lifespan(),
 and by running the built Docker image, which is what actually caught it).

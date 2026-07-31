@@ -36,12 +36,20 @@ ENV GIT_SHA=${GIT_SHA}
 USER appuser
 
 EXPOSE 8000
-# --no-access-log: uvicorn's own access log is unstructured text; the
+# This CMD is the local/standalone default. On K8s it is superseded: the
+# Pulumi stack (ol-infrastructure applications/ol_analytics_api) sets
+# OLApplicationK8sConfig.granian_config, and the shared component generates
+# the container command/args from it — keep the two in sync when changing
+# either, since only the component's version reaches a deployed pod.
+#
+# --interface asgi: Granian defaults to its own RSGI protocol; FastAPI is
+# ASGI. Granian's access log is off by default, which is what we want — the
 # structured JSON access log middleware (core/observability/middleware.py)
-# replaces it on every mounted app. No Docker HEALTHCHECK / init-system
-# wrapper — this service is deployed on K8s, which owns health checking via
-# the startup/readiness/liveness probes in k8s/deployment.yaml, and exec-form
-# CMD (no shell) already gets SIGTERM directly as PID 1, matching how every
-# other service in this org runs (see dockerfiles/ol-python-base and
-# learn-ai/mit-learn's own Dockerfiles — no tini/dumb-init anywhere).
-CMD ["uvicorn", "ol_analytics_api.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
+# is the only access log, on every mounted app. No Docker HEALTHCHECK /
+# init-system wrapper — this service is deployed on K8s, which owns health
+# checking via the startup/readiness/liveness probes in k8s/deployment.yaml,
+# and exec-form CMD (no shell) already gets SIGTERM directly as PID 1,
+# matching how every other service in this org runs (see
+# dockerfiles/ol-python-base and learn-ai/mit-learn's own Dockerfiles — no
+# tini/dumb-init anywhere).
+CMD ["granian", "--interface", "asgi", "--host", "0.0.0.0", "--port", "8000", "ol_analytics_api.main:app"]
