@@ -106,10 +106,20 @@ class MITxOnlineClient:
             msg = "MITx Online token response contained no access_token"
             raise RuntimeError(msg)
         token: str = raw_token
-        # expires_in is in seconds. If it's missing, treat the token as
-        # single-use rather than caching it forever against an unknown
-        # lifetime -- correctness beats saving a round-trip.
-        expires_in = float(payload.get("expires_in") or 0)
+        # expires_in is in seconds. If it's missing *or unparseable*, treat the
+        # token as single-use rather than caching it forever against an unknown
+        # lifetime -- correctness beats saving a round-trip. A malformed value
+        # must not raise: the token itself is valid and usable, and every other
+        # unexpected-payload path in this module degrades rather than failing
+        # the caller's request.
+        try:
+            expires_in = float(payload.get("expires_in") or 0)
+        except (TypeError, ValueError):
+            log.warning(
+                "Ignoring unparseable expires_in from MITx Online; treating token as single-use",
+                expires_in_type=type(payload.get("expires_in")).__name__,
+            )
+            expires_in = 0.0
         self._token = token
         self._token_expires_at = (
             time.monotonic() + max(0.0, expires_in - _TOKEN_EXPIRY_MARGIN_SECONDS)

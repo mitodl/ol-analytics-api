@@ -152,6 +152,26 @@ async def test_token_without_expires_in_is_not_cached(client, httpx_mock):
     assert len(token_requests) == 2
 
 
+@pytest.mark.parametrize(
+    "expires_in",
+    ["not-a-number", {"seconds": 3600}, ["3600"]],
+    ids=["non-numeric-string", "dict", "list"],
+)
+async def test_unparseable_expires_in_is_treated_as_absent(client, httpx_mock, expires_in):
+    # The token itself is valid and usable -- a junk expires_in must degrade to
+    # "single-use" rather than raising and failing the caller's request.
+    httpx_mock.add_response(
+        url=_TOKEN_URL,
+        method="POST",
+        json={"access_token": "tok-junk-expiry", "expires_in": expires_in},
+    )
+    httpx_mock.add_response(url=_check_url(ORG_A, "user-junk"), json={"is_manager": True})
+
+    assert await client.is_org_manager("user-junk", ORG_A) is True
+    # Not cached: an unknown lifetime must not become an indefinite one.
+    assert client._token_expires_at == 0.0  # noqa: SLF001
+
+
 async def test_401_triggers_one_token_refresh_and_retry(client, httpx_mock):
     # A revoked or early-expired token should self-heal rather than fail the
     # user's request.
