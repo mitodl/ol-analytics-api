@@ -31,6 +31,18 @@ class B2BDashboardSettings(BaseSettings):
     # check (Phase 1 auth design — see hq#10594). No trailing slash.
     mitxonline_api_base_url: str = "https://mitxonline.mit.edu"
     mitxonline_manager_check_timeout_seconds: float = 5.0
+
+    # OAuth2 client-credentials used to authenticate the org-manager check to
+    # MITx Online. Empty defaults keep local dev and the test suite runnable
+    # without credentials; a deployed environment must set both (they come
+    # from Vault via the Pulumi stack). There is no sensible default for a
+    # secret, and a wrong one fails loudly at the token endpoint rather than
+    # silently granting anything.
+    mitxonline_client_id: str = ""
+    mitxonline_client_secret: str = ""
+    # Scope registered on the MITx Online side for the service endpoint
+    # (mitodl/mitxonline#3807). Only ever granted to a service Application.
+    mitxonline_oauth_scope: str = "b2b:manager-check"
     # How long an org-manager check result is cached per (sub, org_slug) pair,
     # to bound added latency on every analytics request.
     org_manager_cache_ttl_seconds: int = 60

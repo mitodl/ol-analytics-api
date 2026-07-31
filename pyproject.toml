@@ -118,7 +118,9 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["S101", "ANN", "PLR2004"]
+# S105-S107: fixture values named `token` are fake OAuth2 tokens for the
+# MITx Online client tests, not real credentials.
+"tests/*" = ["S101", "ANN", "PLR2004", "S105", "S106", "S107"]
 # structlog's processor signature is conventionally (logger: Any, method_name: str,
 # event_dict: dict) — matches mitol-django-observability's own typing, ported verbatim.
 "src/ol_analytics_api/core/observability/processors.py" = ["ANN401"]

@@ -57,7 +57,7 @@ src/ol_analytics_api/
       app.py                   # FastAPI() sub-app instance, includes this tenant's routers
       config.py                # this tenant's policy: schema, MITx Online URL, admin role, floor
       auth.py                  # this tenant's governance gates (require_org_manager, require_mit_admin)
-      mitxonline_client.py     # org-manager round-trip to MITx Online
+      mitxonline_client.py     # service-authenticated org-manager check against MITx Online
       models.py                # SQLModel response schemas for this tenant's 6 MVs
       routers/
         organizations.py       # relative paths — mount point supplies the /api/v1/analytics prefix
@@ -103,6 +103,20 @@ to MITx Online (`tenants/b2b_dashboard/mitxonline_client.py`) and its
 MIT-admin check uses a Keycloak realm role
 (`tenants/b2b_dashboard/auth.py`) — see hq#10594 for the full design. A
 different tenant is free to use a different governance model entirely.
+
+The org-manager round-trip authenticates with this service's **own** OAuth2
+client-credentials token and names the subject user explicitly
+(`?user_global_id=<keycloak sub>`), rather than forwarding the caller's
+identity. It has to: APISIX deliberately strips client-supplied
+`X-Userinfo`/`X-Access-Token` headers before they reach an upstream, so a
+forwarded identity never survives the gateway. `OL_ANALYTICS_API_B2B_DASHBOARD_MITXONLINE_CLIENT_ID`
+and `..._CLIENT_SECRET` come from Vault via the Pulumi stack; both are empty
+by default so local dev and the test suite run without credentials.
+
+The `is_manager` flag is curated only in MITx Online's Django admin and
+never reaches the Keycloak token, which is the sole reason this round-trip
+exists. Once org-manager status is visible in Keycloak (hq#10594) the
+round-trip and `mitxonline_client.py` both go away.
 
 ### Observability
 
