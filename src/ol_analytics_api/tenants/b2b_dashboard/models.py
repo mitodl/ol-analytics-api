@@ -112,9 +112,32 @@ class EnrollmentCompletionFunnel(SQLModel):
 class MonthlyEngagementTrend(SQLModel):
     """mv_b2b_monthly_engagement_trend — grain: org x year_month.
 
-    The activity totals are summed over ``monthly_active_learners`` (the
-    primary cohort, already floored), so they carry no sub-cohort of their
-    own to suppress. Only the distinct-learner counts do.
+    KNOWN SUPPRESSION GAP (verified against the dbt SQL 2026-07-31). The
+    activity totals are *not* attributable to ``monthly_active_learners``.
+    Each is a plain SUM over the source report, so only the learners who did
+    that specific thing contribute: ``total_videos_watched`` is really summed
+    over the video-watcher cohort, ``total_problems_attempted`` over the
+    problem-attempter cohort, ``total_chatbot_interactions`` over the
+    chatbot-user cohort. Because ``active_count`` is set by *any* activity
+    (organization_administration_report.sql:301-307), each of those cohorts is
+    a strict subset of ``monthly_active_learners`` — so clearing the primary
+    floor does not imply they cleared it. A month with 40 active learners can
+    carry a chatbot total contributed by exactly one of them.
+
+    None of those three cohorts is emitted as a column by
+    mv_b2b_monthly_engagement_trend.sql, so this model cannot floor them: a
+    ``derived`` entry needs a cohort count present in the row. Closing the gap
+    requires the MV to publish them (see the ol-data-platform follow-up task);
+    mapping the totals to the primary would be a no-op, since rows below the
+    primary floor are dropped outright and the primary is never in the
+    suppressed set.
+
+    ``new_enrollments`` and ``certificates_earned`` are likewise SUMs of
+    per-learner-per-day markers rather than distinct-learner counts, so they
+    count *events*: one learner enrolling in six courses reads as
+    ``new_enrollments == 6`` and clears a floor of 5 on its own. They are kept
+    as ``secondary`` because flooring an event count is still strictly better
+    than not flooring it, but it is a weaker guarantee than the name implies.
     """
 
     cohort_policy: ClassVar[CohortPolicy] = CohortPolicy(
@@ -159,10 +182,32 @@ class ProgramFunnel(SQLModel):
 class ContentEngagementDepth(SQLModel):
     """mv_b2b_content_engagement_depth — grain: org x course_run (all-time).
 
-    The video/problem totals and their averages are attributable to
-    ``engaged_learners`` (the totals are summed over exactly that group, the
-    averages divide by it), so both are suppressed when that count is
-    sub-floor; the chatbot totals likewise track ``chatbot_users``.
+    The chatbot columns are exact: ``total_chatbot_interactions`` sums over,
+    and ``chatbot_adoption_pct`` divides by, ``chatbot_users`` — which this
+    view does emit, so both are correctly floored. ``engagement_rate_pct`` is
+    ``engaged_learners / total_enrolled_learners``, also correct.
+
+    KNOWN SUPPRESSION GAP (verified against the dbt SQL 2026-07-31). The
+    video and problem columns are *not* computed over ``engaged_learners``,
+    despite the ``_per_engaged_learner`` naming. In
+    mv_b2b_content_engagement_depth.sql:24-34 the averages divide by
+    ``count(distinct case when videos_watched > 0 ...)`` and
+    ``count(distinct case when problems_count > 0 ...)`` respectively — the
+    video-watcher and problem-attempter cohorts, neither of which this view
+    emits. Since ``active_count`` is set by *any* activity
+    (organization_administration_report.sql:301-307), both are strict subsets
+    of ``engaged_learners``, so a row with 30 engaged learners may still carry
+    an average taken over a single video-watcher — precisely the "an average
+    over one learner *is* that learner's value" disclosure that
+    core.anonymization exists to prevent.
+
+    Mapping these to ``engaged_learners`` is therefore necessary but not
+    sufficient: it correctly suppresses when the superset is sub-floor, and
+    never over-suppresses, but it cannot catch a sub-floor subset. The mapping
+    is kept for the protection it does give. Closing the gap needs a dbt
+    change — either divide by ``engaged_learners`` so the column matches its
+    name, or emit the two cohort counts so they can be floored and mapped.
+    See the ol-data-platform follow-up task.
     """
 
     cohort_policy: ClassVar[CohortPolicy] = CohortPolicy(
