@@ -21,6 +21,9 @@ dependencies = [
     "granian[reload,uvloop]>=2.7",
 ]
 
+[tool.uv]
+exclude-newer = "7d"
+
 [dependency-groups]
 dev = [
     "ruff>=0.8",
