@@ -1,6 +1,6 @@
 [project]
 name = "ol-analytics-api"
-version = "2026.7.22.1"
+version = "2026.8.3.1"
 description = "Read-only FastAPI service serving aggregated B2B site-license analytics to MIT Learn from StarRocks materialized views."
 requires-python = ">=3.12"
 dependencies = [
@@ -135,7 +135,7 @@ module = ["aiomysql", "aiomysql.*"]
 ignore_missing_imports = true
 
 [tool.bumpversion]
-current_version = "2026.7.22.1"
+current_version = "2026.8.3.1"
 commit = false
 tag = false
 parse = "(?P<release>(?:[1-9][0-9]{3})\\.(?:1[0-2]|[1-9])\\.(?:3[0-1]|[12][0-9]|[1-9]))\\.(?P<build>\\d+)"
