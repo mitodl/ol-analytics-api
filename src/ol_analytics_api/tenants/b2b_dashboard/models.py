@@ -68,7 +68,7 @@ class ContractUtilization(SQLModel):
 
     organization_key: str
     organization_name: str
-    contract_pk: int
+    contract_pk: str
     b2b_contract_name: str
     b2b_contract_is_active: bool
     b2b_contract_start_date: datetime.date | None
@@ -96,9 +96,9 @@ class EnrollmentCompletionFunnel(SQLModel):
 
     organization_key: str
     organization_name: str
-    contract_pk: int
+    contract_pk: str
     b2b_contract_name: str
-    courserun_pk: int
+    courserun_pk: str
     courserun_readable_id: str
     courserun_title: str
     enrolled_learners: int
@@ -169,9 +169,9 @@ class ProgramFunnel(SQLModel):
 
     organization_key: str
     organization_name: str
-    contract_pk: int
+    contract_pk: str
     b2b_contract_name: str
-    program_pk: int
+    program_pk: str
     program_title: str
     total_courses: int
     enrolled_in_contract_courses: int
@@ -252,7 +252,7 @@ class MitAdminContractHealth(SQLModel):
 
     organization_key: str
     organization_name: str
-    contract_pk: int
+    contract_pk: str
     b2b_contract_name: str
     b2b_contract_is_active: bool
     b2b_contract_start_date: datetime.date | None
