@@ -315,6 +315,47 @@ async def test_org_endpoint_authorized_but_empty_returns_empty_data_not_404(app)
     assert body["as_of"].startswith("2026-07-02T04:00:00")
 
 
+async def test_org_endpoint_enrollment_funnel_row_validates_with_string_pks(app):
+    # Regression test for the contract_pk/courserun_pk int->str fix: every
+    # other enrollment-funnel test uses an empty result set, so none of them
+    # actually instantiate EnrollmentCompletionFunnel -- a field type
+    # regressing back to int would still pass those. This one does.
+    row = {
+        "organization_key": "org-a",
+        "organization_name": "Org A",
+        "contract_pk": "contract-pk-1",
+        "b2b_contract_name": "C1",
+        "courserun_pk": "courserun-pk-1",
+        "courserun_readable_id": "course-v1:MITx+1+run1",
+        "courserun_title": "Course 1",
+        "enrolled_learners": 40,
+        "active_learners": 30,
+        "passing_learners": 20,
+        "certified_learners": 10,
+        "active_rate_pct": 75.0,
+        "completion_rate_pct": 25.0,
+    }
+    with (
+        patch(
+            "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
+            new=_fake_fetch_all([row]),
+        ),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/enrollment-funnel",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
+            )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"][0]["contract_pk"] == "contract-pk-1"
+    assert body["data"][0]["courserun_pk"] == "courserun-pk-1"
+
+
 async def test_admin_endpoint_envelope_has_no_organization_key(app):
     row = {
         "organization_key": "org-a",
@@ -380,6 +421,44 @@ async def test_as_of_is_null_when_no_mv_has_refreshed(app):
             )
     assert response.status_code == 200
     assert response.json()["as_of"] is None
+
+
+async def test_org_endpoint_program_funnel_row_validates_with_string_pks(app):
+    # Regression test for the contract_pk/program_pk int->str fix: every
+    # other program-funnel test uses an empty result set, so none of them
+    # actually instantiate ProgramFunnel -- a field type regressing back to
+    # int would still pass those. This one does.
+    row = {
+        "organization_key": "org-a",
+        "organization_name": "Org A",
+        "contract_pk": "contract-pk-1",
+        "b2b_contract_name": "C1",
+        "program_pk": "program-pk-1",
+        "program_title": "Program 1",
+        "total_courses": 6,
+        "enrolled_in_contract_courses": 40,
+        "enrolled_via_program": 20,
+        "program_course_completers": 10,
+    }
+    with (
+        patch(
+            "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
+            new=_fake_fetch_all([row]),
+        ),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/program-funnel",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
+            )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"][0]["contract_pk"] == "contract-pk-1"
+    assert body["data"][0]["program_pk"] == "program-pk-1"
 
 
 async def test_org_endpoint_applies_default_pagination_to_query(app):
