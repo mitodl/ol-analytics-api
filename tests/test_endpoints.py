@@ -104,7 +104,7 @@ async def test_org_endpoint_returns_envelope_and_suppresses_small_cohorts(app):
         {
             "organization_key": "org-a",
             "organization_name": "Org A",
-            "contract_pk": 1,
+            "contract_pk": "contract-pk-1",
             "b2b_contract_name": "C1",
             "b2b_contract_is_active": True,
             "b2b_contract_start_date": None,
@@ -117,7 +117,7 @@ async def test_org_endpoint_returns_envelope_and_suppresses_small_cohorts(app):
             "seat_utilization_pct": 40.0,
             "completion_rate_pct": 25.0,
         },
-        {**_row_template(), "contract_pk": 2, "seats_consumed": 3},
+        {**_row_template(), "contract_pk": "contract-pk-2", "seats_consumed": 3},
     ]
     with (
         patch(
@@ -139,14 +139,15 @@ async def test_org_endpoint_returns_envelope_and_suppresses_small_cohorts(app):
     body = response.json()
     assert body["organization_id"] == ORG_A_ID
     assert body["as_of"].startswith("2026-07-02T04:00:00")
-    # The sub-floor contract_pk=2 row is suppressed; only contract_pk=1 remains.
-    assert [row["contract_pk"] for row in body["data"]] == [1]
+    # The sub-floor contract_pk="contract-pk-2" row is suppressed; only
+    # contract_pk="contract-pk-1" remains.
+    assert [row["contract_pk"] for row in body["data"]] == ["contract-pk-1"]
 
 
 async def test_org_envelope_carries_the_total_row_count(app):
     """Without this a client cannot tell a full page from a truncated one: a
     response of exactly `limit` rows looks identical either way."""
-    rows = [{**_row_template(), "contract_pk": pk} for pk in (1, 2)]
+    rows = [{**_row_template(), "contract_pk": pk} for pk in ("contract-pk-1", "contract-pk-2")]
     with (
         patch(
             "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
@@ -318,7 +319,7 @@ async def test_admin_endpoint_envelope_has_no_organization_key(app):
     row = {
         "organization_key": "org-a",
         "organization_name": "Org A",
-        "contract_pk": 1,
+        "contract_pk": "contract-pk-1",
         "b2b_contract_name": "C1",
         "b2b_contract_is_active": True,
         "b2b_contract_start_date": None,
@@ -489,7 +490,7 @@ def _row_template() -> dict:
     return {
         "organization_key": "org-a",
         "organization_name": "Org A",
-        "contract_pk": 1,
+        "contract_pk": "contract-pk-1",
         "b2b_contract_name": "C1",
         "b2b_contract_is_active": True,
         "b2b_contract_start_date": None,
