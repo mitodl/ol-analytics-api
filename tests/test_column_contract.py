@@ -22,7 +22,7 @@ from sqlmodel import SQLModel
 from ol_analytics_api.core.db.identifiers import validate_sql_identifier
 from ol_analytics_api.core.db.query import build_select
 from ol_analytics_api.tenants.b2b_dashboard.models import MitAdminContractHealth
-from ol_analytics_api.tenants.b2b_dashboard.routers import admin, organizations
+from ol_analytics_api.tenants.b2b_dashboard.routers import admin, contracts, organizations
 
 
 @dataclass(frozen=True)
@@ -38,8 +38,10 @@ def _projected_columns(query: str) -> list[str]:
     return [column.strip() for column in select_clause.split(",")]
 
 
-# Every real endpoint: the org endpoints from the declarative table plus the
-# admin endpoint's constants, each with the query build_select actually emits.
+# Every real endpoint: both declarative tables plus the admin endpoint's
+# constants, each with the query build_select actually emits. The contract
+# endpoints are built from contracts.ENDPOINTS rather than restated, so a row
+# added there is covered here without touching this file.
 _CASES = [
     _Case(
         spec.mv,
@@ -54,6 +56,20 @@ _CASES = [
         spec.order_by,
     )
     for spec in organizations.ENDPOINTS
+] + [
+    _Case(
+        f"{spec.mv} (contract-scoped)",
+        build_select(
+            contracts._SCHEMA,  # noqa: SLF001
+            spec.mv,
+            spec.model,
+            filter_columns=contracts._FILTER_COLUMNS,  # noqa: SLF001
+            order_by=spec.order_by,
+        ),
+        spec.model,
+        spec.order_by,
+    )
+    for spec in contracts.ENDPOINTS
 ] + [
     _Case(
         admin._MV,  # noqa: SLF001
