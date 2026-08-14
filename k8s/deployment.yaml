@@ -20,12 +20,38 @@ spec:
       # {vault_starrocks_mount}/creds/app — provisioned alongside this
       # Deployment in the infra repo, not here.
       serviceAccountName: ol-analytics-api
+      # Mirrors the pod/container hardening the Pulumi program sets via
+      # OLApplicationK8sConfig.{pod,container}_security_context. The image
+      # declares `USER appuser` (uid/gid 1000) and PYTHONDONTWRITEBYTECODE=1,
+      # so a read-only root filesystem costs nothing — except tempfile's
+      # default directory, hence the /tmp emptyDir below (fsGroup makes it
+      # writable by the app user, since an emptyDir is created root-owned).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
       containers:
         - name: ol-analytics-api
           image: mitodl/ol-analytics-api:CI_COMMIT_SHORT_SHA
           ports:
             - name: http
               containerPort: 8000
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           env:
             - name: OL_ANALYTICS_API_ENVIRONMENT
               value: "production"
