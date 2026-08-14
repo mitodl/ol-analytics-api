@@ -69,6 +69,7 @@ class ContractUtilization(SQLModel):
     organization_key: str
     organization_name: str
     contract_pk: str
+    contract_id: str
     b2b_contract_name: str
     b2b_contract_is_active: bool
     b2b_contract_start_date: datetime.date | None
@@ -97,6 +98,7 @@ class EnrollmentCompletionFunnel(SQLModel):
     organization_key: str
     organization_name: str
     contract_pk: str
+    contract_id: str
     b2b_contract_name: str
     courserun_pk: str
     courserun_readable_id: str
@@ -197,6 +199,7 @@ class ProgramFunnel(SQLModel):
     organization_key: str
     organization_name: str
     contract_pk: str
+    contract_id: str
     b2b_contract_name: str
     program_pk: str
     program_title: str
@@ -295,6 +298,7 @@ class MitAdminContractHealth(SQLModel):
     organization_key: str
     organization_name: str
     contract_pk: str
+    contract_id: str
     b2b_contract_name: str
     b2b_contract_is_active: bool
     b2b_contract_start_date: datetime.date | None
@@ -307,3 +311,45 @@ class MitAdminContractHealth(SQLModel):
     seat_utilization_pct: float | None
     completion_rate_pct: float | None
     health_status: str
+
+
+class ContractMonthlyEngagementTrend(MonthlyEngagementTrend):
+    """mv_b2b_contract_monthly_engagement_trend — grain: org x contract x month.
+
+    The contract-scoped sibling of ``MonthlyEngagementTrend``, backing the
+    endpoints nested under a contract. Subclassed rather than redeclared so the
+    two can't drift: the column set and the ``cohort_policy`` — which is what
+    the anonymization floor reads — are inherited verbatim, and only contract
+    identity is added. The dbt models are siblings in the same way.
+
+    The contract columns are not cohorts and take no part in the policy.
+
+    A learner active under two of an org's contracts appears in both rows, so
+    these rows do not partition the org-level view's learner counts; summing
+    ``monthly_active_learners`` across contracts can exceed the org's own
+    figure. Activity totals, being sums of events, do add up.
+    """
+
+    contract_pk: str
+    contract_id: str
+    b2b_contract_name: str
+
+
+class ContractContentEngagementDepth(ContentEngagementDepth):
+    """mv_b2b_contract_content_engagement_depth — grain: org x contract x run.
+
+    The contract-scoped sibling of ``ContentEngagementDepth``, inherited for
+    the same reason as ``ContractMonthlyEngagementTrend``.
+
+    Unlike the trend view, these rows ARE a strict partition of the org-level
+    view: a course run belongs to exactly one contract, so naming the contract
+    labels a row rather than splitting it, and every count here equals its
+    org-level counterpart for the same course run. That equality is exactly
+    what makes a suppressed contract recoverable by subtraction once an org
+    holds more than one — the k-anonymity floor here is per-row and does not
+    defend against differencing across the two grains.
+    """
+
+    contract_pk: str
+    contract_id: str
+    b2b_contract_name: str

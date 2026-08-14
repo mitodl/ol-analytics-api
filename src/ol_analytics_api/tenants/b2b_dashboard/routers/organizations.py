@@ -126,9 +126,9 @@ def _register(spec: _OrgEndpoint) -> None:
     endpoint whose data only changes when the MV refreshes, hours apart.
     """
     query = build_select(
-        _SCHEMA, spec.mv, spec.model, filter_column=_ORG_FILTER_COLUMN, order_by=spec.order_by
+        _SCHEMA, spec.mv, spec.model, filter_columns=(_ORG_FILTER_COLUMN,), order_by=spec.order_by
     )
-    count_query = build_count(_SCHEMA, spec.mv, spec.model, filter_column=_ORG_FILTER_COLUMN)
+    count_query = build_count(_SCHEMA, spec.mv, spec.model, filter_columns=(_ORG_FILTER_COLUMN,))
 
     async def endpoint(
         organization_id: str, page: Annotated[Pagination, Depends(pagination)]

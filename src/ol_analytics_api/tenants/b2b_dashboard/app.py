@@ -34,7 +34,7 @@ from fastapi import FastAPI
 from ol_analytics_api.core.errors import add_shared_error_handlers
 from ol_analytics_api.core.health import register_readiness_check
 from ol_analytics_api.tenants.b2b_dashboard.mitxonline_client import mitxonline_client
-from ol_analytics_api.tenants.b2b_dashboard.routers import admin, organizations
+from ol_analytics_api.tenants.b2b_dashboard.routers import admin, contracts, organizations
 
 # Names this tenant's readiness sub-path (/health/readiness/b2b_dashboard/).
 TENANT_NAME = "b2b_dashboard"
@@ -61,6 +61,11 @@ def create_app() -> FastAPI:
         ),
     )
     app.include_router(organizations.router)
+    # Registered after the org router so the more specific
+    # /organizations/{id}/contracts/{id}/... paths are matched by their own
+    # routes; Starlette matches in registration order and the org paths are
+    # literal segments, so the two cannot shadow each other either way.
+    app.include_router(contracts.router)
     app.include_router(admin.router)
 
     # Turn a saturated shared StarRocks pool into a fast 503 for this tenant's

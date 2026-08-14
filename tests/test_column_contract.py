@@ -47,7 +47,7 @@ _CASES = [
             organizations._SCHEMA,  # noqa: SLF001
             spec.mv,
             spec.model,
-            filter_column=organizations._ORG_FILTER_COLUMN,  # noqa: SLF001
+            filter_columns=(organizations._ORG_FILTER_COLUMN,),  # noqa: SLF001
             order_by=spec.order_by,
         ),
         spec.model,

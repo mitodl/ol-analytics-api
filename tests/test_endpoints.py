@@ -105,6 +105,7 @@ async def test_org_endpoint_returns_envelope_and_suppresses_small_cohorts(app):
             "organization_key": "org-a",
             "organization_name": "Org A",
             "contract_pk": "contract-pk-1",
+            "contract_id": "101",
             "b2b_contract_name": "C1",
             "b2b_contract_is_active": True,
             "b2b_contract_start_date": None,
@@ -436,6 +437,7 @@ async def test_admin_endpoint_envelope_has_no_organization_key(app):
         "organization_key": "org-a",
         "organization_name": "Org A",
         "contract_pk": "contract-pk-1",
+        "contract_id": "101",
         "b2b_contract_name": "C1",
         "b2b_contract_is_active": True,
         "b2b_contract_start_date": None,
@@ -607,6 +609,7 @@ def _row_template() -> dict:
         "organization_key": "org-a",
         "organization_name": "Org A",
         "contract_pk": "contract-pk-1",
+        "contract_id": "101",
         "b2b_contract_name": "C1",
         "b2b_contract_is_active": True,
         "b2b_contract_start_date": None,
@@ -619,3 +622,186 @@ def _row_template() -> dict:
         "seat_utilization_pct": 40.0,
         "completion_rate_pct": 25.0,
     }
+
+
+# ─── contract-scoped endpoints ────────────────────────────────────────────────
+
+
+def _fake_fetch_all_with_contract(data_rows, *, contract_exists=True, total_count=0):
+    """Like _fake_fetch_all, but also answers the contract gate's existence
+    probe — `SELECT 1 ... LIMIT 1`, which returns a row when the contract
+    belongs to the org and nothing when it does not."""
+
+    async def fetch_all(query, *_args):
+        if "information_schema" in query:
+            return [{"as_of": _AS_OF}]
+        if query.startswith("SELECT 1 "):
+            return [{"1": 1}] if contract_exists else []
+        if _is_count_query(query):
+            return [{"total_count": total_count}]
+        return list(data_rows)
+
+    return fetch_all
+
+
+async def test_contract_endpoint_filters_on_both_org_and_contract(app):
+    # The org predicate must survive alongside the contract one: without it a
+    # manager of one org could read another org's contract by naming its id.
+    captured = {}
+
+    async def fetch_all(query, params):
+        if "information_schema" in query:
+            return [{"as_of": _AS_OF}]
+        if query.startswith("SELECT 1 "):
+            return [{"1": 1}]
+        if _is_count_query(query):
+            captured["count_query"] = query
+            captured["count_params"] = params
+            return [{"total_count": 0}]
+        captured["query"] = query
+        captured["params"] = params
+        return []
+
+    with (
+        patch("ol_analytics_api.core.db.client.starrocks_pool.fetch_all", new=fetch_all),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/contracts/101/engagement-trend",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
+            )
+    assert response.status_code == 200
+    assert "sso_organization_id = %s AND contract_id = %s" in captured["query"]
+    # Both scope values bound, never spliced, and in the order the SQL names them.
+    assert captured["params"][:2] == (ORG_A_ID, "101")
+    # The count query carries the same two predicates plus the cohort gate.
+    assert "sso_organization_id = %s AND contract_id = %s" in captured["count_query"]
+    assert captured["count_params"][:2] == (ORG_A_ID, "101")
+
+
+async def test_contract_endpoint_reads_the_contract_grained_mv(app):
+    captured = {}
+
+    async def fetch_all(query, params):  # noqa: ARG001
+        if "information_schema" in query:
+            return [{"as_of": _AS_OF}]
+        if query.startswith("SELECT 1 "):
+            return [{"1": 1}]
+        if _is_count_query(query):
+            return [{"total_count": 0}]
+        captured["query"] = query
+        return []
+
+    with (
+        patch("ol_analytics_api.core.db.client.starrocks_pool.fetch_all", new=fetch_all),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            await client.get(
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/contracts/101/content-engagement",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
+            )
+    # Not the org-grained view: that one has no contract column to filter on.
+    assert "mv_b2b_contract_content_engagement_depth" in captured["query"]
+
+
+async def test_contract_not_in_org_is_403_not_an_empty_result(app):
+    # An empty result would be indistinguishable from a contract of your own
+    # that has no data yet. MITx Online refuses this request, so we do too.
+    with (
+        patch(
+            "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
+            new=_fake_fetch_all_with_contract([], contract_exists=False),
+        ),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/contracts/999/enrollment-funnel",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
+            )
+    assert response.status_code == 403
+    assert "999" in response.json()["detail"]
+
+
+async def test_contract_route_still_requires_org_management(app):
+    # The contract gate must not become a way around the org gate: a
+    # non-manager is refused before the contract is ever looked up.
+    probed = []
+
+    async def fetch_all(query, *_args):
+        probed.append(query)
+        return []
+
+    with (
+        patch("ol_analytics_api.core.db.client.starrocks_pool.fetch_all", new=fetch_all),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=False),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/contracts/101/contract-utilization",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
+            )
+    assert response.status_code == 403
+    assert probed == [], "the contract existence probe must not run for a non-manager"
+
+
+async def test_contract_endpoint_suppresses_below_the_floor(app):
+    # Contract grain does not weaken the floor: the same per-row gate applies.
+    row = {
+        "organization_key": "org-a",
+        "organization_name": "Org A",
+        "contract_pk": "contract-pk-1",
+        "contract_id": "101",
+        "b2b_contract_name": "C1",
+        "activity_year_and_month": "2026-07",
+        "monthly_active_learners": 40,
+        "new_enrollments": 12,
+        "enrolling_learners": 2,
+        "certificates_earned": 30,
+        "certified_learners": 22,
+        "total_videos_watched": 500,
+        "video_watchers": 18,
+        "total_problems_attempted": 7,
+        "problem_attempters": 1,
+        "total_chatbot_interactions": 60,
+        "chatbot_users": 15,
+    }
+    with (
+        patch(
+            "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
+            new=_fake_fetch_all_with_contract([row]),
+        ),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/contracts/101/engagement-trend",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
+            )
+    assert response.status_code == 200
+    (data,) = response.json()["data"]
+    # Inherited cohort_policy, so the event counts still ride their cohorts.
+    assert data["enrolling_learners"] is None
+    assert data["new_enrollments"] is None
+    assert data["problem_attempters"] is None
+    assert data["total_problems_attempted"] is None
+    # Contract identity is never suppressed — it is not a cohort.
+    assert data["contract_id"] == "101"
+    assert data["monthly_active_learners"] == 40
