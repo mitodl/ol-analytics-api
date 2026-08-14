@@ -112,37 +112,43 @@ class EnrollmentCompletionFunnel(SQLModel):
 class MonthlyEngagementTrend(SQLModel):
     """mv_b2b_monthly_engagement_trend — grain: org x year_month.
 
-    KNOWN SUPPRESSION GAP (verified against the dbt SQL 2026-07-31). The
-    activity totals are *not* attributable to ``monthly_active_learners``.
-    Each is a plain SUM over the source report, so only the learners who did
-    that specific thing contribute: ``total_videos_watched`` is really summed
-    over the video-watcher cohort, ``total_problems_attempted`` over the
-    problem-attempter cohort, ``total_chatbot_interactions`` over the
-    chatbot-user cohort. Because ``active_count`` is set by *any* activity
-    (organization_administration_report.sql:301-307), each of those cohorts is
-    a strict subset of ``monthly_active_learners`` — so clearing the primary
-    floor does not imply they cleared it. A month with 40 active learners can
-    carry a chatbot total contributed by exactly one of them.
+    Every aggregate here is floored through the cohort that contributes to it,
+    which the view publishes alongside it (ol-data-platform PR #2520).
 
-    None of those three cohorts is emitted as a column by
-    mv_b2b_monthly_engagement_trend.sql, so this model cannot floor them: a
-    ``derived`` entry needs a cohort count present in the row. Closing the gap
-    requires the MV to publish them (see the ol-data-platform follow-up task);
-    mapping the totals to the primary would be a no-op, since rows below the
-    primary floor are dropped outright and the primary is never in the
-    suppressed set.
+    None of them is attributable to ``monthly_active_learners``. Each is a
+    plain SUM over the source report, so only the learners who did that
+    specific thing contribute, and because ``active_count`` is set by *any*
+    activity each contributing cohort is a strict subset of the primary — so
+    clearing the primary floor never implies the subset cleared it. A month
+    with 40 active learners can carry a chatbot total contributed by exactly
+    one of them, which is why each total is ``derived`` from its own cohort
+    rather than from the primary.
 
-    ``new_enrollments`` and ``certificates_earned`` are likewise SUMs of
-    per-learner-per-day markers rather than distinct-learner counts, so they
-    count *events*: one learner enrolling in six courses reads as
-    ``new_enrollments == 6`` and clears a floor of 5 on its own. They are kept
-    as ``secondary`` because flooring an event count is still strictly better
-    than not flooring it, but it is a weaker guarantee than the name implies.
+    ``new_enrollments`` and ``certificates_earned`` are SUMs of
+    per-learner-per-course-run markers, so they count *events*, not learners:
+    one learner enrolling in six runs reads as ``new_enrollments == 6`` and
+    would clear a floor of 5 on its own. Flooring them directly is therefore
+    the wrong instrument — they are ``derived`` from ``enrolling_learners``
+    and ``certified_learners``, the distinct-learner counts they are actually
+    attributable to, which do carry the floor.
     """
 
     cohort_policy: ClassVar[CohortPolicy] = CohortPolicy(
         primary="monthly_active_learners",
-        secondary=("new_enrollments", "certificates_earned"),
+        secondary=(
+            "enrolling_learners",
+            "certified_learners",
+            "video_watchers",
+            "problem_attempters",
+            "chatbot_users",
+        ),
+        derived={
+            "new_enrollments": ("enrolling_learners",),
+            "certificates_earned": ("certified_learners",),
+            "total_videos_watched": ("video_watchers",),
+            "total_problems_attempted": ("problem_attempters",),
+            "total_chatbot_interactions": ("chatbot_users",),
+        },
     )
 
     organization_key: str
@@ -150,10 +156,15 @@ class MonthlyEngagementTrend(SQLModel):
     activity_year_and_month: str
     monthly_active_learners: int
     new_enrollments: int | None
+    enrolling_learners: int | None
     certificates_earned: int | None
-    total_videos_watched: int
-    total_problems_attempted: int
-    total_chatbot_interactions: int
+    certified_learners: int | None
+    total_videos_watched: int | None
+    video_watchers: int | None
+    total_problems_attempted: int | None
+    problem_attempters: int | None
+    total_chatbot_interactions: int | None
+    chatbot_users: int | None
 
 
 class ProgramFunnel(SQLModel):
@@ -187,38 +198,46 @@ class ContentEngagementDepth(SQLModel):
     view does emit, so both are correctly floored. ``engagement_rate_pct`` is
     ``engaged_learners / total_enrolled_learners``, also correct.
 
-    KNOWN SUPPRESSION GAP (verified against the dbt SQL 2026-07-31). The
-    video and problem columns are *not* computed over ``engaged_learners``,
-    despite the ``_per_engaged_learner`` naming. In
-    mv_b2b_content_engagement_depth.sql:24-34 the averages divide by
-    ``count(distinct case when videos_watched > 0 ...)`` and
-    ``count(distinct case when problems_count > 0 ...)`` respectively — the
-    video-watcher and problem-attempter cohorts, neither of which this view
-    emits. Since ``active_count`` is set by *any* activity
-    (organization_administration_report.sql:301-307), both are strict subsets
-    of ``engaged_learners``, so a row with 30 engaged learners may still carry
-    an average taken over a single video-watcher — precisely the "an average
-    over one learner *is* that learner's value" disclosure that
-    core.anonymization exists to prevent.
+    The video and problem columns are floored through the cohorts the view now
+    publishes (ol-data-platform PR #2520): ``total_videos_watched`` is summed
+    over ``video_watchers`` and ``total_problems_attempted`` over
+    ``problem_attempters``, each a strict subset of ``engaged_learners`` since
+    ``active_count`` is set by *any* activity.
 
-    Mapping these to ``engaged_learners`` is therefore necessary but not
-    sufficient: it correctly suppresses when the superset is sub-floor, and
-    never over-suppresses, but it cannot catch a sub-floor subset. The mapping
-    is kept for the protection it does give. Closing the gap needs a dbt
-    change — either divide by ``engaged_learners`` so the column matches its
-    name, or emit the two cohort counts so they can be floored and mapped.
-    See the ol-data-platform follow-up task.
+    The ``avg_*_per_engaged_learner`` columns are derived from *two* cohorts,
+    which is why each names both. The denominator is ``engaged_learners`` —
+    that is what the dbt SQL divides by, so the naming is now accurate — but
+    the numerator is the activity SUM, contributed by only the narrower
+    cohort. Mapping the average to its denominator alone would leave the
+    numerator recoverable: an unsuppressed average multiplied by a published
+    ``engaged_learners`` yields the suppressed total exactly, and when the
+    contributing cohort is a single learner that total *is* that learner's
+    value. Naming both cohorts nulls the average whenever either is sub-floor.
+
+    ``certificates_earned`` is the one column still floored as a count of
+    itself: it is ``sum(certificate_count)``, an event count, and this view
+    emits no certified-learner cohort to attribute it to (unlike
+    ``MonthlyEngagementTrend``, which has ``certified_learners``). Flooring an
+    event count is weaker than flooring a cohort — several certificates can
+    come from one learner — but strictly better than not flooring it. Emitting
+    the cohort from dbt would close this the same way #2520 closed the others.
     """
 
     cohort_policy: ClassVar[CohortPolicy] = CohortPolicy(
         primary="total_enrolled_learners",
-        secondary=("engaged_learners", "chatbot_users", "certificates_earned"),
+        secondary=(
+            "engaged_learners",
+            "video_watchers",
+            "problem_attempters",
+            "chatbot_users",
+            "certificates_earned",
+        ),
         derived={
             "engagement_rate_pct": ("engaged_learners",),
-            "total_videos_watched": ("engaged_learners",),
-            "avg_videos_per_engaged_learner": ("engaged_learners",),
-            "total_problems_attempted": ("engaged_learners",),
-            "avg_problems_per_engaged_learner": ("engaged_learners",),
+            "total_videos_watched": ("video_watchers",),
+            "avg_videos_per_engaged_learner": ("engaged_learners", "video_watchers"),
+            "total_problems_attempted": ("problem_attempters",),
+            "avg_problems_per_engaged_learner": ("engaged_learners", "problem_attempters"),
             "total_chatbot_interactions": ("chatbot_users",),
             "chatbot_adoption_pct": ("chatbot_users",),
         },
@@ -232,8 +251,10 @@ class ContentEngagementDepth(SQLModel):
     engaged_learners: int | None
     engagement_rate_pct: float | None
     total_videos_watched: int | None
+    video_watchers: int | None
     avg_videos_per_engaged_learner: float | None
     total_problems_attempted: int | None
+    problem_attempters: int | None
     avg_problems_per_engaged_learner: float | None
     total_chatbot_interactions: int | None
     chatbot_users: int | None

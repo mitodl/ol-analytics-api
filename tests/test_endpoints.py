@@ -217,8 +217,10 @@ async def test_content_engagement_suppresses_secondary_counts_and_derivatives(ap
         "engaged_learners": 1,
         "engagement_rate_pct": 2.0,
         "total_videos_watched": 9,
+        "video_watchers": 1,
         "avg_videos_per_engaged_learner": 9.0,
         "total_problems_attempted": 4,
+        "problem_attempters": 1,
         "avg_problems_per_engaged_learner": 4.0,
         "total_chatbot_interactions": 3,
         "chatbot_users": 2,
@@ -246,6 +248,8 @@ async def test_content_engagement_suppresses_secondary_counts_and_derivatives(ap
     assert data["total_enrolled_learners"] == 50
     # Sub-floor secondary counts nulled.
     assert data["engaged_learners"] is None
+    assert data["video_watchers"] is None
+    assert data["problem_attempters"] is None
     assert data["chatbot_users"] is None
     assert data["certificates_earned"] is None
     # Everything derived from engaged_learners.
@@ -257,6 +261,118 @@ async def test_content_engagement_suppresses_secondary_counts_and_derivatives(ap
     # Everything derived from chatbot_users.
     assert data["total_chatbot_interactions"] is None
     assert data["chatbot_adoption_pct"] is None
+
+
+async def test_content_engagement_floors_activity_cohorts_under_a_large_engaged_cohort(app):
+    # The gap PR #2520 closed: engaged_learners clears the floor, so nothing
+    # keyed on it suppresses, but only ONE learner watched a video. Without
+    # video_watchers in the row the totals and the average rode through on the
+    # superset's floor and disclosed that learner's exact activity.
+    row = {
+        "organization_key": "org-a",
+        "organization_name": "Org A",
+        "courserun_readable_id": "course-v1:MITx+6.00+2026",
+        "courserun_title": "Intro",
+        "total_enrolled_learners": 50,
+        "engaged_learners": 30,
+        "engagement_rate_pct": 60.0,
+        "total_videos_watched": 9,
+        "video_watchers": 1,
+        "avg_videos_per_engaged_learner": 0.3,
+        "total_problems_attempted": 400,
+        "problem_attempters": 25,
+        "avg_problems_per_engaged_learner": 13.3,
+        "total_chatbot_interactions": 12,
+        "chatbot_users": 8,
+        "chatbot_adoption_pct": 16.0,
+        "certificates_earned": 20,
+    }
+    with (
+        patch(
+            "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
+            new=_fake_fetch_all([row]),
+        ),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/content-engagement",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
+            )
+    assert response.status_code == 200
+    (data,) = response.json()["data"]
+    # The single video-watcher is suppressed, and so is everything computed
+    # over that cohort -- including the average, whose numerator would
+    # otherwise be recoverable as avg * engaged_learners.
+    assert data["video_watchers"] is None
+    assert data["total_videos_watched"] is None
+    assert data["avg_videos_per_engaged_learner"] is None
+    # Cohorts that cleared the floor are untouched: suppression is per-column,
+    # so one sub-floor cohort must not blank the rest of the row.
+    assert data["engaged_learners"] == 30
+    assert data["engagement_rate_pct"] == 60.0
+    assert data["problem_attempters"] == 25
+    assert data["total_problems_attempted"] == 400
+    assert data["avg_problems_per_engaged_learner"] == 13.3
+    assert data["chatbot_users"] == 8
+    assert data["total_chatbot_interactions"] == 12
+
+
+async def test_monthly_trend_floors_event_counts_through_their_learner_cohorts(app):
+    # An event count clears a learner floor on its own -- one learner
+    # enrolling in twelve runs reads as new_enrollments == 12 -- so the floor
+    # has to be applied to enrolling_learners and carried to the event count,
+    # not applied to the event count directly.
+    row = {
+        "organization_key": "org-a",
+        "organization_name": "Org A",
+        "activity_year_and_month": "2026-07",
+        "monthly_active_learners": 40,
+        "new_enrollments": 12,
+        "enrolling_learners": 1,
+        "certificates_earned": 30,
+        "certified_learners": 22,
+        "total_videos_watched": 500,
+        "video_watchers": 18,
+        "total_problems_attempted": 7,
+        "problem_attempters": 2,
+        "total_chatbot_interactions": 60,
+        "chatbot_users": 15,
+    }
+    with (
+        patch(
+            "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
+            new=_fake_fetch_all([row]),
+        ),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/engagement-trend",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
+            )
+    assert response.status_code == 200
+    (data,) = response.json()["data"]
+    # One enrolling learner: both the cohort and the 12 events it produced go.
+    assert data["enrolling_learners"] is None
+    assert data["new_enrollments"] is None
+    # Two problem-attempters, likewise.
+    assert data["problem_attempters"] is None
+    assert data["total_problems_attempted"] is None
+    # Cohorts above the floor keep their totals.
+    assert data["monthly_active_learners"] == 40
+    assert data["certified_learners"] == 22
+    assert data["certificates_earned"] == 30
+    assert data["video_watchers"] == 18
+    assert data["total_videos_watched"] == 500
+    assert data["chatbot_users"] == 15
+    assert data["total_chatbot_interactions"] == 60
 
 
 async def test_org_endpoint_403_for_member_who_is_not_a_manager(app):
