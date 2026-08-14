@@ -117,12 +117,28 @@ class MonthlyEngagementTrend(SQLModel):
 
     None of them is attributable to ``monthly_active_learners``. Each is a
     plain SUM over the source report, so only the learners who did that
-    specific thing contribute, and because ``active_count`` is set by *any*
-    activity each contributing cohort is a strict subset of the primary — so
-    clearing the primary floor never implies the subset cleared it. A month
-    with 40 active learners can carry a chatbot total contributed by exactly
-    one of them, which is why each total is ``derived`` from its own cohort
-    rather than from the primary.
+    specific thing contribute — and clearing the primary floor says nothing
+    about whether that narrower cohort cleared it. A month with 40 active
+    learners can carry a chatbot total contributed by exactly one of them,
+    which is why each total is ``derived`` from its own cohort rather than
+    from the primary.
+
+    How each cohort relates to the primary differs, and neither case makes
+    mapping to the primary safe:
+
+    - ``certified_learners``, ``video_watchers``, ``problem_attempters`` and
+      ``chatbot_users`` are strict *subsets*. ``active_count`` is 1 when any
+      of navigation, discussion, videos, problems, chatbot or certificate
+      activity is nonzero (organization_administration_report.sql), so each
+      of those actions sets it.
+    - ``enrolling_learners`` is *not* a subset. ``enrolled_count`` is absent
+      from that expression, so enrolling alone never sets ``active_count``
+      and a learner who only enrolled is counted here but not in the primary.
+      The row gate is unaffected — a month whose primary is sub-floor is
+      dropped whole, which over-suppresses a large enrollment cohort rather
+      than disclosing one — but the subset reasoning does not apply, and
+      ``new_enrollments`` is floored through ``enrolling_learners`` on its
+      own terms.
 
     ``new_enrollments`` and ``certificates_earned`` are SUMs of
     per-learner-per-course-run markers, so they count *events*, not learners:
@@ -201,8 +217,13 @@ class ContentEngagementDepth(SQLModel):
     The video and problem columns are floored through the cohorts the view now
     publishes (ol-data-platform PR #2520): ``total_videos_watched`` is summed
     over ``video_watchers`` and ``total_problems_attempted`` over
-    ``problem_attempters``, each a strict subset of ``engaged_learners`` since
-    ``active_count`` is set by *any* activity.
+    ``problem_attempters``, each a strict subset of ``engaged_learners``
+    because watching a video or attempting a problem is one of the activities
+    that sets ``active_count``. (Every cohort this view emits is such a
+    subset. That is a property of these particular cohorts, not a general
+    rule — see ``MonthlyEngagementTrend``, where ``enrolling_learners`` is
+    not a subset of its primary because enrolling does not set
+    ``active_count``.)
 
     The ``avg_*_per_engaged_learner`` columns are derived from *two* cohorts,
     which is why each names both. The denominator is ``engaged_learners`` —
