@@ -42,47 +42,51 @@ def _projected_columns(query: str) -> list[str]:
 # constants, each with the query build_select actually emits. The contract
 # endpoints are built from contracts.ENDPOINTS rather than restated, so a row
 # added there is covered here without touching this file.
-_CASES = [
-    _Case(
-        spec.mv,
-        build_select(
-            organizations._SCHEMA,  # noqa: SLF001
+_CASES = (
+    [
+        _Case(
             spec.mv,
+            build_select(
+                organizations._SCHEMA,  # noqa: SLF001
+                spec.mv,
+                spec.model,
+                filter_columns=(organizations._ORG_FILTER_COLUMN,),  # noqa: SLF001
+                order_by=spec.order_by,
+            ),
             spec.model,
-            filter_columns=(organizations._ORG_FILTER_COLUMN,),  # noqa: SLF001
-            order_by=spec.order_by,
-        ),
-        spec.model,
-        spec.order_by,
-    )
-    for spec in organizations.ENDPOINTS
-] + [
-    _Case(
-        f"{spec.mv} (contract-scoped)",
-        build_select(
-            contracts._SCHEMA,  # noqa: SLF001
-            spec.mv,
+            spec.order_by,
+        )
+        for spec in organizations.ENDPOINTS
+    ]
+    + [
+        _Case(
+            f"{spec.mv} (contract-scoped)",
+            build_select(
+                contracts._SCHEMA,  # noqa: SLF001
+                spec.mv,
+                spec.model,
+                filter_columns=contracts._FILTER_COLUMNS,  # noqa: SLF001
+                order_by=spec.order_by,
+            ),
             spec.model,
-            filter_columns=contracts._FILTER_COLUMNS,  # noqa: SLF001
-            order_by=spec.order_by,
-        ),
-        spec.model,
-        spec.order_by,
-    )
-    for spec in contracts.ENDPOINTS
-] + [
-    _Case(
-        admin._MV,  # noqa: SLF001
-        build_select(
-            "b2b_analytics",
+            spec.order_by,
+        )
+        for spec in contracts.ENDPOINTS
+    ]
+    + [
+        _Case(
             admin._MV,  # noqa: SLF001
+            build_select(
+                "b2b_analytics",
+                admin._MV,  # noqa: SLF001
+                MitAdminContractHealth,
+                order_by=admin._ORDER_BY,  # noqa: SLF001
+            ),
             MitAdminContractHealth,
-            order_by=admin._ORDER_BY,  # noqa: SLF001
+            admin._ORDER_BY,  # noqa: SLF001
         ),
-        MitAdminContractHealth,
-        admin._ORDER_BY,  # noqa: SLF001
-    ),
-]
+    ]
+)
 
 _cases = pytest.mark.parametrize("case", _CASES, ids=[c.label for c in _CASES])
 
