@@ -1,6 +1,11 @@
 import pytest
 
-from ol_analytics_api.core.anonymization import CohortPolicy, suppress_small_cohorts
+from ol_analytics_api.core.anonymization import (
+    CohortPolicy,
+    CrossGrainAdditives,
+    suppress_cross_grain_additives,
+    suppress_small_cohorts,
+)
 
 
 def test_row_below_primary_floor_is_dropped():
@@ -40,6 +45,11 @@ def test_secondary_count_below_floor_is_nulled_but_row_kept():
     policy = CohortPolicy(
         primary="total_enrolled_learners",
         secondary=("engaged_learners", "chatbot_users", "certificates_earned"),
+        contained_in={
+            "engaged_learners": "total_enrolled_learners",
+            "chatbot_users": "engaged_learners",
+        },
+        uncontained=("certificates_earned",),
     )
     (row,) = suppress_small_cohorts(rows, policy, floor=5)
     assert row["engaged_learners"] == 40  # above floor, retained
@@ -50,14 +60,22 @@ def test_secondary_count_below_floor_is_nulled_but_row_kept():
 def test_secondary_count_of_zero_is_kept():
     # 0 discloses no individual — it stays visible as a real "nobody did this".
     rows = [{"total_enrolled_learners": 50, "certificates_earned": 0}]
-    policy = CohortPolicy(primary="total_enrolled_learners", secondary=("certificates_earned",))
+    policy = CohortPolicy(
+        primary="total_enrolled_learners",
+        secondary=("certificates_earned",),
+        uncontained=("certificates_earned",),
+    )
     (row,) = suppress_small_cohorts(rows, policy, floor=5)
     assert row["certificates_earned"] == 0
 
 
 def test_null_secondary_count_is_treated_as_disclosive():
     rows = [{"total_enrolled_learners": 50, "certificates_earned": None}]
-    policy = CohortPolicy(primary="total_enrolled_learners", secondary=("certificates_earned",))
+    policy = CohortPolicy(
+        primary="total_enrolled_learners",
+        secondary=("certificates_earned",),
+        uncontained=("certificates_earned",),
+    )
     (row,) = suppress_small_cohorts(rows, policy, floor=5)
     assert row["certificates_earned"] is None
 
@@ -82,6 +100,7 @@ def test_derived_values_nulled_when_their_cohort_is_suppressed():
             "total_videos_watched": ("engaged_learners",),
             "avg_videos_per_engaged_learner": ("engaged_learners",),
         },
+        contained_in={"engaged_learners": "total_enrolled_learners"},
     )
     (row,) = suppress_small_cohorts(rows, policy, floor=5)
     assert row["engaged_learners"] is None
@@ -102,6 +121,7 @@ def test_derived_values_retained_when_cohort_above_floor():
         primary="total_enrolled_learners",
         secondary=("engaged_learners",),
         derived={"avg_videos_per_engaged_learner": ("engaged_learners",)},
+        contained_in={"engaged_learners": "total_enrolled_learners"},
     )
     (row,) = suppress_small_cohorts(rows, policy, floor=5)
     assert row["engaged_learners"] == 30
@@ -110,7 +130,11 @@ def test_derived_values_retained_when_cohort_above_floor():
 
 def test_input_rows_are_not_mutated():
     rows = [{"total_enrolled_learners": 50, "certificates_earned": 1}]
-    policy = CohortPolicy(primary="total_enrolled_learners", secondary=("certificates_earned",))
+    policy = CohortPolicy(
+        primary="total_enrolled_learners",
+        secondary=("certificates_earned",),
+        uncontained=("certificates_earned",),
+    )
     suppress_small_cohorts(rows, policy, floor=5)
     assert rows[0]["certificates_earned"] == 1
 
@@ -124,6 +148,7 @@ def test_derived_referencing_unknown_cohort_raises_at_construction():
             primary="total_enrolled_learners",
             secondary=("engaged_learners",),
             derived={"avg_videos_per_engaged_learner": ("typo_learners",)},
+            contained_in={"engaged_learners": "total_enrolled_learners"},
         )
 
 
@@ -147,3 +172,209 @@ def test_derived_mapping_is_not_mutable_after_construction():
 
     with pytest.raises(TypeError):
         policy.derived["sneaky"] = ("total_enrolled_learners",)
+
+
+def _depth_policy(**overrides):
+    """The nesting the content-engagement view actually declares: watchers
+    inside the engaged learners, engaged inside everyone enrolled."""
+    kwargs = {
+        "primary": "total_enrolled_learners",
+        "secondary": ("engaged_learners", "video_watchers"),
+        "derived": {
+            "engagement_rate_pct": ("engaged_learners",),
+            "total_videos_watched": ("video_watchers",),
+        },
+        "contained_in": {
+            "engaged_learners": "total_enrolled_learners",
+            "video_watchers": "engaged_learners",
+        },
+    }
+    return CohortPolicy(**(kwargs | overrides))
+
+
+def test_near_total_secondary_is_nulled_because_its_complement_is_disclosive():
+    # 42 engaged of whom 40 watched a video names the 2 who did not just as
+    # precisely as a count of 2 watchers would name those 2.
+    rows = [
+        {
+            "total_enrolled_learners": 50,
+            "engaged_learners": 42,
+            "video_watchers": 40,
+            "total_videos_watched": 900,
+        }
+    ]
+    (row,) = suppress_small_cohorts(rows, _depth_policy(), floor=5)
+    assert row["video_watchers"] is None
+    assert row["total_videos_watched"] is None
+    assert row["engaged_learners"] == 42  # its own complement is 8, above floor
+
+
+def test_complement_of_zero_is_kept():
+    # Everybody engaged singles out nobody — the empty complement is not a
+    # cohort of size < floor, it is no cohort at all.
+    rows = [{"total_enrolled_learners": 50, "engaged_learners": 50, "video_watchers": 10}]
+    (row,) = suppress_small_cohorts(rows, _depth_policy(), floor=5)
+    assert row["engaged_learners"] == 50
+
+
+def test_complement_at_the_floor_is_kept():
+    rows = [{"total_enrolled_learners": 50, "engaged_learners": 45, "video_watchers": 10}]
+    (row,) = suppress_small_cohorts(rows, _depth_policy(), floor=5)
+    assert row["engaged_learners"] == 45
+
+
+def test_negative_complement_fails_closed():
+    # A subset larger than the cohort it is declared inside means the
+    # declaration is wrong for this row. The complement rule's whole job is to
+    # bound what can be back-computed, so an assumption it cannot trust
+    # suppresses rather than waves through.
+    rows = [{"total_enrolled_learners": 50, "engaged_learners": 30, "video_watchers": 31}]
+    (row,) = suppress_small_cohorts(rows, _depth_policy(), floor=5)
+    assert row["video_watchers"] is None
+
+
+def test_complement_is_checked_transitively_when_the_inner_cohort_is_suppressed():
+    # engaged_learners goes first (complement 2 within the enrolled). That
+    # hides the container of the (video_watchers, engaged_learners) pair, so
+    # the inner complement is no longer computable by a caller — but
+    # video_watchers is still visible next to total_enrolled_learners, whose
+    # complement is 3, and the transitive pair catches it.
+    rows = [{"total_enrolled_learners": 42, "engaged_learners": 40, "video_watchers": 39}]
+    (row,) = suppress_small_cohorts(rows, _depth_policy(), floor=5)
+    assert row["engaged_learners"] is None
+    assert row["video_watchers"] is None
+
+
+def test_uncontained_cohort_is_exempt_from_the_complement_rule():
+    # Enrolling does not make a learner active, so enrolling_learners is not a
+    # subset of the primary and the difference is not a complement. Subtracting
+    # anyway would suppress a perfectly publishable count on noise.
+    policy = CohortPolicy(
+        primary="monthly_active_learners",
+        secondary=("enrolling_learners",),
+        uncontained=("enrolling_learners",),
+    )
+    rows = [{"monthly_active_learners": 42, "enrolling_learners": 40}]
+    (row,) = suppress_small_cohorts(rows, policy, floor=5)
+    assert row["enrolling_learners"] == 40
+
+
+def test_unclassified_secondary_raises_at_construction():
+    # The leak this whole rule exists to close is silent by nature, so a
+    # cohort nobody thought about must not default to unprotected.
+    with pytest.raises(ValueError, match="classified neither"):
+        CohortPolicy(primary="total_enrolled_learners", secondary=("engaged_learners",))
+
+
+def test_cohort_in_both_contained_in_and_uncontained_raises():
+    with pytest.raises(ValueError, match="both contained_in and uncontained"):
+        CohortPolicy(
+            primary="total_enrolled_learners",
+            secondary=("engaged_learners",),
+            contained_in={"engaged_learners": "total_enrolled_learners"},
+            uncontained=("engaged_learners",),
+        )
+
+
+def test_containment_naming_an_unknown_container_raises():
+    with pytest.raises(ValueError, match="unknown cohort"):
+        CohortPolicy(
+            primary="total_enrolled_learners",
+            secondary=("engaged_learners",),
+            contained_in={"engaged_learners": "typo_learners"},
+        )
+
+
+def test_containment_of_a_non_secondary_column_raises():
+    with pytest.raises(ValueError, match="not a secondary cohort"):
+        CohortPolicy(
+            primary="total_enrolled_learners",
+            secondary=("engaged_learners",),
+            contained_in={
+                "engaged_learners": "total_enrolled_learners",
+                "some_rate_pct": "total_enrolled_learners",
+            },
+        )
+
+
+def test_uncontained_naming_a_non_secondary_column_raises():
+    with pytest.raises(ValueError, match="not a secondary cohort"):
+        CohortPolicy(
+            primary="total_enrolled_learners",
+            secondary=("engaged_learners",),
+            contained_in={"engaged_learners": "total_enrolled_learners"},
+            uncontained=("some_rate_pct",),
+        )
+
+
+def test_containment_cycle_raises():
+    # Left to run, a cycle would spin the ancestor walk forever; it also can't
+    # describe anything real, since strict containment is a partial order.
+    with pytest.raises(ValueError, match="cycle"):
+        CohortPolicy(
+            primary="total_enrolled_learners",
+            secondary=("a_learners", "b_learners"),
+            contained_in={"a_learners": "b_learners", "b_learners": "a_learners"},
+        )
+
+
+def test_containment_mapping_is_not_mutable_after_construction():
+    source = {"engaged_learners": "total_enrolled_learners"}
+    policy = CohortPolicy(
+        primary="total_enrolled_learners",
+        secondary=("engaged_learners",),
+        contained_in=source,
+    )
+
+    source["sneaky"] = "total_enrolled_learners"
+    assert "sneaky" not in policy.contained_in
+
+    with pytest.raises(TypeError):
+        policy.contained_in["sneaky"] = "total_enrolled_learners"
+
+
+_ADDITIVES = CrossGrainAdditives(
+    key_column="activity_year_and_month",
+    columns=("new_enrollments", "total_videos_watched"),
+)
+
+
+def test_cross_grain_additives_are_blanked_for_a_withheld_key():
+    # The caller holds this org total and every contract row but one, so the
+    # difference is the withheld contract's own activity.
+    rows = [
+        {
+            "activity_year_and_month": "2026-07",
+            "monthly_active_learners": 40,
+            "new_enrollments": 12,
+            "total_videos_watched": 500,
+        }
+    ]
+    (row,) = suppress_cross_grain_additives(rows, _ADDITIVES, {"2026-07"})
+    assert row["new_enrollments"] is None
+    assert row["total_videos_watched"] is None
+    # Learner counts are not additive across contracts (one learner active
+    # under two is counted in both), so subtracting them bounds rather than
+    # reveals, and they stay published.
+    assert row["monthly_active_learners"] == 40
+
+
+def test_cross_grain_leaves_other_keys_alone():
+    rows = [
+        {"activity_year_and_month": "2026-06", "new_enrollments": 9},
+        {"activity_year_and_month": "2026-07", "new_enrollments": 12},
+    ]
+    june, july = suppress_cross_grain_additives(rows, _ADDITIVES, {"2026-07"})
+    assert june["new_enrollments"] == 9
+    assert july["new_enrollments"] is None
+
+
+def test_cross_grain_with_nothing_withheld_changes_nothing():
+    rows = [{"activity_year_and_month": "2026-07", "new_enrollments": 12}]
+    assert suppress_cross_grain_additives(rows, _ADDITIVES, frozenset()) == rows
+
+
+def test_cross_grain_does_not_mutate_input_rows():
+    rows = [{"activity_year_and_month": "2026-07", "new_enrollments": 12}]
+    suppress_cross_grain_additives(rows, _ADDITIVES, {"2026-07"})
+    assert rows[0]["new_enrollments"] == 12

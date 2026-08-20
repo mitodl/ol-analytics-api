@@ -65,16 +65,25 @@ def _is_count_query(query):
     return "COUNT(*)" in query
 
 
-def _fake_fetch_all(data_rows, total_count=0):
+def _is_hidden_grain_probe(query):
+    # build_hidden_grain_probe is the only thing in the service that projects
+    # DISTINCT — it asks the contract-grained MV which keys it withholds.
+    return "SELECT DISTINCT " in query
+
+
+def _fake_fetch_all(data_rows, total_count=0, hidden_keys=()):
     """A fetch_all stub that answers the information_schema as_of probe with
-    _AS_OF, the envelope's total-count query with ``total_count``, and every
-    other query with the given MV rows."""
+    _AS_OF, the envelope's total-count query with ``total_count``, the
+    hidden-grain probe with ``hidden_keys``, and every other query with the
+    given MV rows."""
 
     async def fetch_all(query, *_args):
         if "information_schema" in query:
             return [{"as_of": _AS_OF}]
         if _is_count_query(query):
             return [{"total_count": total_count}]
+        if _is_hidden_grain_probe(query):
+            return [{"grain_key": key} for key in hidden_keys]
         return list(data_rows)
 
     return fetch_all
@@ -82,14 +91,17 @@ def _fake_fetch_all(data_rows, total_count=0):
 
 def _capture_page_query(captured, rows=(), total_count=0):
     """A fetch_all stub that records the *paged* SELECT specifically. The as_of
-    probe and the total-count query go through the same pool, so a stub that
-    captured every query would report whichever happened to run last."""
+    probe, the total-count query and the hidden-grain probe go through the same
+    pool, so a stub that captured every query would report whichever happened
+    to run last."""
 
     async def fetch_all(query, params):
         if "information_schema" in query:
             return [{"as_of": _AS_OF}]
         if _is_count_query(query):
             return [{"total_count": total_count}]
+        if _is_hidden_grain_probe(query):
+            return []
         captured["query"] = query
         captured["params"] = params
         return list(rows)
@@ -374,6 +386,114 @@ async def test_monthly_trend_floors_event_counts_through_their_learner_cohorts(a
     assert data["total_videos_watched"] == 500
     assert data["chatbot_users"] == 15
     assert data["total_chatbot_interactions"] == 60
+
+
+def _trend_row(month="2026-07"):
+    """An org-grained engagement-trend row that clears every floor on its own,
+    so anything suppressed in these tests came from the cross-grain guard."""
+    return {
+        "organization_key": "org-a",
+        "organization_name": "Org A",
+        "activity_year_and_month": month,
+        "monthly_active_learners": 40,
+        "new_enrollments": 12,
+        "enrolling_learners": 9,
+        "certificates_earned": 30,
+        "certified_learners": 22,
+        "total_videos_watched": 500,
+        "video_watchers": 18,
+        "total_problems_attempted": 7,
+        "problem_attempters": 6,
+        "total_chatbot_interactions": 60,
+        "chatbot_users": 15,
+    }
+
+
+async def _get_trend(app, fetch_all):
+    with (
+        patch("ol_analytics_api.core.db.client.starrocks_pool.fetch_all", new=fetch_all),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            return await client.get(
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/engagement-trend",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
+            )
+
+
+async def test_org_trend_blanks_additive_columns_a_withheld_contract_row_would_reveal(app):
+    # The org row survives every per-row floor. What it cannot survive is the
+    # caller also reading the contract endpoint for the same month: this org's
+    # other contracts are published there, so `org_total - sum(them)` is the
+    # activity of the contract the floor withheld.
+    response = await _get_trend(app, _fake_fetch_all([_trend_row()], hidden_keys=["2026-07"]))
+
+    assert response.status_code == 200
+    (data,) = response.json()["data"]
+    assert data["new_enrollments"] is None
+    assert data["certificates_earned"] is None
+    assert data["total_videos_watched"] is None
+    assert data["total_problems_attempted"] is None
+    assert data["total_chatbot_interactions"] is None
+    # Learner counts don't sum across contracts — a learner active under two is
+    # counted in both rows — so subtracting them bounds the withheld cohort
+    # rather than revealing it, and over-suppressing them would cost the
+    # dashboard its headline number for nothing.
+    assert data["monthly_active_learners"] == 40
+    assert data["certified_learners"] == 22
+    assert data["video_watchers"] == 18
+
+
+async def test_org_trend_untouched_when_the_contract_grain_withholds_nothing(app):
+    response = await _get_trend(app, _fake_fetch_all([_trend_row()], hidden_keys=[]))
+
+    assert response.status_code == 200
+    (data,) = response.json()["data"]
+    assert data["new_enrollments"] == 12
+    assert data["total_videos_watched"] == 500
+    assert data["certificates_earned"] == 30
+
+
+async def test_org_trend_blanks_only_the_months_the_contract_grain_withholds(app):
+    rows = [_trend_row("2026-06"), _trend_row("2026-07")]
+    response = await _get_trend(app, _fake_fetch_all(rows, hidden_keys=["2026-07"]))
+
+    june, july = response.json()["data"]
+    assert june["new_enrollments"] == 12
+    assert july["new_enrollments"] is None
+
+
+async def test_org_endpoints_without_a_finer_grain_issue_no_probe(app):
+    # Only the trend endpoint aggregates across an org's contracts. Probing on
+    # the other four would be a round trip per request buying nothing.
+    queries = []
+
+    async def fetch_all(query, *_args):
+        queries.append(query)
+        if "information_schema" in query:
+            return [{"as_of": _AS_OF}]
+        if _is_count_query(query):
+            return [{"total_count": 0}]
+        return []
+
+    with (
+        patch("ol_analytics_api.core.db.client.starrocks_pool.fetch_all", new=fetch_all),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/content-engagement",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
+            )
+
+    assert response.status_code == 200
+    assert not any(_is_hidden_grain_probe(query) for query in queries)
 
 
 async def test_org_endpoint_403_for_member_who_is_not_a_manager(app):
