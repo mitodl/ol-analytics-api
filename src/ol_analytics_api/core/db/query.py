@@ -17,11 +17,17 @@ instead of calling ``starrocks_pool.fetch_all`` directly.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from typing import Any, ClassVar, Protocol, cast
 
 from sqlmodel import SQLModel
 
-from ol_analytics_api.core.anonymization import CohortPolicy, suppress_small_cohorts
+from ol_analytics_api.core.anonymization import (
+    CohortPolicy,
+    CrossGrainAdditives,
+    suppress_cross_grain_additives,
+    suppress_small_cohorts,
+)
 from ol_analytics_api.core.db.client import starrocks_pool
 from ol_analytics_api.core.db.identifiers import validate_sql_identifier
 
@@ -122,6 +128,48 @@ def build_existence_check(schema: str, table: str, filter_columns: tuple[str, ..
     return f"SELECT 1 FROM {schema_table} WHERE {predicates} LIMIT 1"  # noqa: S608
 
 
+def build_hidden_grain_probe(
+    schema: str,
+    table: str,
+    *,
+    key_column: str,
+    cohort_column: str,
+    filter_columns: tuple[str, ...],
+) -> str:
+    """Build the probe that asks a finer-grained MV which keys it withholds.
+
+    The service publishes the same learners at organization and contract grain,
+    and a coarse row's exactly-additive columns are the sum of the contract rows
+    beneath it. So a contract row dropped by the floor is recoverable as
+    ``org_total - sum(the visible contract rows)``. Deciding whether to blank
+    the coarse columns needs one bit per key: does the finer grain withhold a
+    row here?
+
+    That bit is all this returns. The comparison against the floor happens in
+    SQL and the projection is the grouping key alone, so the sub-floor cohort
+    count that motivates the whole exercise is never read into the process —
+    it cannot be logged, serialized, or leaked by a later change to this file.
+
+    NULL cohorts count as withheld: ``suppress_small_cohorts`` drops a row whose
+    primary is NULL, and ``cohort < floor`` is NULL (not true) for those, so the
+    predicate has to name them explicitly or the probe would miss exactly the
+    rows the floor is most certain about.
+
+    Identifiers are spliced under ``build_select``'s rules — every token is
+    ``validate_sql_identifier``'d, the floor and filter values are bound.
+    """
+    if not filter_columns:
+        msg = "build_hidden_grain_probe needs at least one filter column"
+        raise ValueError(msg)
+    schema_table = f"{validate_sql_identifier(schema)}.{validate_sql_identifier(table)}"
+    key = validate_sql_identifier(key_column)
+    cohort = validate_sql_identifier(cohort_column)
+    predicates = " AND ".join(f"{validate_sql_identifier(name)} = %s" for name in filter_columns)
+    # Same justification as build_select: identifiers validated, values bound.
+    where = f"WHERE {predicates} AND ({cohort} < %s OR {cohort} IS NULL)"
+    return f"SELECT DISTINCT {key} FROM {schema_table} {where}"  # noqa: S608
+
+
 class SuppressibleModel(Protocol):
     """A row model that declares how the anonymization floor applies to it."""
 
@@ -146,11 +194,31 @@ async def fetch_and_suppress[ModelT: SQLModel](
     params: tuple[Any, ...],
     model_cls: type[ModelT],
     floor: int,
+    *,
+    cross_grain: tuple[CrossGrainAdditives, Collection[Any]] | None = None,
 ) -> list[ModelT]:
+    """Query, suppress, construct — the one path rows take out of the database.
+
+    ``cross_grain`` is for a coarse-grained endpoint whose rows are sums over a
+    finer grain that this service also publishes: pass the additive columns
+    together with the keys the finer grain withholds (see
+    ``build_hidden_grain_probe``) and those columns are blanked before any row
+    becomes a model. Both suppression passes run here rather than in the router
+    so that no endpoint can construct a response model from an unsuppressed row.
+    """
     suppressible_cls = _require_cohort_policy(model_cls)
     rows = await starrocks_pool.fetch_all(query, params)
     suppressed = suppress_small_cohorts(rows, suppressible_cls.cohort_policy, floor)
+    if cross_grain is not None:
+        additives, hidden_keys = cross_grain
+        suppressed = suppress_cross_grain_additives(suppressed, additives, hidden_keys)
     return [model_cls(**row) for row in suppressed]
+
+
+async def fetch_hidden_grain_keys(query: str, params: tuple[Any, ...]) -> frozenset[Any]:
+    """Run a ``build_hidden_grain_probe`` query, returning the withheld keys."""
+    rows = await starrocks_pool.fetch_all(query, params)
+    return frozenset(next(iter(row.values())) for row in rows)
 
 
 async def fetch_visible_count(query: str, params: tuple[Any, ...]) -> int:

@@ -115,6 +115,39 @@ def test_cohort_policy_columns_are_real_model_fields(case):
     for derived, cohorts in policy.derived.items():
         assert derived in fields, f"{case.label}: derived column {derived!r} not in model fields"
         assert set(cohorts) <= fields, f"{case.label}: {derived!r} references a missing cohort"
+    # Same argument for the containment declarations: a typo'd container is a
+    # complement that never gets checked.
+    for subset, container in policy.contained_in.items():
+        assert subset in fields, f"{case.label}: contained cohort {subset!r} not a model field"
+        assert container in fields, f"{case.label}: container {container!r} not a model field"
+    assert set(policy.uncontained) <= fields, f"{case.label}: uncontained names a missing column"
+
+
+def test_finer_grain_declarations_match_the_contract_endpoint_they_name():
+    """The cross-grain guard is only sound if the coarse endpoint and the
+    contract endpoint it probes really are the same data at two grains."""
+    contract_models = {spec.mv: spec.model for spec in contracts.ENDPOINTS}
+
+    for spec in organizations.ENDPOINTS:
+        if spec.finer_grain is None:
+            continue
+        finer_model = contract_models[spec.finer_grain.mv]
+        coarse_fields = set(spec.model.model_fields)
+        # The probe filters on the key and the coarse rows are matched by it,
+        # so both grains have to carry it.
+        (key_column,) = spec.order_by
+        assert key_column in coarse_fields
+        assert key_column in set(finer_model.model_fields)
+        # The probe compares against the finer grain's own row gate, so it
+        # withholds exactly the keys suppress_small_cohorts drops there.
+        assert spec.finer_grain.cohort_column == finer_model.cohort_policy.primary
+        # Only event sums add up exactly across contracts. Blanking a cohort
+        # count here would over-suppress; leaving out a sum would leave the
+        # subtraction open.
+        policy = spec.model.cohort_policy
+        additives = set(spec.finer_grain.additive_columns)
+        assert additives <= set(policy.derived), f"{spec.mv}: additive column is not a derived sum"
+        assert not additives & {policy.primary, *policy.secondary}
 
 
 @_cases
