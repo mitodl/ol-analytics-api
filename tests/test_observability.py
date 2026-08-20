@@ -5,6 +5,20 @@ from ol_analytics_api.core.observability import telemetry
 from ol_analytics_api.core.observability.sentry import _before_send, init_sentry
 
 
+def _clear_endpoint_env(monkeypatch):
+    """Clear every variable configure_opentelemetry() consults for an endpoint.
+
+    All three matter: a value leaking in from the ambient environment would
+    turn a "no endpoint configured" test into a configured one.
+    """
+    for name in (
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "OPENTELEMETRY_ENDPOINT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 def test_configure_structlog_is_idempotent():
     obs_logging.reset_configuration()
     obs_logging.configure_structlog(debug=True)
@@ -13,8 +27,7 @@ def test_configure_structlog_is_idempotent():
 
 
 def test_configure_opentelemetry_noop_without_endpoint_or_debug(monkeypatch):
-    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
-    monkeypatch.delenv("OPENTELEMETRY_ENDPOINT", raising=False)
+    _clear_endpoint_env(monkeypatch)
     telemetry.reset_configuration()
     provider = telemetry.configure_opentelemetry(
         service_name="test", service_version="0", environment="test", debug=False
@@ -23,8 +36,7 @@ def test_configure_opentelemetry_noop_without_endpoint_or_debug(monkeypatch):
 
 
 def test_configure_opentelemetry_configures_when_debug(monkeypatch):
-    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
-    monkeypatch.delenv("OPENTELEMETRY_ENDPOINT", raising=False)
+    _clear_endpoint_env(monkeypatch)
     telemetry.reset_configuration()
     provider = telemetry.configure_opentelemetry(
         service_name="test", service_version="0", environment="test", debug=True
@@ -41,8 +53,7 @@ def test_configure_opentelemetry_is_idempotent(monkeypatch):
     # verify configure_opentelemetry's second-call branch specifically:
     # `_configured` is True -> return the existing provider without
     # rebuilding one.
-    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
-    monkeypatch.delenv("OPENTELEMETRY_ENDPOINT", raising=False)
+    _clear_endpoint_env(monkeypatch)
     telemetry.reset_configuration()
     with patch("ol_analytics_api.core.observability.telemetry.trace.set_tracer_provider"):
         first = telemetry.configure_opentelemetry(
@@ -60,8 +71,7 @@ def test_configure_opentelemetry_is_idempotent(monkeypatch):
 
 
 def test_configure_opentelemetry_adds_console_exporter_when_enabled(monkeypatch):
-    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
-    monkeypatch.delenv("OPENTELEMETRY_ENDPOINT", raising=False)
+    _clear_endpoint_env(monkeypatch)
     monkeypatch.setenv("OPENTELEMETRY_CONSOLE_EXPORTER", "true")
     telemetry.reset_configuration()
     provider = telemetry.configure_opentelemetry(
@@ -71,16 +81,60 @@ def test_configure_opentelemetry_adds_console_exporter_when_enabled(monkeypatch)
     telemetry.reset_configuration()
 
 
-def test_configure_opentelemetry_adds_otlp_exporter_when_endpoint_set(monkeypatch):
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.example.test:4318")
+def _exporter_call(monkeypatch, env):
+    _clear_endpoint_env(monkeypatch)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
     telemetry.reset_configuration()
     with patch("ol_analytics_api.core.observability.telemetry.OTLPSpanExporter") as exporter:
         provider = telemetry.configure_opentelemetry(
             service_name="test", service_version="0", environment="test", debug=False
         )
     assert provider is not None
-    exporter.assert_called_once_with(endpoint="http://collector.example.test:4318")
     telemetry.reset_configuration()
+    return exporter
+
+
+def test_otel_exporter_otlp_endpoint_is_left_to_the_sdk(monkeypatch):
+    # A base URL passed explicitly is used verbatim -- the exporter only appends
+    # /v1/traces when it resolves the variable itself -- so forwarding it here
+    # would POST every batch at the collector root for a 404 apiece.
+    exporter = _exporter_call(
+        monkeypatch, {"OTEL_EXPORTER_OTLP_ENDPOINT": "http://collector.example.test:4318"}
+    )
+    exporter.assert_called_once_with(endpoint=None)
+
+
+def test_signal_specific_endpoint_enables_tracing_and_is_left_to_the_sdk(monkeypatch):
+    # Previously ignored outright: only OTEL_EXPORTER_OTLP_ENDPOINT and
+    # OPENTELEMETRY_ENDPOINT were consulted, so setting just this one disabled
+    # tracing instead of enabling it.
+    exporter = _exporter_call(
+        monkeypatch,
+        {"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://collector.example.test:4318/v1/traces"},
+    )
+    exporter.assert_called_once_with(endpoint=None)
+
+
+def test_opentelemetry_endpoint_setting_is_passed_verbatim(monkeypatch):
+    # The library-specific variable is a full signal URL, so verbatim is what
+    # the caller means. This is the path the deployed stacks still use.
+    exporter = _exporter_call(
+        monkeypatch,
+        {"OPENTELEMETRY_ENDPOINT": "http://collector.example.test:4318/v1/traces"},
+    )
+    exporter.assert_called_once_with(endpoint="http://collector.example.test:4318/v1/traces")
+
+
+def test_environment_endpoint_wins_over_the_setting(monkeypatch):
+    exporter = _exporter_call(
+        monkeypatch,
+        {
+            "OTEL_EXPORTER_OTLP_ENDPOINT": "http://collector.example.test:4318",
+            "OPENTELEMETRY_ENDPOINT": "http://legacy.example.test:4318/v1/traces",
+        },
+    )
+    exporter.assert_called_once_with(endpoint=None)
 
 
 def test_configure_opentelemetry_logs_but_does_not_raise_when_otlp_exporter_fails(

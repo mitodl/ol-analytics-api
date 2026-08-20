@@ -2,8 +2,11 @@
 configure_opentelemetry() (ol-django:src/observability/mitol/observability/telemetry.py).
 
 Activation matches the org's current convention (see learn-ai's settings.py):
-OTel is enabled when OTEL_EXPORTER_OTLP_ENDPOINT or OPENTELEMETRY_ENDPOINT is
-set, or when running in debug mode — no separate "enabled" flag. Traces only;
+OTel is enabled when OTEL_EXPORTER_OTLP_TRACES_ENDPOINT,
+OTEL_EXPORTER_OTLP_ENDPOINT or OPENTELEMETRY_ENDPOINT is set, or when running
+in debug mode — no separate "enabled" flag. The two standard variables are
+resolved by the SDK rather than read here; only OPENTELEMETRY_ENDPOINT, which
+is a full signal URL, is passed to the exporter. Traces only;
 this service (like the Django plugin it's modeled on) doesn't run a separate
 OTel Logs SDK pipeline — trace/span correlation happens by embedding
 trace_id/span_id into the structured JSON logs (see logging.py +
@@ -49,6 +52,27 @@ def _get_resource(service_name: str, service_version: str, environment: str) -> 
     }
     attributes.update({k: v for k, v in k8s_map.items() if v})
     return Resource.create(attributes)
+
+
+def _endpoint_from_env() -> str | None:
+    """Return the OTLP traces endpoint the environment configures, if any.
+
+    Used only to decide *whether* the environment configures an endpoint, never
+    to build the exporter. The SDK resolves these two variables correctly on its
+    own -- a signal-specific endpoint verbatim, a base endpoint with
+    /v1/traces appended (see _append_trace_path in the http trace exporter) --
+    and an endpoint passed explicitly to an exporter is always used verbatim,
+    which defeats that. Handing OTEL_EXPORTER_OTLP_ENDPOINT to the exporter
+    would turn a spec-correct base URL into POSTs at the collector root: a 404
+    per batch, surfaced as nothing louder than a BatchSpanProcessor warning.
+
+    Checked in the SDK's own precedence order, most specific first.
+    """
+    for env_var in ("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "OTEL_EXPORTER_OTLP_ENDPOINT"):
+        value = os.environ.get(env_var)
+        if value:
+            return value
+    return None
 
 
 def _auto_instrument() -> None:
@@ -100,9 +124,9 @@ def configure_opentelemetry(
         return existing if isinstance(existing, TracerProvider) else None
     _configured = True
 
-    endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT") or os.environ.get(
-        "OPENTELEMETRY_ENDPOINT"
-    )
+    env_endpoint = _endpoint_from_env()
+    settings_endpoint = os.environ.get("OPENTELEMETRY_ENDPOINT")
+    endpoint = env_endpoint or settings_endpoint
     if not endpoint and not debug:
         log.debug("OpenTelemetry: no endpoint configured and not debug, skipping")
         return None
@@ -119,8 +143,18 @@ def configure_opentelemetry(
 
     if endpoint:
         try:
-            provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
-            log.info("OpenTelemetry: OTLP exporter configured to %s", endpoint)
+            # Pass an endpoint only when it came from OPENTELEMETRY_ENDPOINT, a
+            # full signal URL where verbatim use is what the caller means. When
+            # the environment configures it, hand the SDK nothing and let it
+            # resolve -- see _endpoint_from_env.
+            exporter_endpoint = None if env_endpoint else settings_endpoint
+            provider.add_span_processor(
+                BatchSpanProcessor(OTLPSpanExporter(endpoint=exporter_endpoint))
+            )
+            log.info(
+                "OpenTelemetry: OTLP exporter configured from %s",
+                "environment" if env_endpoint else "OPENTELEMETRY_ENDPOINT",
+            )
         except Exception:  # noqa: BLE001
             log.warning("OpenTelemetry: failed to configure OTLP exporter", exc_info=True)
 
