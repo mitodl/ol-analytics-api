@@ -9,7 +9,13 @@ import pytest
 from sqlmodel import SQLModel
 
 from ol_analytics_api.core.anonymization import CohortPolicy
-from ol_analytics_api.core.db.query import build_count, fetch_and_suppress, fetch_visible_count
+from ol_analytics_api.core.db.query import (
+    build_count,
+    build_hidden_grain_probe,
+    fetch_and_suppress,
+    fetch_hidden_grain_keys,
+    fetch_visible_count,
+)
 
 
 class _PolicylessRow(SQLModel):
@@ -100,3 +106,47 @@ async def test_count_alias_matches_the_column_fetch_visible_count_reads():
         new=AsyncMock(return_value=[{alias: 7}]),
     ):
         assert await fetch_visible_count(query, ()) == 7
+
+
+def test_build_hidden_grain_probe_projects_only_the_key():
+    # The sub-floor cohort count that motivates the probe is compared inside
+    # SQL and never read into the process, so it cannot be logged or returned
+    # by a later change here. NULL cohorts are named explicitly: `cohort < %s`
+    # is NULL for them, and those are rows suppression drops outright.
+    query = build_hidden_grain_probe(
+        "b2b_analytics",
+        "mv_b2b_contract_monthly_engagement_trend",
+        key_column="activity_year_and_month",
+        cohort_column="monthly_active_learners",
+        filter_columns=("sso_organization_id",),
+    )
+
+    assert query == (
+        "SELECT DISTINCT activity_year_and_month "
+        "FROM b2b_analytics.mv_b2b_contract_monthly_engagement_trend "
+        "WHERE sso_organization_id = %s "
+        "AND (monthly_active_learners < %s OR monthly_active_learners IS NULL)"
+    )
+
+
+def test_build_hidden_grain_probe_requires_a_filter_column():
+    # Unfiltered, the probe would ask which keys *any* org withholds and blank
+    # this org's totals on another org's data.
+    with pytest.raises(ValueError, match="at least one filter column"):
+        build_hidden_grain_probe(
+            "b2b_analytics",
+            "mv_thing",
+            key_column="activity_year_and_month",
+            cohort_column="monthly_active_learners",
+            filter_columns=(),
+        )
+
+
+async def test_fetch_hidden_grain_keys_returns_the_projected_values():
+    with patch(
+        "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
+        new=AsyncMock(return_value=[{"activity_year_and_month": "2026-06"}]),
+    ):
+        assert await fetch_hidden_grain_keys("SELECT DISTINCT x FROM y", ()) == frozenset(
+            {"2026-06"}
+        )
