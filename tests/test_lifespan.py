@@ -67,8 +67,8 @@ async def test_partial_tenant_startup_failure_still_stops_pool():
         yield  # unreachable, but keeps this an async generator
 
     fake_tenants = [
-        Tenant("/ok", create_app=object, lifespan=ok_lifespan),
-        Tenant("/broken", create_app=object, lifespan=failing_lifespan),
+        Tenant("ok", "/ok", create_app=object, lifespan=ok_lifespan),
+        Tenant("broken", "/broken", create_app=object, lifespan=failing_lifespan),
     ]
     root_app = SimpleNamespace(
         state=SimpleNamespace(tenant_apps={"/ok": object(), "/broken": object()})
