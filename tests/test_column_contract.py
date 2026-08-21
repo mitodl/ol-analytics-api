@@ -14,7 +14,7 @@ CI contract-test task (see the schema-drift follow-up).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import pytest
 from sqlmodel import SQLModel
@@ -138,16 +138,39 @@ def test_finer_grain_declarations_match_the_contract_endpoint_they_name():
         (key_column,) = spec.order_by
         assert key_column in coarse_fields
         assert key_column in set(finer_model.model_fields)
-        # The probe compares against the finer grain's own row gate, so it
-        # withholds exactly the keys suppress_small_cohorts drops there.
-        assert spec.finer_grain.cohort_column == finer_model.cohort_policy.primary
+        # The guard suppresses the finer rows with the finer model's own policy,
+        # so the spec must name the model whose MV it scans.
+        assert spec.finer_grain.model is finer_model
         # Only event sums add up exactly across contracts. Blanking a cohort
         # count here would over-suppress; leaving out a sum would leave the
-        # subtraction open.
+        # subtraction open. _OrgEndpoint.__post_init__ enforces that the two
+        # lists partition the coarse model's derived columns; this pins the
+        # halves it does not know how to check.
         policy = spec.model.cohort_policy
         additives = set(spec.finer_grain.additive_columns)
         assert additives <= set(policy.derived), f"{spec.mv}: additive column is not a derived sum"
         assert not additives & {policy.primary, *policy.secondary}
+        assert additives, f"{spec.mv}: a finer grain with no additive column guards nothing"
+
+
+def test_finer_grain_must_classify_every_derived_column():
+    # The leak this guards against is an exactly-additive column nobody
+    # classified quietly keeping its subtraction open, which no other test
+    # would notice. It has to fail at import time.
+    trend = next(spec for spec in organizations.ENDPOINTS if spec.finer_grain is not None)
+    partial = replace(trend.finer_grain, additive_columns=trend.finer_grain.additive_columns[:-1])
+    with pytest.raises(ValueError, match="classified neither additive nor non-additive"):
+        replace(trend, finer_grain=partial)
+
+
+def test_finer_grain_rejects_a_column_that_is_not_derived():
+    trend = next(spec for spec in organizations.ENDPOINTS if spec.finer_grain is not None)
+    bogus = replace(
+        trend.finer_grain,
+        additive_columns=(*trend.finer_grain.additive_columns, "monthly_active_learners"),
+    )
+    with pytest.raises(ValueError, match="not derived columns"):
+        replace(trend, finer_grain=bogus)
 
 
 @_cases
@@ -168,3 +191,10 @@ def test_build_select_rejects_empty_order_by():
             MitAdminContractHealth,
             order_by=(),
         )
+
+
+def test_finer_grain_rejects_a_column_listed_as_both():
+    trend = next(spec for spec in organizations.ENDPOINTS if spec.finer_grain is not None)
+    both = replace(trend.finer_grain, non_additive_columns=trend.finer_grain.additive_columns)
+    with pytest.raises(ValueError, match="both additive and non-additive"):
+        replace(trend, finer_grain=both)
