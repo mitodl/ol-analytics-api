@@ -156,6 +156,11 @@ def _register(spec: _ContractEndpoint) -> None:
         # its concrete row model; mypy can't type a value used as a type param.
         response_model=OrgAnalyticsResponse[spec.model],  # type: ignore[name-defined]
         name=endpoint.__name__,
+        # See the same call in organizations.py: named explicitly so a
+        # generated client's method name is ours rather than a derivative of
+        # the path. The `contracts_` prefix is what separates these from the
+        # org router's identically-named panels.
+        operation_id=f"contracts_{endpoint.__name__}_retrieve",
     )
 
 

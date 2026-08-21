@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""Write each mounted tenant's OpenAPI document to openapi/specs/<tenant>.yaml.
+
+Run as `uv run bin/generate-openapi-spec`.
+
+The output is committed, and that is the point: a materialized view gaining or
+renaming a column changes a response model, which changes this file, which
+shows up in review as an interface diff instead of silently drifting away from
+the clients generated off it. `tests/test_openapi_spec.py` fails when the
+committed file no longer matches what the code produces.
+
+The Concourse pipeline in ol-infrastructure
+(`ol_concourse/pipelines/libraries/api_clients_pipeline.py`) watches
+`openapi/specs/*.yaml` on the release branch and regenerates the published
+TypeScript client from it — the same arrangement mitxonline and mit-learn use.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import cyclopts
+
+from ol_analytics_api.openapi import render, tenant_specs
+
+DEFAULT_DIRECTORY = Path("openapi/specs")
+
+app = cyclopts.App(name="generate-openapi-spec", help=__doc__)
+
+
+@app.default
+def generate(*, directory: Path = DEFAULT_DIRECTORY, check: bool = False) -> None:
+    """Write (or, with --check, verify) the per-tenant OpenAPI documents.
+
+    Parameters
+    ----------
+    directory
+        Where the <tenant>.yaml files are written.
+    check
+        Compare against what is already on disk and exit non-zero on any
+        difference, without writing anything.
+    """
+    stale = []
+    for tenant_name, spec in tenant_specs().items():
+        path = directory / f"{tenant_name}.yaml"
+        rendered = render(spec)
+        if check:
+            if not path.exists() or path.read_text() != rendered:
+                stale.append(path)
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(rendered)
+        sys.stdout.write(f"wrote {path}\n")
+    if stale:
+        names = ", ".join(str(path) for path in stale)
+        sys.stderr.write(
+            f"OpenAPI spec is out of date: {names}. "
+            "Regenerate with `uv run bin/generate-openapi-spec`.\n"
+        )
+        raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    app()

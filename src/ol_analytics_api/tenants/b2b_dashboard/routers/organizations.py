@@ -296,6 +296,13 @@ def _register(spec: _OrgEndpoint) -> None:
         # its concrete row model; mypy can't type a value used as a type param.
         response_model=OrgAnalyticsResponse[spec.model],  # type: ignore[name-defined]
         name=endpoint.__name__,
+        # Named explicitly because this is what a generated client's method is
+        # called. FastAPI's default derives one from the function name *and*
+        # the whole path, which would make the TS method
+        # `contractUtilizationOrganizationsOrganizationIdContractUtilizationGet`
+        # and — worse — churn it whenever the path changes. The tag prefix is
+        # what keeps this distinct from the contract router's same-named panel.
+        operation_id=f"organizations_{endpoint.__name__}_retrieve",
     )
 
 

@@ -83,6 +83,9 @@ dev = [
     "types-hvac>=2.3",
     "asgi-lifespan>=2.1.0",
     "pytest-cov>=7.1.0",
+    "cyclopts>=4.22.5",
+    "pyyaml>=6.0.3",
+    "types-pyyaml>=6.0.12.20260724",
 ]
 
 [build-system]
@@ -106,6 +109,9 @@ skip_covered = false
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# bin/ scripts are extensionless with a shebang, matching the bin/starrocks-auth
+# convention. Ruff discovers *.py only, so `ruff check .` would skip them.
+extend-include = ["bin/*"]
 
 [tool.ruff.lint]
 select = ["ALL"]
