@@ -17,7 +17,7 @@ instead of calling ``starrocks_pool.fetch_all`` directly.
 
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from typing import Any, ClassVar, Protocol, cast
 
 from sqlmodel import SQLModel
@@ -128,52 +128,54 @@ def build_existence_check(schema: str, table: str, filter_columns: tuple[str, ..
     return f"SELECT 1 FROM {schema_table} WHERE {predicates} LIMIT 1"  # noqa: S608
 
 
-def build_hidden_grain_probe(
+def build_grain_scan(
     schema: str,
     table: str,
+    model_cls: type[SQLModel],
     *,
-    key_column: str,
-    cohort_column: str,
     filter_columns: tuple[str, ...],
 ) -> str:
-    """Build the probe that asks a finer-grained MV which keys it withholds.
+    """Build the read of a finer-grained MV that a coarse endpoint's cross-grain
+    guard reasons over.
 
-    The service publishes the same learners at organization and contract grain,
-    and a coarse row's exactly-additive columns are the sum of the contract rows
-    beneath it. So a contract row dropped by the floor is recoverable as
-    ``org_total - sum(the visible contract rows)``. Deciding whether to blank
-    the coarse columns needs one bit per key: does the finer grain withhold a
-    row here?
+    Not ``build_select``: this read never reaches a caller. Its rows are fed to
+    ``hidden_additive_columns``, which suppresses them exactly as the finer
+    grain's own endpoint would and reports which additive columns come back
+    NULL. So it projects the finer model's full column set (the cohort policy
+    needs every cohort it names) and takes no offset — the guard has to see all
+    of them at once, because a coarse row can be reconstructed from finer rows
+    the caller reads on any page of the finer endpoint.
 
-    That bit is all this returns. The comparison against the floor happens in
-    SQL and the projection is the grouping key alone, so the sub-floor cohort
-    count that motivates the whole exercise is never read into the process —
-    it cannot be logged, serialized, or leaked by a later change to this file.
-
-    NULL cohorts count as withheld: ``suppress_small_cohorts`` drops a row whose
-    primary is NULL, and ``cohort < floor`` is NULL (not true) for those, so the
-    predicate has to name them explicitly or the probe would miss exactly the
-    rows the floor is most certain about.
+    The bound ``LIMIT`` is a backstop, not paging. The caller must treat a full
+    result as a truncated one and fail closed; see ``routers.organizations``.
 
     Identifiers are spliced under ``build_select``'s rules — every token is
-    ``validate_sql_identifier``'d, the floor and filter values are bound.
+    ``validate_sql_identifier``'d, the filter values and the limit are bound.
     """
     if not filter_columns:
-        msg = "build_hidden_grain_probe needs at least one filter column"
+        msg = "build_grain_scan needs at least one filter column"
         raise ValueError(msg)
+    columns = ", ".join(validate_sql_identifier(name) for name in model_cls.model_fields)
     schema_table = f"{validate_sql_identifier(schema)}.{validate_sql_identifier(table)}"
-    key = validate_sql_identifier(key_column)
-    cohort = validate_sql_identifier(cohort_column)
     predicates = " AND ".join(f"{validate_sql_identifier(name)} = %s" for name in filter_columns)
     # Same justification as build_select: identifiers validated, values bound.
-    where = f"WHERE {predicates} AND ({cohort} < %s OR {cohort} IS NULL)"
-    return f"SELECT DISTINCT {key} FROM {schema_table} {where}"  # noqa: S608
+    return f"SELECT {columns} FROM {schema_table} WHERE {predicates} LIMIT %s"  # noqa: S608
 
 
 class SuppressibleModel(Protocol):
     """A row model that declares how the anonymization floor applies to it."""
 
     cohort_policy: ClassVar[CohortPolicy]
+
+
+def cohort_policy_of(model_cls: type[SQLModel]) -> CohortPolicy:
+    """The policy a model declares, through the same gate the chokepoint uses.
+
+    For callers that need to reason about a model's cohorts without reading its
+    rows — the cross-grain guard suppresses a finer grain's rows to learn what
+    it hides, and needs that grain's own policy to do it.
+    """
+    return _require_cohort_policy(model_cls).cohort_policy
 
 
 def _require_cohort_policy(model_cls: type[SQLModel]) -> type[SuppressibleModel]:
@@ -195,30 +197,35 @@ async def fetch_and_suppress[ModelT: SQLModel](
     model_cls: type[ModelT],
     floor: int,
     *,
-    cross_grain: tuple[CrossGrainAdditives, Collection[Any]] | None = None,
+    cross_grain: tuple[CrossGrainAdditives, Mapping[Any, Collection[str]]] | None = None,
 ) -> list[ModelT]:
     """Query, suppress, construct — the one path rows take out of the database.
 
     ``cross_grain`` is for a coarse-grained endpoint whose rows are sums over a
     finer grain that this service also publishes: pass the additive columns
-    together with the keys the finer grain withholds (see
-    ``build_hidden_grain_probe``) and those columns are blanked before any row
-    becomes a model. Both suppression passes run here rather than in the router
-    so that no endpoint can construct a response model from an unsuppressed row.
+    together with what the finer grain hides per key (see
+    ``anonymization.hidden_additive_columns``) and those columns are blanked
+    before any row becomes a model. Both suppression passes run here rather than
+    in the router so that no endpoint can construct a response model from an
+    unsuppressed row.
     """
     suppressible_cls = _require_cohort_policy(model_cls)
     rows = await starrocks_pool.fetch_all(query, params)
     suppressed = suppress_small_cohorts(rows, suppressible_cls.cohort_policy, floor)
     if cross_grain is not None:
-        additives, hidden_keys = cross_grain
-        suppressed = suppress_cross_grain_additives(suppressed, additives, hidden_keys)
+        additives, hidden_by_key = cross_grain
+        suppressed = suppress_cross_grain_additives(suppressed, additives, hidden_by_key)
     return [model_cls(**row) for row in suppressed]
 
 
-async def fetch_hidden_grain_keys(query: str, params: tuple[Any, ...]) -> frozenset[Any]:
-    """Run a ``build_hidden_grain_probe`` query, returning the withheld keys."""
-    rows = await starrocks_pool.fetch_all(query, params)
-    return frozenset(next(iter(row.values())) for row in rows)
+async def fetch_grain_scan(query: str, params: tuple[Any, ...]) -> list[dict[str, Any]]:
+    """Run a ``build_grain_scan`` query, returning its raw unsuppressed rows.
+
+    The only caller is a cross-grain guard, which suppresses them itself and
+    keeps nothing but the set of columns that came back NULL. Nothing from here
+    may be returned to a caller — that is what ``fetch_and_suppress`` is for.
+    """
+    return await starrocks_pool.fetch_all(query, params)
 
 
 async def fetch_visible_count(query: str, params: tuple[Any, ...]) -> int:
