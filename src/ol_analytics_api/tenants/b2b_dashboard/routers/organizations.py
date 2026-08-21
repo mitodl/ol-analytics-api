@@ -23,13 +23,17 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 from sqlmodel import SQLModel
 
-from ol_analytics_api.core.anonymization import CrossGrainAdditives
+from ol_analytics_api.core.anonymization import (
+    CrossGrainAdditives,
+    hidden_additive_columns,
+)
 from ol_analytics_api.core.db.query import (
     build_count,
-    build_hidden_grain_probe,
+    build_grain_scan,
     build_select,
+    cohort_policy_of,
     fetch_and_suppress,
-    fetch_hidden_grain_keys,
+    fetch_grain_scan,
     fetch_visible_count,
 )
 from ol_analytics_api.core.db.refresh_metadata import latest_refresh_timestamp
@@ -37,6 +41,7 @@ from ol_analytics_api.tenants.b2b_dashboard.auth import require_org_manager
 from ol_analytics_api.tenants.b2b_dashboard.config import settings
 from ol_analytics_api.tenants.b2b_dashboard.models import (
     ContentEngagementDepth,
+    ContractMonthlyEngagementTrend,
     ContractUtilization,
     EnrollmentCompletionFunnel,
     MonthlyEngagementTrend,
@@ -62,29 +67,46 @@ _SCHEMA = settings.starrocks_schema
 _ORG_FILTER_COLUMN = "sso_organization_id"
 
 
+# A finer-grain scan is a guard, not paging: it has to see every finer row at
+# once. This bounds what one request can pull into the pod anyway. It is sized
+# far above the real shape of the data (an org's contracts times its months),
+# and a scan that reaches it is treated as truncated rather than complete.
+_GRAIN_SCAN_LIMIT = 10_000
+
+
 @dataclass(frozen=True)
 class _FinerGrain:
     """The contract-grained sibling MV whose rows sum into this endpoint's.
 
-    Only the engagement trend needs one. It is the single org endpoint that
-    aggregates *across* an org's contracts while the contract router publishes
-    the same months one contract at a time, so a contract-month the floor
-    withholds is recoverable as ``org_total - sum(the visible contract
-    months)``. The other four org endpoints carry a contract per row already,
-    and the content-engagement pair partitions by course run — a run belongs to
-    exactly one contract, so its org row and its contract row hold identical
-    counts and the floor makes the same call on both. Nothing is left over to
-    subtract in either case.
+    Only the engagement trend needs one, and the other four org endpoints need
+    none for two different reasons. Three of them (contract-utilization,
+    enrollment-funnel, program-funnel) carry a contract per row already, so
+    there is no coarser total to difference against. The fourth,
+    content-engagement, is org x course_run against a contract-grained sibling
+    of org x contract x course_run — but a course run belongs to exactly one
+    contract, so the sibling adds a label rather than splitting a row, the two
+    hold identical counts, and the floor makes the same call on both.
+
+    That leaves the trend. It is the one org endpoint that aggregates *across*
+    an org's contracts while the contract router publishes the same months one
+    contract at a time, so what a contract-month withholds is recoverable as
+    ``org_total - sum(the visible contract months)``.
 
     ``additive_columns`` are the event sums, which do add up exactly across
-    contracts. The learner counts do not — a learner active under two contracts
-    is counted in both rows — so subtracting them bounds the withheld cohort
-    rather than revealing it, and they stay published.
+    contracts. ``non_additive_columns`` are the derived columns that do not, and
+    are listed rather than left implicit: between them the two must account for
+    every derived column on the coarse model, so adding a sixth aggregate to the
+    MV cannot leave a new subtraction open just because nobody thought about it
+    here. (The learner counts are ``secondary``, not ``derived``, and are not
+    additive either — a learner active under two contracts is counted in both
+    rows — so subtracting them bounds the hidden cohort rather than revealing
+    it, and they stay published.)
     """
 
     mv: str
-    cohort_column: str
+    model: type[SQLModel]
     additive_columns: tuple[str, ...]
+    non_additive_columns: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -101,6 +123,37 @@ class _OrgEndpoint:
     model: type[SQLModel]
     order_by: tuple[str, ...]
     finer_grain: _FinerGrain | None = None
+
+    def __post_init__(self) -> None:
+        """Reject a finer-grain declaration that leaves a derived column
+        unaccounted for.
+
+        Same argument as ``CohortPolicy``'s own validation, which this mirrors:
+        the failure being guarded against is a column nobody classified quietly
+        keeping its subtraction open, and no test would notice. Failing at
+        import time makes it impossible to deploy.
+        """
+        if self.finer_grain is None:
+            return
+        derived = set(cohort_policy_of(self.model).derived)
+        additive = set(self.finer_grain.additive_columns)
+        non_additive = set(self.finer_grain.non_additive_columns)
+        if overlap := additive & non_additive:
+            msg = f"{self.path}: {sorted(overlap)} are both additive and non-additive."
+            raise ValueError(msg)
+        if unknown := (additive | non_additive) - derived:
+            msg = (
+                f"{self.path}: {sorted(unknown)} are not derived columns of "
+                f"{self.model.__name__}, so nothing sums into them."
+            )
+            raise ValueError(msg)
+        if unclassified := derived - additive - non_additive:
+            msg = (
+                f"{self.path}: derived columns {sorted(unclassified)} are classified "
+                "neither additive nor non-additive across the finer grain. An "
+                "exactly-additive column left out keeps its subtraction open."
+            )
+            raise ValueError(msg)
 
 
 ENDPOINTS: list[_OrgEndpoint] = [
@@ -123,8 +176,8 @@ ENDPOINTS: list[_OrgEndpoint] = [
         ("activity_year_and_month",),
         finer_grain=_FinerGrain(
             "mv_b2b_contract_monthly_engagement_trend",
-            "monthly_active_learners",
-            (
+            ContractMonthlyEngagementTrend,
+            additive_columns=(
                 "new_enrollments",
                 "certificates_earned",
                 "total_videos_watched",
@@ -166,27 +219,25 @@ def _register(spec: _OrgEndpoint) -> None:
     endpoint whose data only changes when the MV refreshes, hours apart.
 
     An endpoint declaring a ``finer_grain`` pays for one more round trip, and
-    only that endpoint: a probe asking its contract-grained sibling which keys
-    it withholds, so the additive columns that would reconstruct those rows can
-    be blanked. The probe projects a grouping key and nothing else — see
-    ``build_hidden_grain_probe``.
+    only that endpoint: a scan of its contract-grained sibling, suppressed here
+    exactly as that sibling's own endpoint would suppress it, so the additive
+    columns it does not publish in full can be blanked at this grain too.
     """
     query = build_select(
         _SCHEMA, spec.mv, spec.model, filter_columns=(_ORG_FILTER_COLUMN,), order_by=spec.order_by
     )
     count_query = build_count(_SCHEMA, spec.mv, spec.model, filter_columns=(_ORG_FILTER_COLUMN,))
-    additives = probe_query = None
+    additives = scan_query = None
     if spec.finer_grain is not None:
         # The org grain's ordering column is also what lines an org row up with
-        # the contract rows summing into it, so the same tuple names the probe's
+        # the contract rows summing into it, so the same tuple names the guard's
         # key. Endpoints with a finer grain are single-keyed by construction.
         (key_column,) = spec.order_by
         additives = CrossGrainAdditives(key_column, spec.finer_grain.additive_columns)
-        probe_query = build_hidden_grain_probe(
+        scan_query = build_grain_scan(
             _SCHEMA,
             spec.finer_grain.mv,
-            key_column=key_column,
-            cohort_column=spec.finer_grain.cohort_column,
+            spec.finer_grain.model,
             filter_columns=(_ORG_FILTER_COLUMN,),
         )
 
@@ -194,15 +245,30 @@ def _register(spec: _OrgEndpoint) -> None:
         organization_id: str, page: Annotated[Pagination, Depends(pagination)]
     ) -> OrgAnalyticsResponse[SQLModel]:
         cross_grain = None
-        if additives is not None and probe_query is not None:
-            # Probed across the whole org, not just this page: an org row on
+        if spec.finer_grain is not None and additives is not None and scan_query is not None:
+            # Scanned across the whole org, not just this page: an org row on
             # page 1 can be reconstructed from contract rows the caller reads
             # in any page of the contract endpoint, so the page boundary is
             # not a limit on what they can subtract.
+            finer_rows = await fetch_grain_scan(scan_query, (organization_id, _GRAIN_SCAN_LIMIT))
+            if len(finer_rows) >= _GRAIN_SCAN_LIMIT:
+                # Truncated, so the guard cannot prove it saw every contributing
+                # row. Blanking every additive column for every key is the only
+                # answer that stays correct; a partial scan silently publishing
+                # a total it could not check is the failure this whole guard is.
+                msg = (
+                    f"{spec.mv}: finer-grain scan hit its {_GRAIN_SCAN_LIMIT}-row limit "
+                    "for one organization, so the cross-grain guard cannot be applied."
+                )
+                raise RuntimeError(msg)
             cross_grain = (
                 additives,
-                await fetch_hidden_grain_keys(
-                    probe_query, (organization_id, settings.anonymization_floor)
+                hidden_additive_columns(
+                    finer_rows,
+                    cohort_policy_of(spec.finer_grain.model),
+                    settings.anonymization_floor,
+                    key_column=key_column,
+                    additive_columns=spec.finer_grain.additive_columns,
                 ),
             )
         rows = await fetch_and_suppress(

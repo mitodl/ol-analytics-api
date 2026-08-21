@@ -33,10 +33,17 @@ Suppressing only the small side would leave that half open.
 A second disclosure channel runs *across* rows rather than within one. This
 service publishes the same learners at two grains — organization and contract —
 and a coarse row's exactly-additive columns are the sum of the finer rows
-beneath it, so a finer row withheld by the floor is recoverable as
-``coarse_total - sum(the visible finer rows)``. Rows alone cannot see that;
-``suppress_cross_grain_additives`` takes the finer grain's withheld keys as
-input and blanks the coarse columns that would reconstruct them.
+beneath it, so anything the floor withholds at the finer grain is recoverable
+as ``coarse_total - sum(what the finer rows do publish)``. Note "withholds",
+not "drops": a finer row can clear its own row gate and still publish NULL for
+one additive column, because the cohort that column is attributable to is
+sub-floor. Both cases leave the same hole in the sum.
+
+Rows alone cannot see any of that. ``hidden_additive_columns`` runs the finer
+grain through the suppression above — the same function, not a cheaper
+approximation of it — and reports which additive columns come back NULL per
+key; ``suppress_cross_grain_additives`` blanks exactly those at the coarse
+grain.
 """
 
 from __future__ import annotations
@@ -175,8 +182,7 @@ class CohortPolicy:
 
     def complement_pairs(self) -> tuple[tuple[str, str], ...]:
         """Every ``(subset, container)`` pair whose complement must be checked,
-        including transitive ones. Computed once per response rather than per
-        row — a policy is fixed ClassVar state on the row model."""
+        including transitive ones."""
         return tuple(
             (subset, container)
             for subset in self.contained_in
@@ -202,6 +208,55 @@ class CrossGrainAdditives:
 
     key_column: str
     columns: tuple[str, ...]
+
+
+def hidden_additive_columns(
+    finer_rows: list[dict[str, Any]],
+    policy: CohortPolicy,
+    floor: int,
+    *,
+    key_column: str,
+    additive_columns: tuple[str, ...],
+) -> dict[Any, frozenset[str]]:
+    """Per key, which additive columns the finer grain does not publish in full.
+
+    This runs the finer rows through ``suppress_small_cohorts`` — the same
+    function that suppresses them on their own endpoint — rather than asking
+    the database a cheaper question about them. Two weaker tests were tried
+    and are wrong:
+
+    - "is any finer row dropped?" misses the larger case by far. Every additive
+      column is a ``derived`` column at the finer grain, so a finer row can
+      clear the row gate and still publish NULL for one of them because the
+      cohort *that* column is attributable to is sub-floor. A contract month
+      with 30 active learners of whom 2 used the chatbot publishes its row and
+      withholds its chatbot total, and the coarse total minus its siblings
+      hands that withheld number straight back.
+    - re-deriving the rule in SQL keeps two copies of a governance decision in
+      step by hand. The complement rule alone is a fixpoint over transitive
+      containment pairs; a second implementation of it would drift, and the
+      direction it drifts in is silently publishing.
+
+    A column counts as hidden when it is NULL after suppression, whether the
+    floor nulled it or the view never had a value. The caller cannot tell those
+    apart either, so both leave a hole in the sum that the coarse row would
+    fill in.
+    """
+    hidden: dict[Any, set[str]] = {}
+    for row in finer_rows:
+        # One row at a time: suppress_small_cohorts returns only survivors, with
+        # no back-pointer to the row each came from, and several finer rows share
+        # a key (that is what makes the coarse row a sum). It is per-row anyway,
+        # so splitting the call changes nothing but keeps the correspondence.
+        kept = suppress_small_cohorts([row], policy, floor)
+        columns = (
+            set(additive_columns)  # dropped whole: every additive column is gone
+            if not kept
+            else {column for column in additive_columns if kept[0].get(column) is None}
+        )
+        if columns:
+            hidden.setdefault(row.get(key_column), set()).update(columns)
+    return {key: frozenset(columns) for key, columns in hidden.items()}
 
 
 def _is_disclosive(value: int | None, floor: int) -> bool:
@@ -232,10 +287,14 @@ def _complement_is_disclosive(subset: int, container: int, floor: int) -> bool:
     return complement != 0 and complement < floor
 
 
-def _suppressed_cohorts(row: Mapping[str, Any], policy: CohortPolicy, floor: int) -> set[str]:
+def _suppressed_cohorts(
+    row: Mapping[str, Any],
+    policy: CohortPolicy,
+    floor: int,
+    pairs: tuple[tuple[str, str], ...],
+) -> set[str]:
     """The secondary cohorts of one row that must not be published."""
     suppressed = {column for column in policy.secondary if _is_disclosive(row.get(column), floor)}
-    pairs = policy.complement_pairs()
     # Suppressing a cohort can hide the container of another pair, which
     # removes that pair from play rather than adding one, so this settles in
     # at most one pass per level of nesting. Cycles are rejected at
@@ -267,13 +326,17 @@ def suppress_small_cohorts(
     nulled, and rows below the primary floor dropped. Input rows are not
     mutated."""
     kept: list[dict[str, Any]] = []
+    # Walked once for the whole response, not once per row: a policy is fixed
+    # ClassVar state on the row model, so the pairs it yields are the same for
+    # every row in it.
+    pairs = policy.complement_pairs()
     for row in rows:
         # `.get(field) or 0` folds both a missing key and a NULL primary to 0,
         # so a too-small *or* unknown headline cohort withholds the whole row.
         if (row.get(policy.primary) or 0) < floor:
             continue
         redacted = dict(row)
-        suppressed = _suppressed_cohorts(redacted, policy, floor)
+        suppressed = _suppressed_cohorts(redacted, policy, floor, pairs)
         for column in suppressed:
             redacted[column] = None
         for column, cohorts in policy.derived.items():
@@ -286,28 +349,31 @@ def suppress_small_cohorts(
 def suppress_cross_grain_additives(
     rows: list[dict[str, Any]],
     additives: CrossGrainAdditives,
-    hidden_keys: Collection[Any],
+    hidden_by_key: Mapping[Any, Collection[str]],
 ) -> list[dict[str, Any]]:
-    """Blank the coarse columns that would reconstruct a withheld finer row.
+    """Blank the coarse columns that would reconstruct what the finer grain hides.
 
-    ``hidden_keys`` is the set of ``additives.key_column`` values for which the
-    finer grain withheld at least one row. For those keys the caller holds a
-    coarse total and every finer row but one (or a few), so the difference is
-    the withheld row's value — a quantity attributable to a cohort the floor
-    already judged too small to publish. Withholding the coarse total is what
-    breaks the subtraction; the finer rows themselves stay as they are.
+    ``hidden_by_key`` maps a ``key_column`` value to the additive columns the
+    finer grain does not publish in full for it — what
+    ``hidden_additive_columns`` returns. For those the caller holds a coarse
+    total and every finer contribution but one (or a few), so the difference is
+    the hidden quantity, attributable to a cohort the floor already judged too
+    small to publish. Withholding the coarse total is what breaks the
+    subtraction; the finer rows themselves stay as they are.
 
-    One withheld finer row is enough to trigger this. Several are not safer:
-    the difference is then their sum, which can still be a handful of entities.
+    Blanking is per column, not per key: a month where only the chatbot total is
+    withheld downstream keeps its video and problem totals, which nothing can be
+    subtracted out of. One hidden finer contribution is enough to blank the
+    column it belongs to — several are not safer, since the difference is then
+    their sum, which can still be a handful of entities.
 
     Input rows are not mutated.
     """
-    if not hidden_keys:
+    if not hidden_by_key:
         return rows
-    hidden = set(hidden_keys)
     return [
-        {column: (None if column in additives.columns else value) for column, value in row.items()}
-        if row.get(additives.key_column) in hidden
+        {column: (None if column in blanked else value) for column, value in row.items()}
+        if (blanked := hidden_by_key.get(row.get(additives.key_column)))
         else row
         for row in rows
     ]

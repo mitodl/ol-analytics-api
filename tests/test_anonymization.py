@@ -3,6 +3,7 @@ import pytest
 from ol_analytics_api.core.anonymization import (
     CohortPolicy,
     CrossGrainAdditives,
+    hidden_additive_columns,
     suppress_cross_grain_additives,
     suppress_small_cohorts,
 )
@@ -338,6 +339,84 @@ _ADDITIVES = CrossGrainAdditives(
     columns=("new_enrollments", "total_videos_watched"),
 )
 
+# A finer grain shaped like the contract engagement trend: an event sum floored
+# through the distinct-learner cohort it is attributable to.
+_FINER_POLICY = CohortPolicy(
+    primary="monthly_active_learners",
+    secondary=("video_watchers",),
+    derived={"total_videos_watched": ("video_watchers",)},
+    contained_in={"video_watchers": "monthly_active_learners"},
+)
+
+
+def _finer_row(contract, active, watchers, videos, month="2026-07"):
+    return {
+        "activity_year_and_month": month,
+        "contract_id": contract,
+        "monthly_active_learners": active,
+        "video_watchers": watchers,
+        "total_videos_watched": videos,
+    }
+
+
+def _hidden(rows):
+    return hidden_additive_columns(
+        rows,
+        _FINER_POLICY,
+        floor=5,
+        key_column="activity_year_and_month",
+        additive_columns=("total_videos_watched",),
+    )
+
+
+def test_a_finer_row_that_survives_but_nulls_its_total_still_hides_it():
+    # The case a row-gate check misses entirely, and the reason this is not one.
+    # C1 clears the row gate with 30 active learners, so nothing is dropped —
+    # but only 2 of them watched a video, so its video total is withheld. The
+    # coarse total minus C2's 500 hands that withheld number straight back.
+    rows = [
+        _finer_row("C1", active=30, watchers=2, videos=17),
+        _finer_row("C2", active=25, watchers=20, videos=500),
+    ]
+    assert _hidden(rows) == {"2026-07": frozenset({"total_videos_watched"})}
+
+
+def test_a_dropped_finer_row_hides_every_additive_column():
+    # Below the row gate, so it contributes nothing the caller can see and
+    # every column it fed into the coarse total is recoverable.
+    rows = [
+        _finer_row("C1", active=2, watchers=2, videos=17),
+        _finer_row("C2", active=25, watchers=20, videos=500),
+    ]
+    assert _hidden(rows) == {"2026-07": frozenset({"total_videos_watched"})}
+
+
+def test_a_finer_row_hidden_by_the_complement_rule_is_caught_too():
+    # 30 active of whom 28 watched: the complement rule nulls video_watchers,
+    # which nulls the total derived from it. Nothing here is sub-floor on its
+    # own, so only running the real suppression finds this.
+    rows = [
+        _finer_row("C1", active=30, watchers=28, videos=900),
+        _finer_row("C2", active=25, watchers=10, videos=500),
+    ]
+    assert _hidden(rows) == {"2026-07": frozenset({"total_videos_watched"})}
+
+
+def test_fully_published_finer_rows_hide_nothing():
+    rows = [
+        _finer_row("C1", active=30, watchers=10, videos=900),
+        _finer_row("C2", active=25, watchers=10, videos=500),
+    ]
+    assert _hidden(rows) == {}
+
+
+def test_hidden_columns_are_tracked_per_key():
+    rows = [
+        _finer_row("C1", active=30, watchers=2, videos=17, month="2026-07"),
+        _finer_row("C1", active=30, watchers=10, videos=900, month="2026-06"),
+    ]
+    assert _hidden(rows) == {"2026-07": frozenset({"total_videos_watched"})}
+
 
 def test_cross_grain_additives_are_blanked_for_a_withheld_key():
     # The caller holds this org total and every contract row but one, so the
@@ -350,7 +429,9 @@ def test_cross_grain_additives_are_blanked_for_a_withheld_key():
             "total_videos_watched": 500,
         }
     ]
-    (row,) = suppress_cross_grain_additives(rows, _ADDITIVES, {"2026-07"})
+    (row,) = suppress_cross_grain_additives(
+        rows, _ADDITIVES, {"2026-07": frozenset({"new_enrollments", "total_videos_watched"})}
+    )
     assert row["new_enrollments"] is None
     assert row["total_videos_watched"] is None
     # Learner counts are not additive across contracts (one learner active
@@ -364,17 +445,19 @@ def test_cross_grain_leaves_other_keys_alone():
         {"activity_year_and_month": "2026-06", "new_enrollments": 9},
         {"activity_year_and_month": "2026-07", "new_enrollments": 12},
     ]
-    june, july = suppress_cross_grain_additives(rows, _ADDITIVES, {"2026-07"})
+    june, july = suppress_cross_grain_additives(
+        rows, _ADDITIVES, {"2026-07": frozenset({"new_enrollments"})}
+    )
     assert june["new_enrollments"] == 9
     assert july["new_enrollments"] is None
 
 
 def test_cross_grain_with_nothing_withheld_changes_nothing():
     rows = [{"activity_year_and_month": "2026-07", "new_enrollments": 12}]
-    assert suppress_cross_grain_additives(rows, _ADDITIVES, frozenset()) == rows
+    assert suppress_cross_grain_additives(rows, _ADDITIVES, {}) == rows
 
 
 def test_cross_grain_does_not_mutate_input_rows():
     rows = [{"activity_year_and_month": "2026-07", "new_enrollments": 12}]
-    suppress_cross_grain_additives(rows, _ADDITIVES, {"2026-07"})
+    suppress_cross_grain_additives(rows, _ADDITIVES, {"2026-07": frozenset({"new_enrollments"})})
     assert rows[0]["new_enrollments"] == 12
