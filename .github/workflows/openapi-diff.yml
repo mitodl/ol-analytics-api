@@ -1,9 +1,10 @@
 name: OpenAPI Diff
 
-# The committed spec is what the Concourse client pipeline generates the
-# published TypeScript package from, so a diff here is a change to somebody
-# else's build. This surfaces that change as a comment and fails the PR on a
-# breaking one, rather than leaving it to whoever reads 1500 lines of YAML.
+# The committed spec is meant to be what a future Concourse client pipeline
+# generates a published TypeScript package from (see README.md), so a diff
+# here is a preview of a change to somebody else's build. This surfaces that
+# change as a comment and fails the PR on a breaking one, rather than leaving
+# it to whoever reads 1500 lines of YAML.
 
 on:
   pull_request:
@@ -39,6 +40,17 @@ jobs:
           # huge INPUT_BODY env var, which can blow past the OS argv+envp size limit
           # and crash the action with "Argument list too long". Writing straight to a
           # file and using `body-path` avoids that entirely.
+          #
+          # The spec list is the union of base and head filenames, not just base's:
+          # a base-only loop silently drops both a spec added in this PR (never in
+          # base, so never iterated) and a spec removed in this PR (caught by the
+          # -f guard below, so skipped instead of reported as a removal).
+          specs=$(
+            {
+              [ -d base/openapi/specs ] && (cd base/openapi/specs && ls -1 ./*.yaml)
+              [ -d head/openapi/specs ] && (cd head/openapi/specs && ls -1 ./*.yaml)
+            } 2>/dev/null | xargs -n1 basename | sort -u
+          )
           {
             echo "## OpenAPI Changes"
             echo ""
@@ -46,14 +58,22 @@ jobs:
             echo "<summary>Show/hide changes</summary>"
             echo ""
             echo '```'
-            for spec in base/openapi/specs/*.yaml; do
-              head_spec="head/openapi/specs/$(basename "$spec")"
-              if [ -f "$head_spec" ]; then
-                echo "## Changes for $(basename "$spec"):"
+            for name in $specs; do
+              base_spec="base/openapi/specs/$name"
+              head_spec="head/openapi/specs/$name"
+              if [ -f "$base_spec" ] && [ -f "$head_spec" ]; then
+                echo "## Changes for $name:"
                 docker run --rm \
                   --workdir "$GITHUB_WORKSPACE" \
                   --volume "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE:ro" \
-                  tufin/oasdiff changelog "$spec" "$head_spec"
+                  tufin/oasdiff@sha256:6065c16a4c9ce12504752f444d4981091e58c2a35436fac90b649be47d833db3 \
+                  changelog "$base_spec" "$head_spec"
+                echo ""
+              elif [ -f "$head_spec" ]; then
+                echo "## $name: added"
+                echo ""
+              elif [ -f "$base_spec" ]; then
+                echo "## $name: removed"
                 echo ""
               fi
             done
@@ -84,16 +104,30 @@ jobs:
         run: |
           # Breaking here means breaking a client someone else already
           # generated and shipped, so this fails the PR rather than warning.
-          for spec in base/openapi/specs/*.yaml; do
-            head_spec="head/openapi/specs/$(basename "$spec")"
-            if [ -f "$head_spec" ]; then
-              echo "Checking $(basename "$spec") for breaking changes..."
+          # A spec removed outright is the most breaking change there is —
+          # deleting the whole published API for a tenant — so it's checked
+          # explicitly rather than relying on the -f guard to skip it.
+          specs=$(
+            {
+              [ -d base/openapi/specs ] && (cd base/openapi/specs && ls -1 ./*.yaml)
+              [ -d head/openapi/specs ] && (cd head/openapi/specs && ls -1 ./*.yaml)
+            } 2>/dev/null | xargs -n1 basename | sort -u
+          )
+          for name in $specs; do
+            base_spec="base/openapi/specs/$name"
+            head_spec="head/openapi/specs/$name"
+            if [ -f "$base_spec" ] && [ -f "$head_spec" ]; then
+              echo "Checking $name for breaking changes..."
               docker run --rm \
                 --workdir "$GITHUB_WORKSPACE" \
                 --volume "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE:ro" \
-                tufin/oasdiff breaking \
+                tufin/oasdiff@sha256:6065c16a4c9ce12504752f444d4981091e58c2a35436fac90b649be47d833db3 \
+                breaking \
                 --fail-on ERR \
                 --format githubactions \
-                "$spec" "$head_spec"
+                "$base_spec" "$head_spec"
+            elif [ -f "$base_spec" ]; then
+              echo "::error::$name was removed — deleting a published spec is a breaking change."
+              exit 1
             fi
           done

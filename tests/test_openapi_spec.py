@@ -1,15 +1,17 @@
 """The published OpenAPI contract.
 
-`openapi/specs/<tenant>.yaml` is what the Concourse client pipeline generates
-the TypeScript package from, so these assertions are about what consumers
-receive, not about FastAPI's internals.
+`openapi/specs/<tenant>.yaml` is what a future Concourse client pipeline is
+meant to generate the TypeScript package from (see README.md), so these
+assertions are about what consumers would receive, not about FastAPI's
+internals.
 """
 
 from pathlib import Path
 
 import pytest
+from fastapi.routing import APIRoute
 
-from ol_analytics_api.main import TENANTS
+from ol_analytics_api.main import TENANTS, create_app
 from ol_analytics_api.openapi import render, tenant_specs
 
 SPECS_DIR = Path(__file__).resolve().parent.parent / "openapi" / "specs"
@@ -82,3 +84,18 @@ def test_operation_ids_are_unique_and_stable(specs):
     # prefix is what keeps them apart.
     assert "organizations_contract_utilization_retrieve" in operation_ids
     assert "contracts_contract_utilization_retrieve" in operation_ids
+
+
+def test_operation_ids_are_explicit():
+    """Uniqueness alone doesn't catch a route that never set operation_id:
+    FastAPI falls back to a path-derived default, which is unique but not
+    stable, so a route relying on it would pass the test above and still
+    rename its generated client method whenever the path moves."""
+    root = create_app()
+    for tenant in TENANTS:
+        tenant_app = root.state.tenant_apps[tenant.mount_path]
+        for route in tenant_app.routes:
+            if isinstance(route, APIRoute):
+                assert route.operation_id is not None, (
+                    f"{tenant.name} route {route.path} has no explicit operation_id"
+                )

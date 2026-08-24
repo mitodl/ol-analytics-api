@@ -191,14 +191,18 @@ Run it whenever a response model, route or query parameter changes. CI fails
 otherwise — both as a test (`tests/test_openapi_spec.py`) and as a
 `--check` run of the generator itself.
 
-The spec is committed rather than served-and-forgotten because it is a
-cross-repo interface. The Concourse pipeline in `ol-infrastructure`
-(`ol_concourse/pipelines/libraries/api_clients_pipeline.py`) watches these
-files on the `release` branch, runs `openapi-generator` over them, and
-publishes the TypeScript client that MIT Learn's dashboard imports — the same
-arrangement behind `@mitodl/mitxonline-api-axios` and
-`@mitodl/mit-learn-api-axios`. A column that appears here without appearing in
-the diff is a column a consumer finds out about at runtime.
+The spec is committed rather than served-and-forgotten because it is meant to
+become a cross-repo interface. The intended pipeline mirrors the one already
+running for `mitxonline` and `mit-learn`: a Concourse pipeline in
+`ol-infrastructure` (`ol_concourse/pipelines/libraries/api_clients_pipeline.py`)
+watching these files on a release branch, running `openapi-generator` over
+them, and publishing a TypeScript client the same way
+`@mitodl/mitxonline-api-axios` and `@mitodl/mit-learn-api-axios` are today.
+None of that is wired up yet — this repo has no entry in `PIPELINE_CONFIGS`
+and no `release` branch, and MIT Learn's dashboard still uses its hand-written
+client. Until it is, committing the spec still buys the same thing locally: a
+column that appears here without appearing in the diff is a column a
+consumer would find out about at runtime once the pipeline exists.
 
 Two details are worth knowing before editing a route:
 
