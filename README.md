@@ -177,3 +177,39 @@ uv run pytest
 uv run ruff check .
 uv run mypy src
 ```
+
+## The published API contract
+
+Each tenant's OpenAPI document is committed under `openapi/specs/<tenant>.yaml`
+and regenerated with:
+
+```bash
+uv run bin/generate-openapi-spec
+```
+
+Run it whenever a response model, route or query parameter changes. CI fails
+otherwise — both as a test (`tests/test_openapi_spec.py`) and as a
+`--check` run of the generator itself.
+
+The spec is committed rather than served-and-forgotten because it is meant to
+become a cross-repo interface. The intended pipeline mirrors the one already
+running for `mitxonline` and `mit-learn`: a Concourse pipeline in
+`ol-infrastructure` (`ol_concourse/pipelines/libraries/api_clients_pipeline.py`)
+watching these files on a release branch, running `openapi-generator` over
+them, and publishing a TypeScript client the same way
+`@mitodl/mitxonline-api-axios` and `@mitodl/mit-learn-api-axios` are today.
+None of that is wired up yet — this repo has no entry in `PIPELINE_CONFIGS`
+and no `release` branch, and MIT Learn's dashboard still uses its hand-written
+client. Until it is, committing the spec still buys the same thing locally: a
+column that appears here without appearing in the diff is a column a
+consumer would find out about at runtime once the pipeline exists.
+
+Two details are worth knowing before editing a route:
+
+- **`operation_id` is named explicitly on every route.** It becomes the
+  generated client's method name, so FastAPI's path-derived default would both
+  produce an unreadable name and rename the method whenever the path moves.
+- **Published paths carry the tenant's mount prefix.** A mounted sub-app
+  describes its routes relative to its own root; `openapi.py` re-prefixes them
+  so a generated client configured with the service host requests the URLs the
+  service actually serves.

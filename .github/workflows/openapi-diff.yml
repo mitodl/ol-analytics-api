@@ -1,0 +1,133 @@
+name: OpenAPI Diff
+
+# The committed spec is meant to be what a future Concourse client pipeline
+# generates a published TypeScript package from (see README.md), so a diff
+# here is a preview of a change to somebody else's build. This surfaces that
+# change as a comment and fails the PR on a breaking one, rather than leaving
+# it to whoever reads 1500 lines of YAML.
+
+on:
+  pull_request:
+    paths:
+      - "openapi/specs/**"
+
+permissions: {}
+
+jobs:
+  openapi-diff:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout HEAD
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The exact commit under review, not the branch name: a push while
+          # this runs would otherwise diff a commit nobody reviewed.
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: head
+          persist-credentials: false
+      - name: Checkout BASE
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+      - name: Generate oasdiff changelog
+        run: | # Write the comment body to a file rather than a step output.
+          # A large changelog interpolated into a JS action's `body:` input becomes a
+          # huge INPUT_BODY env var, which can blow past the OS argv+envp size limit
+          # and crash the action with "Argument list too long". Writing straight to a
+          # file and using `body-path` avoids that entirely.
+          #
+          # The spec list is the union of base and head filenames, not just base's:
+          # a base-only loop silently drops both a spec added in this PR (never in
+          # base, so never iterated) and a spec removed in this PR (caught by the
+          # -f guard below, so skipped instead of reported as a removal).
+          specs=$(
+            {
+              [ -d base/openapi/specs ] && (cd base/openapi/specs && ls -1 ./*.yaml)
+              [ -d head/openapi/specs ] && (cd head/openapi/specs && ls -1 ./*.yaml)
+            } 2>/dev/null | xargs -n1 basename | sort -u
+          )
+          {
+            echo "## OpenAPI Changes"
+            echo ""
+            echo "<details>"
+            echo "<summary>Show/hide changes</summary>"
+            echo ""
+            echo '```'
+            for name in $specs; do
+              base_spec="base/openapi/specs/$name"
+              head_spec="head/openapi/specs/$name"
+              if [ -f "$base_spec" ] && [ -f "$head_spec" ]; then
+                echo "## Changes for $name:"
+                docker run --rm \
+                  --workdir "$GITHUB_WORKSPACE" \
+                  --volume "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE:ro" \
+                  tufin/oasdiff@sha256:6065c16a4c9ce12504752f444d4981091e58c2a35436fac90b649be47d833db3 \
+                  changelog "$base_spec" "$head_spec"
+                echo ""
+              elif [ -f "$head_spec" ]; then
+                echo "## $name: added"
+                echo ""
+              elif [ -f "$base_spec" ]; then
+                echo "## $name: removed"
+                echo ""
+              fi
+            done
+            echo '```'
+            echo ""
+            echo "Unexpected changes? Ensure your branch is up-to-date with \`main\` (consider rebasing)."
+            echo "</details>"
+          } > comment_body.md
+      - name: Find existing comment
+        id: find_comment
+        uses: peter-evans/find-comment@b30e6a3c0ed37e7c023ccd3f1db5c6c0b0c23aad # v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          issue-number: ${{ github.event.pull_request.number }}
+          body-includes: "## OpenAPI Changes"
+      - name: Post changes as comment
+        uses: peter-evans/create-or-update-comment@e8674b075228eee787fea43ef493e45ece1004c9 # v5
+        # Even with no changes, update the old comment if one was found.
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          edit-mode: "replace"
+          repository: ${{ github.repository }}
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-id: ${{ steps.find_comment.outputs.comment-id }}
+          body-path: comment_body.md
+      - name: Check for breaking changes
+        run: |
+          # Breaking here means breaking a client someone else already
+          # generated and shipped, so this fails the PR rather than warning.
+          # A spec removed outright is the most breaking change there is —
+          # deleting the whole published API for a tenant — so it's checked
+          # explicitly rather than relying on the -f guard to skip it.
+          specs=$(
+            {
+              [ -d base/openapi/specs ] && (cd base/openapi/specs && ls -1 ./*.yaml)
+              [ -d head/openapi/specs ] && (cd head/openapi/specs && ls -1 ./*.yaml)
+            } 2>/dev/null | xargs -n1 basename | sort -u
+          )
+          for name in $specs; do
+            base_spec="base/openapi/specs/$name"
+            head_spec="head/openapi/specs/$name"
+            if [ -f "$base_spec" ] && [ -f "$head_spec" ]; then
+              echo "Checking $name for breaking changes..."
+              docker run --rm \
+                --workdir "$GITHUB_WORKSPACE" \
+                --volume "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE:ro" \
+                tufin/oasdiff@sha256:6065c16a4c9ce12504752f444d4981091e58c2a35436fac90b649be47d833db3 \
+                breaking \
+                --fail-on ERR \
+                --format githubactions \
+                "$base_spec" "$head_spec"
+            elif [ -f "$base_spec" ]; then
+              echo "::error::$name was removed — deleting a published spec is a breaking change."
+              exit 1
+            fi
+          done
