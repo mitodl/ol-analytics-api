@@ -9,10 +9,13 @@ shows up in review as an interface diff instead of silently drifting away from
 the clients generated off it. `tests/test_openapi_spec.py` fails when the
 committed file no longer matches what the code produces.
 
-The Concourse pipeline in ol-infrastructure
-(`ol_concourse/pipelines/libraries/api_clients_pipeline.py`) watches
-`openapi/specs/*.yaml` on the release branch and regenerates the published
-TypeScript client from it — the same arrangement mitxonline and mit-learn use.
+The intended consumer is a Concourse pipeline in ol-infrastructure
+(`ol_concourse/pipelines/libraries/api_clients_pipeline.py`), mirroring the one
+mitxonline and mit-learn already use: watch `openapi/specs/*.yaml` on a
+release branch and regenerate the published TypeScript client from it. That
+pipeline isn't wired up for this repo yet (no `PIPELINE_CONFIGS` entry, no
+`release` branch) — this file exists so the spec is ready to publish once it
+is.
 """
 
 from __future__ import annotations
