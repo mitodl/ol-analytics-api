@@ -454,17 +454,23 @@ async def test_org_trend_blanks_the_total_a_surviving_contract_row_withholds(app
     assert response.status_code == 200
     (data,) = response.json()["data"]
     assert data["total_chatbot_interactions"] is None
-    # Only the column the contract grain actually withholds. The other totals
-    # are published in full downstream, so nothing can be subtracted out of them
-    # and blanking them would cost the dashboard data for no gain.
+    # Only the additive totals the contract grain actually withholds are
+    # blanked per-column. The other totals are published in full downstream,
+    # so nothing can be subtracted out of them and blanking them would cost
+    # the dashboard data for no gain.
     assert data["total_videos_watched"] == 500
     assert data["total_problems_attempted"] == 7
     assert data["new_enrollments"] == 12
-    # Learner counts don't sum across contracts — a learner active under two is
-    # counted in both rows — so subtracting them bounds the withheld cohort
-    # rather than revealing it.
-    assert data["monthly_active_learners"] == 40
-    assert data["chatbot_users"] == 15
+    # But every cohort column goes wholesale for this month, chatbot_users
+    # included, even though that specific column isn't what triggered the
+    # guard: two contracts sharing no learners would sum exactly, and nothing
+    # here can distinguish that case from this one.
+    assert data["monthly_active_learners"] is None
+    assert data["chatbot_users"] is None
+    assert data["certified_learners"] is None
+    assert data["video_watchers"] is None
+    assert data["problem_attempters"] is None
+    assert data["enrolling_learners"] is None
 
 
 async def test_org_trend_blanks_every_total_when_a_contract_row_is_dropped(app):
@@ -483,9 +489,32 @@ async def test_org_trend_blanks_every_total_when_a_contract_row_is_dropped(app):
         "total_videos_watched",
         "total_problems_attempted",
         "total_chatbot_interactions",
+        "monthly_active_learners",
+        "enrolling_learners",
+        "certified_learners",
+        "video_watchers",
+        "problem_attempters",
+        "chatbot_users",
     ):
         assert data[column] is None, column
-    assert data["monthly_active_learners"] == 40
+
+
+async def test_org_trend_blanks_the_headline_count_disjoint_contracts_would_reveal(app):
+    # The counterexample the guard closes: C1 (2 active, dropped) and C2 (25
+    # active, published) share no learners, so the org total is their exact
+    # sum. Left alone, `27 - 25` would hand back C1's suppressed headcount
+    # exactly -- the failure mode `monthly_active_learners` staying published
+    # was supposed to be safe from, on the assumption contracts overlap.
+    org_row = _trend_row() | {"monthly_active_learners": 27}
+    finer = [
+        _contract_trend_row("C1", active=2, chatbot_users=1, chatbot_total=3),
+        _contract_trend_row("C2", active=25, chatbot_users=20, chatbot_total=500),
+    ]
+    response = await _get_trend(app, _fake_fetch_all([org_row], finer_rows=finer))
+
+    assert response.status_code == 200
+    (data,) = response.json()["data"]
+    assert data["monthly_active_learners"] is None
 
 
 async def test_org_trend_untouched_when_the_contract_grain_publishes_in_full(app):

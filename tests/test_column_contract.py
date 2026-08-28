@@ -141,11 +141,13 @@ def test_finer_grain_declarations_match_the_contract_endpoint_they_name():
         # The guard suppresses the finer rows with the finer model's own policy,
         # so the spec must name the model whose MV it scans.
         assert spec.finer_grain.model is finer_model
-        # Only event sums add up exactly across contracts. Blanking a cohort
-        # count here would over-suppress; leaving out a sum would leave the
-        # subtraction open. _OrgEndpoint.__post_init__ enforces that the two
-        # lists partition the coarse model's derived columns; this pins the
-        # halves it does not know how to check.
+        # additive_columns names only the event sums that add up exactly
+        # across contracts regardless of overlap; the cohort counts get their
+        # own guard in `_register` (CrossGrainAdditives.guarded_cohorts),
+        # unconditionally, so they have no business showing up here too.
+        # _OrgEndpoint.__post_init__ enforces that additive/non-additive
+        # partition the coarse model's derived columns; this pins the halves
+        # it does not know how to check.
         policy = spec.model.cohort_policy
         additives = set(spec.finer_grain.additive_columns)
         assert additives <= set(policy.derived), f"{spec.mv}: additive column is not a derived sum"

@@ -337,6 +337,7 @@ def test_containment_mapping_is_not_mutable_after_construction():
 _ADDITIVES = CrossGrainAdditives(
     key_column="activity_year_and_month",
     columns=("new_enrollments", "total_videos_watched"),
+    guarded_cohorts=("monthly_active_learners",),
 )
 
 # A finer grain shaped like the contract engagement trend: an event sum floored
@@ -434,9 +435,18 @@ def test_cross_grain_additives_are_blanked_for_a_withheld_key():
     )
     assert row["new_enrollments"] is None
     assert row["total_videos_watched"] is None
-    # Learner counts are not additive across contracts (one learner active
-    # under two is counted in both), so subtracting them bounds rather than
-    # reveals, and they stay published.
+    # guarded_cohorts is blanked wholesale for any key with something hidden,
+    # not matched against the specific columns in `blanked` — two contracts
+    # sharing no learners would sum exactly, and nothing here can tell that
+    # case from an overlapping one.
+    assert row["monthly_active_learners"] is None
+
+
+def test_cross_grain_guarded_cohorts_survive_a_key_with_nothing_hidden():
+    rows = [{"activity_year_and_month": "2026-06", "monthly_active_learners": 40}]
+    (row,) = suppress_cross_grain_additives(
+        rows, _ADDITIVES, {"2026-07": frozenset({"new_enrollments"})}
+    )
     assert row["monthly_active_learners"] == 40
 
 
