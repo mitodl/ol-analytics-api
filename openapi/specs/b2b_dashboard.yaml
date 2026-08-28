@@ -836,7 +836,9 @@ components:
           type: string
           title: Activity Year And Month
         monthly_active_learners:
-          type: integer
+          anyOf:
+          - type: integer
+          - type: 'null'
           title: Monthly Active Learners
         new_enrollments:
           anyOf:
@@ -937,25 +939,38 @@ components:
 
         A learner active under two of an org''s contracts appears in both rows, so
 
-        these rows do not partition the org-level view''s learner counts; summing
+        these rows do not partition the org-level view''s learner counts in
 
-        ``monthly_active_learners`` across contracts can exceed the org''s own
+        general; summing ``monthly_active_learners`` across contracts can exceed
 
-        figure. Activity totals, being sums of events, do add up — which is what
+        the org''s own figure. Activity totals, being sums of events, always add up
 
-        makes a contract-month the floor withholds recoverable from the org
+        — which is what makes a contract-month the floor withholds recoverable
 
-        endpoint as ``org_total - sum(the visible contract months)``. The org
+        from the org endpoint as ``org_total - sum(the visible contract months)``.
 
-        endpoint defends against that itself: it probes this view for the months
+        The org endpoint defends against that itself: it probes this view for the
 
-        it withholds and blanks its own additive totals for them (see
+        months it withholds and blanks its own additive totals for them (see
 
-        ``routers.organizations._FinerGrain``). The learner counts are left alone,
+        ``routers.organizations._FinerGrain``).
 
-        because not adding up is exactly what stops them from being recovered by
 
-        subtraction.'
+        The learner counts don''t get to skip that defense on the strength of "not
+
+        adding up in general": two contracts that happen to share no learners *do*
+
+        add up exactly, and a hidden one comes back from the visible sibling''s
+
+        total the same as a hidden event sum would. Nothing here can tell that
+
+        case from an overlapping one, so the org endpoint guards every cohort
+
+        column — not just the additive totals — for any month it hides anything
+
+        for (``CrossGrainAdditives.guarded_cohorts``), accepting the cost of
+
+        blanking counts that overlap would have made safe to publish.'
     ContractUtilization:
       properties:
         organization_key:
@@ -1223,7 +1238,9 @@ components:
           type: string
           title: Activity Year And Month
         monthly_active_learners:
-          type: integer
+          anyOf:
+          - type: integer
+          - type: 'null'
           title: Monthly Active Learners
         new_enrollments:
           anyOf:
@@ -1319,7 +1336,14 @@ components:
         \ == 6`` and\nwould clear a floor of 5 on its own. Flooring them directly\
         \ is therefore\nthe wrong instrument — they are ``derived`` from ``enrolling_learners``\n\
         and ``certified_learners``, the distinct-learner counts they are actually\n\
-        attributable to, which do carry the floor."
+        attributable to, which do carry the floor.\n\n``monthly_active_learners``\
+        \ is Optional even though it is the primary —\neverywhere else the primary\
+        \ gates the row (below floor, the row is dropped\nwhole, never nulled) rather\
+        \ than being nulled itself. The org grain is the\nexception: it is also this\
+        \ endpoint's ``_FinerGrain.guarded_cohorts``\ntarget, so a month whose contract-level\
+        \ breakdown hides anything gets its\norg-level ``monthly_active_learners``\
+        \ blanked post hoc, after its own row\ngate already passed. See ``routers.organizations``\
+        \ and\n``ContractMonthlyEngagementTrend``."
     OrgAnalyticsResponse_ContentEngagementDepth_:
       properties:
         organization_id:

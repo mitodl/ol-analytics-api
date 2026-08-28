@@ -97,10 +97,18 @@ class _FinerGrain:
     are listed rather than left implicit: between them the two must account for
     every derived column on the coarse model, so adding a sixth aggregate to the
     MV cannot leave a new subtraction open just because nobody thought about it
-    here. (The learner counts are ``secondary``, not ``derived``, and are not
-    additive either — a learner active under two contracts is counted in both
-    rows — so subtracting them bounds the hidden cohort rather than revealing
-    it, and they stay published.)
+    here.
+
+    The coarse model's ``primary`` and ``secondary`` learner counts get no
+    equivalent declaration here — ``_register`` guards all of them together,
+    unconditionally, via ``CrossGrainAdditives.guarded_cohorts``. They are not
+    exactly additive across contracts in general (a learner active under two
+    is counted once at the org grain but in both contract rows), but two
+    contracts sharing no learners sum exactly, and this service has no way to
+    tell that case from an overlapping one before deciding what to publish. So
+    every cohort column at the coarse grain is blanked whenever the finer scan
+    hides anything at all for that key, not only the columns known to be safe
+    from it.
     """
 
     mv: str
@@ -221,7 +229,9 @@ def _register(spec: _OrgEndpoint) -> None:
     An endpoint declaring a ``finer_grain`` pays for one more round trip, and
     only that endpoint: a scan of its contract-grained sibling, suppressed here
     exactly as that sibling's own endpoint would suppress it, so the additive
-    columns it does not publish in full can be blanked at this grain too.
+    columns it does not publish in full — and, more bluntly, every cohort
+    column at this grain — can be blanked for whatever key it hid something
+    for.
     """
     query = build_select(
         _SCHEMA, spec.mv, spec.model, filter_columns=(_ORG_FILTER_COLUMN,), order_by=spec.order_by
@@ -233,7 +243,12 @@ def _register(spec: _OrgEndpoint) -> None:
         # the contract rows summing into it, so the same tuple names the guard's
         # key. Endpoints with a finer grain are single-keyed by construction.
         (key_column,) = spec.order_by
-        additives = CrossGrainAdditives(key_column, spec.finer_grain.additive_columns)
+        coarse_policy = cohort_policy_of(spec.model)
+        additives = CrossGrainAdditives(
+            key_column,
+            spec.finer_grain.additive_columns,
+            guarded_cohorts=(coarse_policy.primary, *coarse_policy.secondary),
+        )
         scan_query = build_grain_scan(
             _SCHEMA,
             spec.finer_grain.mv,

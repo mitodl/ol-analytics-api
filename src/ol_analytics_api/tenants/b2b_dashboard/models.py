@@ -172,6 +172,15 @@ class MonthlyEngagementTrend(SQLModel):
     the wrong instrument — they are ``derived`` from ``enrolling_learners``
     and ``certified_learners``, the distinct-learner counts they are actually
     attributable to, which do carry the floor.
+
+    ``monthly_active_learners`` is Optional even though it is the primary —
+    everywhere else the primary gates the row (below floor, the row is dropped
+    whole, never nulled) rather than being nulled itself. The org grain is the
+    exception: it is also this endpoint's ``_FinerGrain.guarded_cohorts``
+    target, so a month whose contract-level breakdown hides anything gets its
+    org-level ``monthly_active_learners`` blanked post hoc, after its own row
+    gate already passed. See ``routers.organizations`` and
+    ``ContractMonthlyEngagementTrend``.
     """
 
     cohort_policy: ClassVar[CohortPolicy] = CohortPolicy(
@@ -210,7 +219,7 @@ class MonthlyEngagementTrend(SQLModel):
     organization_key: str
     organization_name: str
     activity_year_and_month: str
-    monthly_active_learners: int
+    monthly_active_learners: int | None
     new_enrollments: int | None
     enrolling_learners: int | None
     certificates_earned: int | None
@@ -394,16 +403,23 @@ class ContractMonthlyEngagementTrend(MonthlyEngagementTrend):
     The contract columns are not cohorts and take no part in the policy.
 
     A learner active under two of an org's contracts appears in both rows, so
-    these rows do not partition the org-level view's learner counts; summing
-    ``monthly_active_learners`` across contracts can exceed the org's own
-    figure. Activity totals, being sums of events, do add up — which is what
-    makes a contract-month the floor withholds recoverable from the org
-    endpoint as ``org_total - sum(the visible contract months)``. The org
-    endpoint defends against that itself: it probes this view for the months
-    it withholds and blanks its own additive totals for them (see
-    ``routers.organizations._FinerGrain``). The learner counts are left alone,
-    because not adding up is exactly what stops them from being recovered by
-    subtraction.
+    these rows do not partition the org-level view's learner counts in
+    general; summing ``monthly_active_learners`` across contracts can exceed
+    the org's own figure. Activity totals, being sums of events, always add up
+    — which is what makes a contract-month the floor withholds recoverable
+    from the org endpoint as ``org_total - sum(the visible contract months)``.
+    The org endpoint defends against that itself: it probes this view for the
+    months it withholds and blanks its own additive totals for them (see
+    ``routers.organizations._FinerGrain``).
+
+    The learner counts don't get to skip that defense on the strength of "not
+    adding up in general": two contracts that happen to share no learners *do*
+    add up exactly, and a hidden one comes back from the visible sibling's
+    total the same as a hidden event sum would. Nothing here can tell that
+    case from an overlapping one, so the org endpoint guards every cohort
+    column — not just the additive totals — for any month it hides anything
+    for (``CrossGrainAdditives.guarded_cohorts``), accepting the cost of
+    blanking counts that overlap would have made safe to publish.
     """
 
     contract_pk: str

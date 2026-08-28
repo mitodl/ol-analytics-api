@@ -39,11 +39,20 @@ not "drops": a finer row can clear its own row gate and still publish NULL for
 one additive column, because the cohort that column is attributable to is
 sub-floor. Both cases leave the same hole in the sum.
 
+The coarse grain's distinct-entity cohort counts are not exactly additive the
+same way — a learner active under two contracts is one coarse learner but two
+finer rows — so subtracting a hidden contract's siblings from the coarse total
+is usually only a bound. It stops being only a bound when the finer rows
+happen to share no learners: two disjoint contracts sum exactly, and a hidden
+one comes back the same way a hidden event sum would. Nothing available here
+can tell overlapping contracts from disjoint ones, so cohort columns are
+guarded as if every finer grain were disjoint.
+
 Rows alone cannot see any of that. ``hidden_additive_columns`` runs the finer
 grain through the suppression above — the same function, not a cheaper
 approximation of it — and reports which additive columns come back NULL per
 key; ``suppress_cross_grain_additives`` blanks exactly those at the coarse
-grain.
+grain, plus every cohort column for any key with something hidden.
 """
 
 from __future__ import annotations
@@ -199,15 +208,28 @@ class CrossGrainAdditives:
         finer rows summing into it (e.g. the activity month).
     ``columns``
         The coarse columns that are *exactly* additive across the finer rows.
-        Only these are recoverable by subtraction, so only these are blanked.
-        Distinct-entity counts generally are not additive — a learner active
-        under two contracts is counted in both finer rows — so subtracting
-        those yields a bound, not a value, and they are left alone rather than
-        over-suppressed.
+        Blanked one at a time: only the specific column the finer grain hides
+        for a key is recoverable by subtraction, so only that one is blanked.
+    ``guarded_cohorts``
+        The coarse grain's distinct-entity cohort columns (its ``primary`` and
+        ``secondary`` policy fields) — blanked wholesale, all of them, for any
+        key the finer grain hides *anything* for.
+
+        These are not exactly additive across the finer rows in general — a
+        learner active under two contracts is counted once at the coarse grain
+        but appears in two finer rows — so ``coarse - sum(visible finer)`` is
+        usually a bound on a hidden cohort, not its value. But nothing here can
+        tell overlapping contracts from disjoint ones, and when the finer rows
+        happen to partition the coarse cohort with no overlap, that bound is
+        exact: a hidden contract-month's learner counts come back the same way
+        a hidden event sum would. So every cohort column is blanked whenever
+        anything is hidden for the key, at the cost of also blanking counts
+        that overlap would have made safe to publish.
     """
 
     key_column: str
     columns: tuple[str, ...]
+    guarded_cohorts: tuple[str, ...] = ()
 
 
 def hidden_additive_columns(
@@ -361,18 +383,30 @@ def suppress_cross_grain_additives(
     small to publish. Withholding the coarse total is what breaks the
     subtraction; the finer rows themselves stay as they are.
 
-    Blanking is per column, not per key: a month where only the chatbot total is
-    withheld downstream keeps its video and problem totals, which nothing can be
-    subtracted out of. One hidden finer contribution is enough to blank the
-    column it belongs to — several are not safer, since the difference is then
-    their sum, which can still be a handful of entities.
+    ``additives.columns`` is blanked per column, not per key: a month where
+    only the chatbot total is withheld downstream keeps its video and problem
+    totals, which nothing can be subtracted out of. One hidden finer
+    contribution is enough to blank the column it belongs to — several are not
+    safer, since the difference is then their sum, which can still be a
+    handful of entities.
+
+    ``additives.guarded_cohorts`` is blanked per key instead: any hidden entry
+    for a key blanks every cohort column for that key, regardless of which
+    specific additive column triggered it. These columns aren't attributable
+    to one hidden contribution the way an additive column is, so there is no
+    narrower blanking that stays safe under the disjoint-contract case
+    ``CrossGrainAdditives`` documents.
 
     Input rows are not mutated.
     """
     if not hidden_by_key:
         return rows
+    guarded = set(additives.guarded_cohorts)
     return [
-        {column: (None if column in blanked else value) for column, value in row.items()}
+        {
+            column: (None if column in blanked or column in guarded else value)
+            for column, value in row.items()
+        }
         if (blanked := hidden_by_key.get(row.get(additives.key_column)))
         else row
         for row in rows
