@@ -105,7 +105,7 @@ async def test_org_endpoint_returns_envelope_and_suppresses_small_cohorts(app):
             "organization_key": "org-a",
             "organization_name": "Org A",
             "contract_pk": "contract-pk-1",
-            "contract_id": "101",
+            "contract_id": 101,
             "b2b_contract_name": "C1",
             "b2b_contract_is_active": True,
             "b2b_contract_start_date": None,
@@ -437,7 +437,7 @@ async def test_admin_endpoint_envelope_has_no_organization_key(app):
         "organization_key": "org-a",
         "organization_name": "Org A",
         "contract_pk": "contract-pk-1",
-        "contract_id": "101",
+        "contract_id": 101,
         "b2b_contract_name": "C1",
         "b2b_contract_is_active": True,
         "b2b_contract_start_date": None,
@@ -609,7 +609,7 @@ def _row_template() -> dict:
         "organization_key": "org-a",
         "organization_name": "Org A",
         "contract_pk": "contract-pk-1",
-        "contract_id": "101",
+        "contract_id": 101,
         "b2b_contract_name": "C1",
         "b2b_contract_is_active": True,
         "b2b_contract_start_date": None,
@@ -677,10 +677,10 @@ async def test_contract_endpoint_filters_on_both_org_and_contract(app):
     assert response.status_code == 200
     assert "sso_organization_id = %s AND contract_id = %s" in captured["query"]
     # Both scope values bound, never spliced, and in the order the SQL names them.
-    assert captured["params"][:2] == (ORG_A_ID, "101")
+    assert captured["params"][:2] == (ORG_A_ID, 101)
     # The count query carries the same two predicates plus the cohort gate.
     assert "sso_organization_id = %s AND contract_id = %s" in captured["count_query"]
-    assert captured["count_params"][:2] == (ORG_A_ID, "101")
+    assert captured["count_params"][:2] == (ORG_A_ID, 101)
 
 
 async def test_contract_endpoint_reads_the_contract_grained_mv(app):
@@ -765,7 +765,7 @@ async def test_contract_endpoint_suppresses_below_the_floor(app):
         "organization_key": "org-a",
         "organization_name": "Org A",
         "contract_pk": "contract-pk-1",
-        "contract_id": "101",
+        "contract_id": 101,
         "b2b_contract_name": "C1",
         "activity_year_and_month": "2026-07",
         "monthly_active_learners": 40,
@@ -803,5 +803,5 @@ async def test_contract_endpoint_suppresses_below_the_floor(app):
     assert data["problem_attempters"] is None
     assert data["total_problems_attempted"] is None
     # Contract identity is never suppressed — it is not a cohort.
-    assert data["contract_id"] == "101"
+    assert data["contract_id"] == 101
     assert data["monthly_active_learners"] == 40
