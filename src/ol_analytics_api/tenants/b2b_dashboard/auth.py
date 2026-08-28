@@ -83,7 +83,7 @@ async def require_org_manager(
     return userinfo
 
 
-async def require_contract_in_org(organization_id: str, contract_id: str) -> None:
+async def require_contract_in_org(organization_id: str, contract_id: int) -> None:
     """403 unless `contract_id` belongs to `organization_id`.
 
     Mirrors MITx Online's IsOrganizationManager.has_object_permission, which

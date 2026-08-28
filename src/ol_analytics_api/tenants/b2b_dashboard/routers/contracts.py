@@ -128,7 +128,7 @@ def _register(spec: _ContractEndpoint) -> None:
 
     async def endpoint(
         organization_id: str,
-        contract_id: str,
+        contract_id: int,
         page: Annotated[Pagination, Depends(pagination)],
     ) -> OrgAnalyticsResponse[SQLModel]:
         rows = await fetch_and_suppress(
