@@ -805,3 +805,28 @@ async def test_contract_endpoint_suppresses_below_the_floor(app):
     # Contract identity is never suppressed — it is not a cohort.
     assert data["contract_id"] == 101
     assert data["monthly_active_learners"] == 40
+
+
+async def test_contract_endpoint_rejects_a_non_numeric_contract_id(app):
+    """contract_id is an integer column, so a non-numeric path segment is a
+    request error rather than a lookup that could never match."""
+    reached_db = False
+
+    async def fetch_all(query, params):  # noqa: ARG001
+        nonlocal reached_db
+        reached_db = True
+        return []
+
+    with (
+        patch("ol_analytics_api.core.db.client.starrocks_pool.fetch_all", new=fetch_all),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/contracts/not-a-number/engagement-trend",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
+            )
+    assert (response.status_code, reached_db) == (422, False)
