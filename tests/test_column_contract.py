@@ -14,7 +14,7 @@ CI contract-test task (see the schema-drift follow-up).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import pytest
 from sqlmodel import SQLModel
@@ -115,6 +115,64 @@ def test_cohort_policy_columns_are_real_model_fields(case):
     for derived, cohorts in policy.derived.items():
         assert derived in fields, f"{case.label}: derived column {derived!r} not in model fields"
         assert set(cohorts) <= fields, f"{case.label}: {derived!r} references a missing cohort"
+    # Same argument for the containment declarations: a typo'd container is a
+    # complement that never gets checked.
+    for subset, container in policy.contained_in.items():
+        assert subset in fields, f"{case.label}: contained cohort {subset!r} not a model field"
+        assert container in fields, f"{case.label}: container {container!r} not a model field"
+    assert set(policy.uncontained) <= fields, f"{case.label}: uncontained names a missing column"
+
+
+def test_finer_grain_declarations_match_the_contract_endpoint_they_name():
+    """The cross-grain guard is only sound if the coarse endpoint and the
+    contract endpoint it probes really are the same data at two grains."""
+    contract_models = {spec.mv: spec.model for spec in contracts.ENDPOINTS}
+
+    for spec in organizations.ENDPOINTS:
+        if spec.finer_grain is None:
+            continue
+        finer_model = contract_models[spec.finer_grain.mv]
+        coarse_fields = set(spec.model.model_fields)
+        # The probe filters on the key and the coarse rows are matched by it,
+        # so both grains have to carry it.
+        (key_column,) = spec.order_by
+        assert key_column in coarse_fields
+        assert key_column in set(finer_model.model_fields)
+        # The guard suppresses the finer rows with the finer model's own policy,
+        # so the spec must name the model whose MV it scans.
+        assert spec.finer_grain.model is finer_model
+        # additive_columns names only the event sums that add up exactly
+        # across contracts regardless of overlap; the cohort counts get their
+        # own guard in `_register` (CrossGrainAdditives.guarded_cohorts),
+        # unconditionally, so they have no business showing up here too.
+        # _OrgEndpoint.__post_init__ enforces that additive/non-additive
+        # partition the coarse model's derived columns; this pins the halves
+        # it does not know how to check.
+        policy = spec.model.cohort_policy
+        additives = set(spec.finer_grain.additive_columns)
+        assert additives <= set(policy.derived), f"{spec.mv}: additive column is not a derived sum"
+        assert not additives & {policy.primary, *policy.secondary}
+        assert additives, f"{spec.mv}: a finer grain with no additive column guards nothing"
+
+
+def test_finer_grain_must_classify_every_derived_column():
+    # The leak this guards against is an exactly-additive column nobody
+    # classified quietly keeping its subtraction open, which no other test
+    # would notice. It has to fail at import time.
+    trend = next(spec for spec in organizations.ENDPOINTS if spec.finer_grain is not None)
+    partial = replace(trend.finer_grain, additive_columns=trend.finer_grain.additive_columns[:-1])
+    with pytest.raises(ValueError, match="classified neither additive nor non-additive"):
+        replace(trend, finer_grain=partial)
+
+
+def test_finer_grain_rejects_a_column_that_is_not_derived():
+    trend = next(spec for spec in organizations.ENDPOINTS if spec.finer_grain is not None)
+    bogus = replace(
+        trend.finer_grain,
+        additive_columns=(*trend.finer_grain.additive_columns, "monthly_active_learners"),
+    )
+    with pytest.raises(ValueError, match="not derived columns"):
+        replace(trend, finer_grain=bogus)
 
 
 @_cases
@@ -135,3 +193,10 @@ def test_build_select_rejects_empty_order_by():
             MitAdminContractHealth,
             order_by=(),
         )
+
+
+def test_finer_grain_rejects_a_column_listed_as_both():
+    trend = next(spec for spec in organizations.ENDPOINTS if spec.finer_grain is not None)
+    both = replace(trend.finer_grain, non_additive_columns=trend.finer_grain.additive_columns)
+    with pytest.raises(ValueError, match="both additive and non-additive"):
+        replace(trend, finer_grain=both)

@@ -18,6 +18,7 @@ from httpx import ASGITransport, AsyncClient
 from ol_analytics_api.core.db.client import PoolAcquireTimeoutError
 from ol_analytics_api.core.db.refresh_metadata import _clear_cache
 from ol_analytics_api.main import create_app
+from ol_analytics_api.tenants.b2b_dashboard.routers import organizations
 
 _AS_OF = datetime.datetime(2026, 7, 2, 4, 0, 0)  # noqa: DTZ001
 
@@ -65,9 +66,19 @@ def _is_count_query(query):
     return "COUNT(*)" in query
 
 
-def _fake_fetch_all(data_rows, total_count=0):
+_CONTRACT_TREND_MV = "mv_b2b_contract_monthly_engagement_trend"
+
+
+def _is_grain_scan(query):
+    # The cross-grain guard's read of the contract-grained sibling. It is the
+    # only query naming that MV on an org-scoped request.
+    return _CONTRACT_TREND_MV in query
+
+
+def _fake_fetch_all(data_rows, total_count=0, finer_rows=None):
     """A fetch_all stub that answers the information_schema as_of probe with
-    _AS_OF, the envelope's total-count query with ``total_count``, and every
+    _AS_OF, the envelope's total-count query with ``total_count``, the
+    cross-grain scan of the contract-grained MV with ``finer_rows``, and every
     other query with the given MV rows."""
 
     async def fetch_all(query, *_args):
@@ -75,6 +86,8 @@ def _fake_fetch_all(data_rows, total_count=0):
             return [{"as_of": _AS_OF}]
         if _is_count_query(query):
             return [{"total_count": total_count}]
+        if _is_grain_scan(query):
+            return list(finer_rows or [])
         return list(data_rows)
 
     return fetch_all
@@ -82,14 +95,17 @@ def _fake_fetch_all(data_rows, total_count=0):
 
 def _capture_page_query(captured, rows=(), total_count=0):
     """A fetch_all stub that records the *paged* SELECT specifically. The as_of
-    probe and the total-count query go through the same pool, so a stub that
-    captured every query would report whichever happened to run last."""
+    probe, the total-count query and the hidden-grain probe go through the same
+    pool, so a stub that captured every query would report whichever happened
+    to run last."""
 
     async def fetch_all(query, params):
         if "information_schema" in query:
             return [{"as_of": _AS_OF}]
         if _is_count_query(query):
             return [{"total_count": total_count}]
+        if _is_grain_scan(query):
+            return []
         captured["query"] = query
         captured["params"] = params
         return list(rows)
@@ -374,6 +390,187 @@ async def test_monthly_trend_floors_event_counts_through_their_learner_cohorts(a
     assert data["total_videos_watched"] == 500
     assert data["chatbot_users"] == 15
     assert data["total_chatbot_interactions"] == 60
+
+
+def _trend_row(month="2026-07"):
+    """An org-grained engagement-trend row that clears every floor on its own,
+    so anything suppressed in these tests came from the cross-grain guard."""
+    return {
+        "organization_key": "org-a",
+        "organization_name": "Org A",
+        "activity_year_and_month": month,
+        "monthly_active_learners": 40,
+        "new_enrollments": 12,
+        "enrolling_learners": 9,
+        "certificates_earned": 30,
+        "certified_learners": 22,
+        "total_videos_watched": 500,
+        "video_watchers": 18,
+        "total_problems_attempted": 7,
+        "problem_attempters": 6,
+        "total_chatbot_interactions": 60,
+        "chatbot_users": 15,
+    }
+
+
+def _contract_trend_row(contract, *, active, chatbot_users, chatbot_total, month="2026-07"):
+    """A contract-grained trend row, the grain the org row sums over."""
+    return _trend_row(month) | {
+        "contract_pk": f"pk-{contract}",
+        "contract_id": contract,
+        "b2b_contract_name": contract,
+        "monthly_active_learners": active,
+        "chatbot_users": chatbot_users,
+        "total_chatbot_interactions": chatbot_total,
+    }
+
+
+async def _get_trend(app, fetch_all):
+    with (
+        patch("ol_analytics_api.core.db.client.starrocks_pool.fetch_all", new=fetch_all),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            return await client.get(
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/engagement-trend",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
+            )
+
+
+async def test_org_trend_blanks_the_total_a_surviving_contract_row_withholds(app):
+    # The contract row is NOT dropped: 30 active learners clears the row gate.
+    # But only 2 of them used the chatbot, so the contract endpoint publishes
+    # the row with its chatbot total withheld. Leave the org total alone and
+    # `517 - 500` hands that withheld 17 back, attributable to those 2 learners.
+    finer = [
+        _contract_trend_row("C1", active=30, chatbot_users=2, chatbot_total=17),
+        _contract_trend_row("C2", active=25, chatbot_users=20, chatbot_total=500),
+    ]
+    response = await _get_trend(app, _fake_fetch_all([_trend_row()], finer_rows=finer))
+
+    assert response.status_code == 200
+    (data,) = response.json()["data"]
+    assert data["total_chatbot_interactions"] is None
+    # Only the additive totals the contract grain actually withholds are
+    # blanked per-column. The other totals are published in full downstream,
+    # so nothing can be subtracted out of them and blanking them would cost
+    # the dashboard data for no gain.
+    assert data["total_videos_watched"] == 500
+    assert data["total_problems_attempted"] == 7
+    assert data["new_enrollments"] == 12
+    # But every cohort column goes wholesale for this month, chatbot_users
+    # included, even though that specific column isn't what triggered the
+    # guard: two contracts sharing no learners would sum exactly, and nothing
+    # here can distinguish that case from this one.
+    assert data["monthly_active_learners"] is None
+    assert data["chatbot_users"] is None
+    assert data["certified_learners"] is None
+    assert data["video_watchers"] is None
+    assert data["problem_attempters"] is None
+    assert data["enrolling_learners"] is None
+
+
+async def test_org_trend_blanks_every_total_when_a_contract_row_is_dropped(app):
+    # Below the row gate the contract contributes nothing visible at all, so
+    # every column it fed into the org total is recoverable by subtraction.
+    finer = [
+        _contract_trend_row("C1", active=2, chatbot_users=2, chatbot_total=17),
+        _contract_trend_row("C2", active=25, chatbot_users=20, chatbot_total=500),
+    ]
+    response = await _get_trend(app, _fake_fetch_all([_trend_row()], finer_rows=finer))
+
+    (data,) = response.json()["data"]
+    for column in (
+        "new_enrollments",
+        "certificates_earned",
+        "total_videos_watched",
+        "total_problems_attempted",
+        "total_chatbot_interactions",
+        "monthly_active_learners",
+        "enrolling_learners",
+        "certified_learners",
+        "video_watchers",
+        "problem_attempters",
+        "chatbot_users",
+    ):
+        assert data[column] is None, column
+
+
+async def test_org_trend_blanks_the_headline_count_disjoint_contracts_would_reveal(app):
+    # The counterexample the guard closes: C1 (2 active, dropped) and C2 (25
+    # active, published) share no learners, so the org total is their exact
+    # sum. Left alone, `27 - 25` would hand back C1's suppressed headcount
+    # exactly -- the failure mode `monthly_active_learners` staying published
+    # was supposed to be safe from, on the assumption contracts overlap.
+    org_row = _trend_row() | {"monthly_active_learners": 27}
+    finer = [
+        _contract_trend_row("C1", active=2, chatbot_users=1, chatbot_total=3),
+        _contract_trend_row("C2", active=25, chatbot_users=20, chatbot_total=500),
+    ]
+    response = await _get_trend(app, _fake_fetch_all([org_row], finer_rows=finer))
+
+    assert response.status_code == 200
+    (data,) = response.json()["data"]
+    assert data["monthly_active_learners"] is None
+
+
+async def test_org_trend_untouched_when_the_contract_grain_publishes_in_full(app):
+    finer = [_contract_trend_row("C1", active=40, chatbot_users=15, chatbot_total=60)]
+    response = await _get_trend(app, _fake_fetch_all([_trend_row()], finer_rows=finer))
+
+    assert response.status_code == 200
+    (data,) = response.json()["data"]
+    assert data["new_enrollments"] == 12
+    assert data["total_videos_watched"] == 500
+    assert data["certificates_earned"] == 30
+    assert data["total_chatbot_interactions"] == 60
+
+
+async def test_org_trend_blanks_only_the_months_the_contract_grain_withholds(app):
+    rows = [_trend_row("2026-06"), _trend_row("2026-07")]
+    finer = [
+        _contract_trend_row("C1", active=40, chatbot_users=15, chatbot_total=60, month="2026-06"),
+        _contract_trend_row("C1", active=30, chatbot_users=2, chatbot_total=17, month="2026-07"),
+        _contract_trend_row("C2", active=25, chatbot_users=20, chatbot_total=500, month="2026-07"),
+    ]
+    response = await _get_trend(app, _fake_fetch_all(rows, finer_rows=finer))
+
+    june, july = response.json()["data"]
+    assert june["total_chatbot_interactions"] == 60
+    assert july["total_chatbot_interactions"] is None
+
+
+async def test_org_endpoints_without_a_finer_grain_issue_no_scan(app):
+    # Only the trend endpoint aggregates across an org's contracts. Scanning on
+    # the other four would be a round trip per request buying nothing.
+    queries = []
+
+    async def fetch_all(query, *_args):
+        queries.append(query)
+        if "information_schema" in query:
+            return [{"as_of": _AS_OF}]
+        if _is_count_query(query):
+            return [{"total_count": 0}]
+        return []
+
+    with (
+        patch("ol_analytics_api.core.db.client.starrocks_pool.fetch_all", new=fetch_all),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/content-engagement",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
+            )
+
+    assert response.status_code == 200
+    assert not any(_is_grain_scan(query) for query in queries)
 
 
 async def test_org_endpoint_403_for_member_who_is_not_a_manager(app):
@@ -805,3 +1002,16 @@ async def test_contract_endpoint_suppresses_below_the_floor(app):
     # Contract identity is never suppressed — it is not a cohort.
     assert data["contract_id"] == "101"
     assert data["monthly_active_learners"] == 40
+
+
+async def test_org_trend_fails_closed_when_the_finer_grain_scan_is_truncated(app):
+    # A truncated scan cannot prove it saw every contributing contract row, so
+    # the guard cannot say which totals are safe. Publishing an unchecked total
+    # is the exact failure the guard exists to prevent, so the request fails.
+    limit = organizations._GRAIN_SCAN_LIMIT  # noqa: SLF001
+    finer = [
+        _contract_trend_row(f"C{index}", active=30, chatbot_users=15, chatbot_total=60)
+        for index in range(limit)
+    ]
+    with pytest.raises(RuntimeError, match="cross-grain guard cannot be applied"):
+        await _get_trend(app, _fake_fetch_all([_trend_row()], finer_rows=finer))

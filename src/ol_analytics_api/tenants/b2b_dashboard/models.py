@@ -6,10 +6,12 @@ These are plain SQLModel (Pydantic) schemas, not ORM tables — StarRocks-side
 schema is owned by dbt, not by this service.
 
 Every row model declares a ``cohort_policy`` (see core.anonymization): the
-distinct-entity counts subject to the k-anonymity floor and the derived
-values computed over them. The response layer nulls sub-floor secondary
-counts and their derivatives, so any count/rate/average column that can be
-suppressed is typed Optional even though the view never emits a NULL there.
+distinct-entity counts subject to the k-anonymity floor, which of them sit
+inside which, and the derived values computed over them. The response layer
+nulls sub-floor secondary counts, counts whose complement within a containing
+cohort is sub-floor, and the derivatives of both — so any count/rate/average
+column that can be suppressed is typed Optional even though the view never
+emits a NULL there.
 """
 
 from __future__ import annotations
@@ -64,6 +66,15 @@ class ContractUtilization(SQLModel):
         primary="seats_consumed",
         secondary=("active_learners", "learners_certified"),
         derived={"completion_rate_pct": ("learners_certified",)},
+        # Both are counted from users the contract's enrollments already
+        # produced (`active_learners` filters those enrollments;
+        # `learners_certified` counts certificates on the same contract's
+        # course runs, which a learner can only hold by enrolling), so each is
+        # a subset of the seats consumed.
+        contained_in={
+            "active_learners": "seats_consumed",
+            "learners_certified": "seats_consumed",
+        },
     )
 
     organization_key: str
@@ -92,6 +103,18 @@ class EnrollmentCompletionFunnel(SQLModel):
         derived={
             "active_rate_pct": ("active_learners",),
             "completion_rate_pct": ("certified_learners",),
+        },
+        # All three are counted off the enrollment row itself — grades and
+        # certificates join on `(user, course_run)` from the enrollment — so
+        # each names a subset of the enrolled learners. They are declared flat
+        # under the primary rather than chained (certified inside passing
+        # inside active): the view's SQL does not enforce those inner
+        # containments, and declaring one that does not hold fails closed and
+        # would suppress good data.
+        contained_in={
+            "active_learners": "enrolled_learners",
+            "passing_learners": "enrolled_learners",
+            "certified_learners": "enrolled_learners",
         },
     )
 
@@ -149,6 +172,15 @@ class MonthlyEngagementTrend(SQLModel):
     the wrong instrument — they are ``derived`` from ``enrolling_learners``
     and ``certified_learners``, the distinct-learner counts they are actually
     attributable to, which do carry the floor.
+
+    ``monthly_active_learners`` is Optional even though it is the primary —
+    everywhere else the primary gates the row (below floor, the row is dropped
+    whole, never nulled) rather than being nulled itself. The org grain is the
+    exception: it is also this endpoint's ``_FinerGrain.guarded_cohorts``
+    target, so a month whose contract-level breakdown hides anything gets its
+    org-level ``monthly_active_learners`` blanked post hoc, after its own row
+    gate already passed. See ``routers.organizations`` and
+    ``ContractMonthlyEngagementTrend``.
     """
 
     cohort_policy: ClassVar[CohortPolicy] = CohortPolicy(
@@ -167,12 +199,27 @@ class MonthlyEngagementTrend(SQLModel):
             "total_problems_attempted": ("problem_attempters",),
             "total_chatbot_interactions": ("chatbot_users",),
         },
+        # Earning a certificate, watching a video, attempting a problem and
+        # using the chatbot each set `active_count`, so all four cohorts are
+        # subsets of the month's active learners and their complements are
+        # real: 42 active of whom 40 used the chatbot names the 2 who did not.
+        contained_in={
+            "certified_learners": "monthly_active_learners",
+            "video_watchers": "monthly_active_learners",
+            "problem_attempters": "monthly_active_learners",
+            "chatbot_users": "monthly_active_learners",
+        },
+        # Enrolling does not set `active_count`, so a learner who only enrolled
+        # is counted here and not in the primary. `monthly_active_learners -
+        # enrolling_learners` is therefore not a complement — it can even go
+        # negative — and reading it as one would suppress on noise.
+        uncontained=("enrolling_learners",),
     )
 
     organization_key: str
     organization_name: str
     activity_year_and_month: str
-    monthly_active_learners: int
+    monthly_active_learners: int | None
     new_enrollments: int | None
     enrolling_learners: int | None
     certificates_earned: int | None
@@ -194,6 +241,13 @@ class ProgramFunnel(SQLModel):
     cohort_policy: ClassVar[CohortPolicy] = CohortPolicy(
         primary="enrolled_in_contract_courses",
         secondary=("enrolled_via_program", "program_course_completers"),
+        # Both are counted off the same enrollment rows as the primary — one
+        # filtered to the program pathway, one joined to certificates on
+        # `(user, course_run)` — so each is a subset of it.
+        contained_in={
+            "enrolled_via_program": "enrolled_in_contract_courses",
+            "program_course_completers": "enrolled_in_contract_courses",
+        },
     )
 
     organization_key: str
@@ -265,6 +319,23 @@ class ContentEngagementDepth(SQLModel):
             "total_chatbot_interactions": ("chatbot_users",),
             "chatbot_adoption_pct": ("chatbot_users",),
         },
+        # Nested two deep, and the inner level is the one that bites: watching
+        # a video sets `active_count`, so the watchers sit inside the engaged
+        # learners, and 40 watchers of 42 engaged names the 2 engaged learners
+        # who never watched one. The outer pair is walked transitively, so the
+        # complement against total enrollment is checked too.
+        contained_in={
+            "engaged_learners": "total_enrolled_learners",
+            "video_watchers": "engaged_learners",
+            "problem_attempters": "engaged_learners",
+            "chatbot_users": "engaged_learners",
+        },
+        # `sum(certificate_count)` counts certificates, not learners: one
+        # learner can hold several, so it is not a subset of any cohort here
+        # and can exceed one. It stays floored as a count of itself (see
+        # above); a complement rule over it would be arithmetic on two
+        # different units.
+        uncontained=("certificates_earned",),
     )
 
     organization_key: str
@@ -293,6 +364,13 @@ class MitAdminContractHealth(SQLModel):
         primary="seats_consumed",
         secondary=("active_learners", "certified_learners"),
         derived={"completion_rate_pct": ("certified_learners",)},
+        # Same shape as ContractUtilization: both are counted off the
+        # contract's own enrollment rows, so both are subsets of the seats
+        # consumed.
+        contained_in={
+            "active_learners": "seats_consumed",
+            "certified_learners": "seats_consumed",
+        },
     )
 
     organization_key: str
@@ -325,9 +403,23 @@ class ContractMonthlyEngagementTrend(MonthlyEngagementTrend):
     The contract columns are not cohorts and take no part in the policy.
 
     A learner active under two of an org's contracts appears in both rows, so
-    these rows do not partition the org-level view's learner counts; summing
-    ``monthly_active_learners`` across contracts can exceed the org's own
-    figure. Activity totals, being sums of events, do add up.
+    these rows do not partition the org-level view's learner counts in
+    general; summing ``monthly_active_learners`` across contracts can exceed
+    the org's own figure. Activity totals, being sums of events, always add up
+    — which is what makes a contract-month the floor withholds recoverable
+    from the org endpoint as ``org_total - sum(the visible contract months)``.
+    The org endpoint defends against that itself: it probes this view for the
+    months it withholds and blanks its own additive totals for them (see
+    ``routers.organizations._FinerGrain``).
+
+    The learner counts don't get to skip that defense on the strength of "not
+    adding up in general": two contracts that happen to share no learners *do*
+    add up exactly, and a hidden one comes back from the visible sibling's
+    total the same as a hidden event sum would. Nothing here can tell that
+    case from an overlapping one, so the org endpoint guards every cohort
+    column — not just the additive totals — for any month it hides anything
+    for (``CrossGrainAdditives.guarded_cohorts``), accepting the cost of
+    blanking counts that overlap would have made safe to publish.
     """
 
     contract_pk: str
@@ -344,10 +436,13 @@ class ContractContentEngagementDepth(ContentEngagementDepth):
     Unlike the trend view, these rows ARE a strict partition of the org-level
     view: a course run belongs to exactly one contract, so naming the contract
     labels a row rather than splitting it, and every count here equals its
-    org-level counterpart for the same course run. That equality is exactly
-    what makes a suppressed contract recoverable by subtraction once an org
-    holds more than one — the k-anonymity floor here is per-row and does not
-    defend against differencing across the two grains.
+    org-level counterpart for the same course run.
+
+    That equality is why this pair needs no cross-grain guard, where the trend
+    pair does. Nothing is aggregated away going from contract grain to org
+    grain, so there is no remainder to subtract: a course run's org row and its
+    contract row hold the same numbers, the floor makes the same call on both,
+    and a caller reading one learns nothing the other withholds.
     """
 
     contract_pk: str
