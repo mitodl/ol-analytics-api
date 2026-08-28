@@ -47,7 +47,7 @@ def test_build_count_rejects_model_without_cohort_policy():
 
 
 def test_build_count_gates_on_the_primary_cohort():
-    query = build_count("b2b", "mv_thing", _PolicyRow, filter_column="organization_key")
+    query = build_count("b2b", "mv_thing", _PolicyRow, filter_columns=("organization_key",))
 
     # The floor is a bound param, never spliced; the gate makes the total match
     # what paging yields rather than counting rows suppression will drop.

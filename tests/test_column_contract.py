@@ -22,7 +22,7 @@ from sqlmodel import SQLModel
 from ol_analytics_api.core.db.identifiers import validate_sql_identifier
 from ol_analytics_api.core.db.query import build_select
 from ol_analytics_api.tenants.b2b_dashboard.models import MitAdminContractHealth
-from ol_analytics_api.tenants.b2b_dashboard.routers import admin, organizations
+from ol_analytics_api.tenants.b2b_dashboard.routers import admin, contracts, organizations
 
 
 @dataclass(frozen=True)
@@ -38,35 +38,55 @@ def _projected_columns(query: str) -> list[str]:
     return [column.strip() for column in select_clause.split(",")]
 
 
-# Every real endpoint: the org endpoints from the declarative table plus the
-# admin endpoint's constants, each with the query build_select actually emits.
-_CASES = [
-    _Case(
-        spec.mv,
-        build_select(
-            organizations._SCHEMA,  # noqa: SLF001
+# Every real endpoint: both declarative tables plus the admin endpoint's
+# constants, each with the query build_select actually emits. The contract
+# endpoints are built from contracts.ENDPOINTS rather than restated, so a row
+# added there is covered here without touching this file.
+_CASES = (
+    [
+        _Case(
             spec.mv,
+            build_select(
+                organizations._SCHEMA,  # noqa: SLF001
+                spec.mv,
+                spec.model,
+                filter_columns=(organizations._ORG_FILTER_COLUMN,),  # noqa: SLF001
+                order_by=spec.order_by,
+            ),
             spec.model,
-            filter_column=organizations._ORG_FILTER_COLUMN,  # noqa: SLF001
-            order_by=spec.order_by,
-        ),
-        spec.model,
-        spec.order_by,
-    )
-    for spec in organizations.ENDPOINTS
-] + [
-    _Case(
-        admin._MV,  # noqa: SLF001
-        build_select(
-            "b2b_analytics",
+            spec.order_by,
+        )
+        for spec in organizations.ENDPOINTS
+    ]
+    + [
+        _Case(
+            f"{spec.mv} (contract-scoped)",
+            build_select(
+                contracts._SCHEMA,  # noqa: SLF001
+                spec.mv,
+                spec.model,
+                filter_columns=contracts._FILTER_COLUMNS,  # noqa: SLF001
+                order_by=spec.order_by,
+            ),
+            spec.model,
+            spec.order_by,
+        )
+        for spec in contracts.ENDPOINTS
+    ]
+    + [
+        _Case(
             admin._MV,  # noqa: SLF001
+            build_select(
+                "b2b_analytics",
+                admin._MV,  # noqa: SLF001
+                MitAdminContractHealth,
+                order_by=admin._ORDER_BY,  # noqa: SLF001
+            ),
             MitAdminContractHealth,
-            order_by=admin._ORDER_BY,  # noqa: SLF001
+            admin._ORDER_BY,  # noqa: SLF001
         ),
-        MitAdminContractHealth,
-        admin._ORDER_BY,  # noqa: SLF001
-    ),
-]
+    ]
+)
 
 _cases = pytest.mark.parametrize("case", _CASES, ids=[c.label for c in _CASES])
 

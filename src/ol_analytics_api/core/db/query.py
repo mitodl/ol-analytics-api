@@ -31,7 +31,7 @@ def build_select(
     table: str,
     model_cls: type[SQLModel],
     *,
-    filter_column: str | None = None,
+    filter_columns: tuple[str, ...] = (),
     order_by: tuple[str, ...],
 ) -> str:
     """Build a paginated ``SELECT`` projecting exactly ``model_cls``'s columns.
@@ -41,7 +41,7 @@ def build_select(
     projected column, filter-column, and order-by names are interpolated — but
     every one is first run through ``validate_sql_identifier``, so the returned
     string provably contains nothing but validated identifiers and ``%s``
-    placeholders. Row *values* (the filter value, LIMIT, OFFSET) are always
+    placeholders. Row *values* (the filter values, LIMIT, OFFSET) are always
     bound params, never spliced. Collapsing the previous per-endpoint
     ``SELECT * ... # noqa: S608`` lines into this one construct means there is
     exactly one identifier-splicing site to review, not one per endpoint.
@@ -58,7 +58,12 @@ def build_select(
     columns = ", ".join(validate_sql_identifier(name) for name in model_cls.model_fields)
     schema_table = f"{validate_sql_identifier(schema)}.{validate_sql_identifier(table)}"
     order = ", ".join(validate_sql_identifier(column) for column in order_by)
-    where = f" WHERE {validate_sql_identifier(filter_column)} = %s" if filter_column else ""
+    # One bound placeholder per filter column, ANDed: org-scoped endpoints pass
+    # just the org column, contract-scoped ones pass org AND contract. The org
+    # predicate is never dropped when a contract is added -- a caller must not
+    # be able to read another org's contract by naming it.
+    predicates = " AND ".join(f"{validate_sql_identifier(name)} = %s" for name in filter_columns)
+    where = f" WHERE {predicates}" if predicates else ""
     # The single S608 suppression in the service: justified because every
     # interpolated token above is a validate_sql_identifier'd identifier.
     return f"SELECT {columns} FROM {schema_table}{where} ORDER BY {order} LIMIT %s OFFSET %s"  # noqa: S608
@@ -69,7 +74,7 @@ def build_count(
     table: str,
     model_cls: type[SQLModel],
     *,
-    filter_column: str | None = None,
+    filter_columns: tuple[str, ...] = (),
 ) -> str:
     """Build the ``COUNT(*)`` matching what ``build_select`` yields across all
     pages, so a client can tell a full page from a truncated result set.
@@ -83,15 +88,38 @@ def build_count(
     the total consistent with the data and discloses nothing the rows don't.
 
     Identifiers are spliced under ``build_select``'s rules — every token is
-    ``validate_sql_identifier``'d; the floor and the filter value are bound.
+    ``validate_sql_identifier``'d; the floor and the filter values are bound.
     """
     policy = _require_cohort_policy(model_cls).cohort_policy
     schema_table = f"{validate_sql_identifier(schema)}.{validate_sql_identifier(table)}"
-    org_filter = f"{validate_sql_identifier(filter_column)} = %s AND " if filter_column else ""
+    scope_filter = "".join(f"{validate_sql_identifier(name)} = %s AND " for name in filter_columns)
     cohort_gate = f"{validate_sql_identifier(policy.primary)} >= %s"
     # Same justification as build_select: every interpolated token is a
     # validate_sql_identifier'd identifier, and values are bound params.
-    return f"SELECT COUNT(*) AS total_count FROM {schema_table} WHERE {org_filter}{cohort_gate}"  # noqa: S608
+    return f"SELECT COUNT(*) AS total_count FROM {schema_table} WHERE {scope_filter}{cohort_gate}"  # noqa: S608
+
+
+def build_existence_check(schema: str, table: str, filter_columns: tuple[str, ...]) -> str:
+    """A ``SELECT 1 ... LIMIT 1`` membership probe.
+
+    Deliberately not routed through ``build_select``/``build_count``: it takes
+    no model and reads no column, so the cohort-policy gate those enforce has
+    nothing to enforce here. It exists for authorization checks that must
+    distinguish "not yours" from "yours but empty" — see the b2b_dashboard
+    tenant's contract gate — and it answers only with existence.
+
+    It stays in this module so the identifier-splicing rule holds in one place:
+    every token is ``validate_sql_identifier``'d, values are bound. Do not grow
+    it into something that projects columns; that is what ``build_select`` is
+    for, and the anonymization floor rides on that path.
+    """
+    if not filter_columns:
+        msg = "build_existence_check needs at least one filter column"
+        raise ValueError(msg)
+    schema_table = f"{validate_sql_identifier(schema)}.{validate_sql_identifier(table)}"
+    predicates = " AND ".join(f"{validate_sql_identifier(name)} = %s" for name in filter_columns)
+    # Same justification as build_select: identifiers validated, values bound.
+    return f"SELECT 1 FROM {schema_table} WHERE {predicates} LIMIT 1"  # noqa: S608
 
 
 class SuppressibleModel(Protocol):
