@@ -48,7 +48,10 @@ from ol_analytics_api.core.db.vault_credentials import fetch_starrocks_credentia
 from ol_analytics_api.core.observability.logging import configure_structlog
 from ol_analytics_api.core.observability.middleware import add_request_logging
 from ol_analytics_api.core.observability.sentry import init_sentry
-from ol_analytics_api.core.observability.telemetry import configure_opentelemetry
+from ol_analytics_api.core.observability.telemetry import (
+    configure_opentelemetry,
+    instrument_fastapi_app,
+)
 from ol_analytics_api.tenants.b2b_dashboard import app as b2b_dashboard
 
 # Sentry first, so it can capture errors in the setup that follows.
@@ -76,11 +79,17 @@ class Tenant:
     """A mounted tenant, registered by structure rather than convention.
 
     ``create_app`` is a factory, not an already-built ``FastAPI``: the instance
-    is constructed inside the root ``create_app()`` below, which runs *after*
-    ``configure_opentelemetry()``. FastAPI auto-instrumentation patches
-    ``FastAPI.__init__``, so deferring construction to that one well-ordered
-    call site means a tenant is instrumented no matter where its module is
-    imported — the old "import tenants only after OTel setup" landmine is gone.
+    is constructed inside the root ``create_app()`` below, so a tenant's app
+    object comes into being at one well-ordered call site instead of at import
+    time, wherever its module happens to be imported first.
+
+    That ordering does NOT make a tenant instrumented, despite what this
+    docstring used to claim: the sweep's ``instrument()`` rebinds
+    ``fastapi.FastAPI``, and this module bound its own ``FastAPI`` name at
+    import, so ``tenant.create_app()`` builds a plain app either way (see
+    ``telemetry._MANUALLY_INSTRUMENTED``). Tenants are covered by the root app's
+    OpenTelemetry middleware, which wraps everything ``Mount`` delegates to
+    them; instrumenting them individually only adds a redundant nested span.
 
     ``lifespan`` is the tenant's own startup/shutdown context manager. A mounted
     sub-app's own ``lifespan=`` is never run by the ASGI server, so the root
@@ -219,6 +228,13 @@ def create_app() -> FastAPI:
         # too would log every tenant request twice.
         app.mount(tenant.mount_path, tenant_app)
     app.state.tenant_apps = tenant_apps
+
+    # Instrument the assembled instance rather than relying on the entry-point
+    # sweep, which cannot reach the `FastAPI` name this module bound at import
+    # time. Without this the service produces no server spans at all -- only
+    # httpx client spans, whose instrumentor patches methods rather than
+    # rebinding a name.
+    instrument_fastapi_app(app)
 
     return app
 
