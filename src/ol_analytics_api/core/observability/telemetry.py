@@ -19,9 +19,11 @@ import importlib.metadata
 import logging
 import os
 
+from fastapi import FastAPI
 from opentelemetry import trace
 from opentelemetry.baggage.propagation import W3CBaggagePropagator
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.propagate import set_global_textmap
 from opentelemetry.propagators.composite import CompositePropagator
 from opentelemetry.sdk.resources import Resource
@@ -33,6 +35,27 @@ log = logging.getLogger(__name__)
 
 _configured = False
 _instrumented = False
+_tracing_enabled = False
+
+# FastAPI is instrumented per-app by instrument_fastapi_app(), never through the
+# entry-point sweep in _auto_instrument().
+#
+# FastAPIInstrumentor().instrument() works by rebinding the module attribute:
+# `fastapi.FastAPI = _InstrumentedFastAPI`. Any module that already did
+# `from fastapi import FastAPI` holds the ORIGINAL class and never sees the
+# replacement -- and every module here does, because Python executes a module's
+# imports before its module-level statements, so main.py and each tenant's
+# app.py bind the name long before main.py calls configure_opentelemetry().
+# Constructing the apps later (see main.Tenant) does not help: the call site
+# resolves `FastAPI` from its own namespace, not from the fastapi module.
+#
+# The result is silent: instrument() succeeds, the sweep logs nothing, and the
+# app is simply never instrumented -- no server spans, and no trace_id on any
+# log line, while httpx tracing keeps working because that instrumentor patches
+# methods on existing classes instead of rebinding a name.
+#
+# instrument_app() takes the app instance, so it is immune to all of this.
+_MANUALLY_INSTRUMENTED = frozenset({"fastapi"})
 
 
 def _get_resource(service_name: str, service_version: str, environment: str) -> Resource:
@@ -91,7 +114,7 @@ def _auto_instrument() -> None:
         return
     _instrumented = True
 
-    skip = {
+    skip = _MANUALLY_INSTRUMENTED | {
         name.strip()
         for name in os.environ.get("OL_ANALYTICS_API_OTEL_SKIP_INSTRUMENTORS", "").split(",")
         if name.strip()
@@ -112,13 +135,15 @@ def configure_opentelemetry(
     *, service_name: str, service_version: str, environment: str, debug: bool
 ) -> TracerProvider | None:
     """Configure OpenTelemetry tracing. Call once, at process startup, before
-    any FastAPI() instances (including mounted tenant sub-apps) are
-    constructed — FastAPI auto-instrumentation patches FastAPI.__init__, so
-    apps created before this runs won't be instrumented.
+    the instrumented libraries are used: the entry-point sweep at the end
+    patches them in place, so an httpx client constructed and called before
+    this runs is untraced. FastAPI is deliberately excluded from that sweep and
+    instrumented per-app by instrument_fastapi_app() — see
+    _MANUALLY_INSTRUMENTED for why the sweep cannot work for it.
 
     Idempotent — safe to call multiple times.
     """
-    global _configured  # noqa: PLW0603
+    global _configured, _tracing_enabled  # noqa: PLW0603
     if _configured:
         existing = trace.get_tracer_provider()
         return existing if isinstance(existing, TracerProvider) else None
@@ -158,12 +183,37 @@ def configure_opentelemetry(
         except Exception:  # noqa: BLE001
             log.warning("OpenTelemetry: failed to configure OTLP exporter", exc_info=True)
 
+    _tracing_enabled = True
     _auto_instrument()
     return provider
 
 
+def instrument_fastapi_app(app: FastAPI) -> None:
+    """Instrument one FastAPI instance, bypassing the module-attribute patch.
+
+    Takes the app object, so it does not care whether the caller's `FastAPI`
+    name refers to the instrumented subclass — which is the failure the
+    entry-point sweep hits (see _MANUALLY_INSTRUMENTED).
+
+    Apply to the root app only. Starlette's Mount runs a tenant sub-app inside
+    the root app's own ASGI call, so instrumenting a tenant as well would nest a
+    redundant second span inside the root's on every tenant request —
+    _start_internal_or_server_span downgrades it to INTERNAL because the root's
+    SERVER span is already active, so it is duplicated work rather than a second
+    server span. Same reasoning as add_request_logging() living on the root
+    alone.
+
+    A no-op when configure_opentelemetry() did not set tracing up, so a local
+    run with no endpoint doesn't pay for middleware that records nothing.
+    """
+    if not _tracing_enabled:
+        return
+    FastAPIInstrumentor.instrument_app(app)
+
+
 def reset_configuration() -> None:
     """Reset configuration state — test-only."""
-    global _configured, _instrumented  # noqa: PLW0603
+    global _configured, _instrumented, _tracing_enabled  # noqa: PLW0603
     _configured = False
     _instrumented = False
+    _tracing_enabled = False

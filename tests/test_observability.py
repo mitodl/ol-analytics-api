@@ -1,8 +1,11 @@
 from unittest.mock import MagicMock, patch
 
+from fastapi import FastAPI
+
 from ol_analytics_api.core.observability import logging as obs_logging
 from ol_analytics_api.core.observability import telemetry
 from ol_analytics_api.core.observability.sentry import _before_send, init_sentry
+from ol_analytics_api.main import create_app
 
 
 def _clear_endpoint_env(monkeypatch):
@@ -191,6 +194,56 @@ def test_auto_instrument_skips_configured_instrumentors_and_survives_a_failure(m
     ok_ep.load.assert_called_once()
     assert "Failed to auto-instrument" in caplog.text
     telemetry.reset_configuration()
+
+
+def test_auto_instrument_never_sweeps_fastapi():
+    """The sweep's instrument() rebinds fastapi.FastAPI, which no module in this
+    service reads -- every one of them bound the name at import time. Sweeping it
+    would silently do nothing, so it is excluded and handled per-app instead.
+    """
+    telemetry.reset_configuration()
+    fastapi_ep = _fake_entry_point("fastapi")
+    httpx_ep = _fake_entry_point("httpx")
+
+    with patch(
+        "ol_analytics_api.core.observability.telemetry.importlib.metadata.entry_points",
+        return_value=[fastapi_ep, httpx_ep],
+    ):
+        telemetry._auto_instrument()  # noqa: SLF001
+
+    fastapi_ep.load.assert_not_called()
+    httpx_ep.load.assert_called_once()
+    telemetry.reset_configuration()
+
+
+def test_instrument_fastapi_app_is_a_noop_without_tracing():
+    telemetry.reset_configuration()
+    app = FastAPI()
+    telemetry.instrument_fastapi_app(app)
+    assert getattr(app, "_is_instrumented_by_opentelemetry", False) is False
+
+
+def test_root_app_is_instrumented(monkeypatch):
+    """Regression: FastAPIInstrumentor().instrument() rebinds fastapi.FastAPI,
+    but main.py bound its own FastAPI name at import, so the sweep never reached
+    the app. The service produced no server spans at all -- and, because there
+    was never an active span, no access log line ever carried a trace_id.
+    """
+    monkeypatch.setattr(telemetry, "_tracing_enabled", True)
+    app = create_app()
+    assert getattr(app, "_is_instrumented_by_opentelemetry", False) is True
+
+
+def test_tenant_apps_are_not_separately_instrumented(monkeypatch):
+    """Mount runs a tenant inside the root app's ASGI call, so the root's
+    middleware already covers it; a second one would only add a redundant
+    nested span on every tenant request.
+    """
+    monkeypatch.setattr(telemetry, "_tracing_enabled", True)
+    app = create_app()
+    assert app.state.tenant_apps
+    for tenant_app in app.state.tenant_apps.values():
+        assert getattr(tenant_app, "_is_instrumented_by_opentelemetry", False) is False
 
 
 def test_init_sentry_with_empty_dsn_does_not_raise():
