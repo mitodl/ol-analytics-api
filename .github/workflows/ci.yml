@@ -24,7 +24,7 @@ jobs:
         with:
           ref: ${{ inputs.pr && format('refs/pull/{0}/merge', inputs.pr) || github.sha }}
           persist-credentials: false
-      - uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: true
       - run: uv sync --frozen
