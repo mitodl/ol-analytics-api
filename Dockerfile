@@ -12,7 +12,7 @@ RUN uv venv --relocatable /app/.venv && \
 COPY src/ ./src/
 RUN uv sync --frozen --no-dev
 
-FROM python:3.12-slim-bookworm
+FROM python:3.14-slim-bookworm@sha256:9ab8d9c8514b44f90cf0029dd42fdd7e9e211e639c8b995304cc04568dee900f
 
 # Matches this org's non-Django service convention (e.g.
 # ol_infrastructure/applications/kubewatch_webhook_handler,
