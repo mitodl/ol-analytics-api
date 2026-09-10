@@ -1,0 +1,816 @@
+```yaml
+openapi: 3.1.0
+
+info:
+  title: MIT Open Learning — B2B Learner Records API
+  version: 1.0.0-draft.2
+  summary: >-
+    Machine-to-machine, read-only, organization-scoped learner progress records
+    for B2B site-license partners and their contracted training providers.
+  description: |
+    **DRAFT — proposed contract, not yet implemented.** Published so partners can
+    review the record shape and size an integration. Field names and types may
+    change before `1.0.0` final.
+
+    Rationale, scope and open questions: `docs/b2b-learner-records-onepager.md`.
+
+    Three things a reader needs that the schemas do not state:
+
+    * **Consent gates outcomes, not identity.** Progress, completion and
+      activity fields are populated only where the learner has opted in to
+      sharing their course status. `outcomes_shared` says which. Identity and
+      enrollment facts are not consent-gated — the organization assigned the
+      seat. Enforcement fails closed, so every record reads
+      `outcomes_shared: false` until the upstream consent field ships.
+    * **The same schemas are delivered two ways.** This REST API, and a
+      per-organization bulk export (S3/SFTP) written on each refresh. The export
+      carries the same records under the same field names.
+    * **`as_of` is the data's freshness and the sync cursor.** Records come from
+      materialized views refreshed on a schedule. Pass a previous `as_of` as
+      `updated_since` for incremental sync; a consent withdrawal arrives as a
+      normal changed record with `outcomes_shared: false` and outcome fields
+      nulled, which the client upserts to drop the data it held.
+
+    Every schema property carries `x-data-readiness`: `available` (backed
+    today), `derived` (computable from existing sources), `pending-model`
+    (needs upstream work; ships `null` until then).
+
+  contact:
+    name: MIT Open Learning — Data Engineering
+    url: https://github.com/mitodl/ol-analytics-api
+  license:
+    name: BSD-3-Clause
+    identifier: BSD-3-Clause
+
+servers:
+  - url: https://api.mitxonline.mit.edu/api/v1/learner-records
+    description: Production (planned)
+  - url: https://api.qa.mitxonline.mit.edu/api/v1/learner-records
+    description: QA — partner integration testing (planned)
+
+security:
+  - oauth2ClientCredentials:
+      - learner-records:read
+
+tags:
+  - name: learners
+  - name: enrollments
+  - name: catalog
+  - name: exports
+
+paths:
+
+  /organizations/{organization_id}/learners:
+    get:
+      tags: [learners]
+      operationId: listLearners
+      summary: Learner roster with progress rollups
+      description: One row per learner associated with the organization, rolled up across all its contracts.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationId'
+        - $ref: '#/components/parameters/ContractId'
+        - $ref: '#/components/parameters/LearnerId'
+        - $ref: '#/components/parameters/UpdatedSince'
+        - $ref: '#/components/parameters/IncludeInactive'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: A page of learner records.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OrganizationEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Learner' }
+              examples:
+                default:
+                  value:
+                    organization_id: 8f14e45f-ceea-467a-9c1b-2f4b9c0a3d21
+                    as_of: '2026-08-13T06:15:00Z'
+                    total_count: 47
+                    outcomes_withheld_count: 11
+                    data:
+                      - learner_id: 3e1a9c74-5b2d-4f88-9a01-7c6de2b4f019
+                        email: rgarcia@contoso.example
+                        full_name: R. Garcia
+                        organization_id: 8f14e45f-ceea-467a-9c1b-2f4b9c0a3d21
+                        organization_name: Contoso Manufacturing
+                        membership_source: both
+                        is_organization_manager: false
+                        first_enrolled_on: '2026-02-03T14:22:11Z'
+                        last_enrolled_on: '2026-05-19T09:04:52Z'
+                        courses_enrolled: 4
+                        outcomes_shared: true
+                        outcomes_consent_on: '2026-02-03T14:20:04Z'
+                        last_active_on: '2026-08-11'
+                        courses_in_progress: 1
+                        courses_passed: 3
+                        courses_certified: 3
+                        certificates_earned: 3
+                      - learner_id: c04e8a17-3d62-4b95-a7e8-51fb2c8d9042
+                        email: jlin@contoso.example
+                        full_name: J. Lin
+                        organization_id: 8f14e45f-ceea-467a-9c1b-2f4b9c0a3d21
+                        organization_name: Contoso Manufacturing
+                        membership_source: both
+                        is_organization_manager: false
+                        first_enrolled_on: '2026-03-11T10:02:44Z'
+                        last_enrolled_on: '2026-03-11T10:02:44Z'
+                        courses_enrolled: 2
+                        outcomes_shared: false
+                        outcomes_consent_on: null
+                        last_active_on: null
+                        courses_in_progress: null
+                        courses_passed: null
+                        courses_certified: null
+                        certificates_earned: null
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /organizations/{organization_id}/enrollments:
+    get:
+      tags: [enrollments]
+      operationId: listEnrollments
+      summary: Learner-by-course-run enrollment and completion records
+      description: >-
+        One row per (learner, course run) under the organization's contracts.
+        Ordered by `(learner_id, courserun_id)`.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationId'
+        - $ref: '#/components/parameters/ContractId'
+        - $ref: '#/components/parameters/CourseRunId'
+        - $ref: '#/components/parameters/LearnerId'
+        - $ref: '#/components/parameters/CompletionStatusFilter'
+        - $ref: '#/components/parameters/UpdatedSince'
+        - $ref: '#/components/parameters/IncludeInactive'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: A page of enrollment records.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OrganizationEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Enrollment' }
+              examples:
+                default:
+                  value:
+                    organization_id: 8f14e45f-ceea-467a-9c1b-2f4b9c0a3d21
+                    as_of: '2026-08-13T06:15:00Z'
+                    total_count: 163
+                    outcomes_withheld_count: 38
+                    data:
+                      - learner_id: 3e1a9c74-5b2d-4f88-9a01-7c6de2b4f019
+                        email: rgarcia@contoso.example
+                        full_name: R. Garcia
+                        organization_id: 8f14e45f-ceea-467a-9c1b-2f4b9c0a3d21
+                        contract_id: 6a2f0b9d-77c4-4e1a-bb52-08f3ad91c7e6
+                        contract_name: Contoso 2026 Site Licence
+                        courserun_id: course-v1:MITxT+14.310x+2T2026
+                        courserun_title: Data Analysis for Social Scientists
+                        courserun_start_on: '2026-02-01T00:00:00Z'
+                        courserun_end_on: '2026-06-30T23:59:59Z'
+                        enrolled_on: '2026-02-03T14:22:11Z'
+                        enrollment_is_active: true
+                        enrollment_mode: verified
+                        enrollment_status: null
+                        outcomes_shared: true
+                        completion_status: certified
+                        is_passing: true
+                        grade: 0.91
+                        letter_grade: A
+                        certificate_issued_on: '2026-07-02T11:00:00Z'
+                        certificate_is_revoked: false
+                        last_active_on: '2026-08-11'
+                        days_active: 34
+                        videos_watched: 212
+                        problems_attempted: 88
+                        chatbot_interactions: 14
+                      - learner_id: c04e8a17-3d62-4b95-a7e8-51fb2c8d9042
+                        email: jlin@contoso.example
+                        full_name: J. Lin
+                        organization_id: 8f14e45f-ceea-467a-9c1b-2f4b9c0a3d21
+                        contract_id: 6a2f0b9d-77c4-4e1a-bb52-08f3ad91c7e6
+                        contract_name: Contoso 2026 Site Licence
+                        courserun_id: course-v1:MITxT+14.310x+2T2026
+                        courserun_title: Data Analysis for Social Scientists
+                        courserun_start_on: '2026-02-01T00:00:00Z'
+                        courserun_end_on: '2026-06-30T23:59:59Z'
+                        enrolled_on: '2026-03-11T10:02:44Z'
+                        enrollment_is_active: true
+                        enrollment_mode: verified
+                        enrollment_status: null
+                        outcomes_shared: false
+                        completion_status: null
+                        is_passing: null
+                        grade: null
+                        letter_grade: null
+                        certificate_issued_on: null
+                        certificate_is_revoked: null
+                        last_active_on: null
+                        days_active: null
+                        videos_watched: null
+                        problems_attempted: null
+                        chatbot_interactions: null
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /organizations/{organization_id}/courses:
+    get:
+      tags: [catalog]
+      operationId: listCourses
+      summary: Contracts and course runs covered by the organization's licence
+      description: Slow-changing and free of personal data. Cache it rather than joining per learner.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationId'
+        - $ref: '#/components/parameters/ContractId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: A page of contract/course-run records.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OrganizationEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/CourseRun' }
+              examples:
+                default:
+                  value:
+                    organization_id: 8f14e45f-ceea-467a-9c1b-2f4b9c0a3d21
+                    as_of: '2026-08-13T06:15:00Z'
+                    total_count: 12
+                    outcomes_withheld_count: 0
+                    data:
+                      - organization_id: 8f14e45f-ceea-467a-9c1b-2f4b9c0a3d21
+                        organization_name: Contoso Manufacturing
+                        contract_id: 6a2f0b9d-77c4-4e1a-bb52-08f3ad91c7e6
+                        contract_name: Contoso 2026 Site Licence
+                        contract_is_active: true
+                        contract_start_date: '2026-01-01'
+                        contract_end_date: '2026-12-31'
+                        seat_limit: 250
+                        courserun_id: course-v1:MITxT+14.310x+2T2026
+                        courserun_title: Data Analysis for Social Scientists
+                        courserun_start_on: '2026-02-01T00:00:00Z'
+                        courserun_end_on: '2026-06-30T23:59:59Z'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /organizations/{organization_id}/exports:
+    get:
+      tags: [exports]
+      operationId: listExports
+      summary: Bulk export files available for this organization
+      description: >-
+        Manifest of the S3/SFTP bulk exports, one set per collection per
+        refresh. Records inside carry the same schemas as this API.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationId'
+        - $ref: '#/components/parameters/UpdatedSince'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: A page of export manifest entries.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/OrganizationEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/ExportFile' }
+              examples:
+                default:
+                  value:
+                    organization_id: 8f14e45f-ceea-467a-9c1b-2f4b9c0a3d21
+                    as_of: '2026-08-13T06:15:00Z'
+                    total_count: 3
+                    outcomes_withheld_count: 0
+                    data:
+                      - collection: enrollments
+                        as_of: '2026-08-13T06:15:00Z'
+                        format: jsonl
+                        record_count: 163
+                        size_bytes: 214880
+                        checksum_sha256: 9f2c1b7ae4d05c8831fbb2e6a0d47c3915ee8b6042d1f7c9a3b508e2d6417f0a
+                        uri: s3://ol-b2b-exports/8f14e45f/2026-08-13T06-15-00Z/enrollments.jsonl.gz
+                        expires_on: '2026-09-12T06:15:00Z'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+components:
+
+  securitySchemes:
+    oauth2ClientCredentials:
+      type: oauth2
+      description: >-
+        Keycloak client credentials, validated at the gateway. Scopes bound to a
+        client are a contractual limit on that credential; they are not the
+        consent mechanism.
+      flows:
+        clientCredentials:
+          tokenUrl: https://sso.mit.edu/realms/olapps/protocol/openid-connect/token
+          scopes:
+            learner-records:read: Read records; `email` and `full_name` return null.
+            learner-records:read-pii: Additionally populate `email` and `full_name`.
+
+  parameters:
+
+    OrganizationId:
+      name: organization_id
+      in: path
+      required: true
+      description: The organization's Keycloak organization UUID. Slugs and names are not accepted.
+      schema: { type: string, format: uuid }
+      example: 8f14e45f-ceea-467a-9c1b-2f4b9c0a3d21
+
+    ContractId:
+      name: contract_id
+      in: query
+      required: false
+      schema: { type: string }
+      example: 6a2f0b9d-77c4-4e1a-bb52-08f3ad91c7e6
+
+    CourseRunId:
+      name: courserun_id
+      in: query
+      required: false
+      schema: { type: string }
+      example: course-v1:MITxT+14.310x+2T2026
+
+    LearnerId:
+      name: learner_id
+      in: query
+      required: false
+      description: Repeat for several; maximum 100 per request.
+      schema:
+        type: array
+        maxItems: 100
+        items: { type: string, format: uuid }
+      style: form
+      explode: true
+
+    CompletionStatusFilter:
+      name: completion_status
+      in: query
+      required: false
+      description: >-
+        Repeat for several. Matches only records with shared outcomes; pass
+        `unknown` to select records whose outcomes are withheld.
+      schema:
+        type: array
+        items:
+          type: string
+          enum: [not_started, in_progress, passed, certified, unknown]
+      style: form
+      explode: true
+
+    UpdatedSince:
+      name: updated_since
+      in: query
+      required: false
+      description: Return only records changed at or after this instant. Pass the previous sync's `as_of`.
+      schema: { type: string, format: date-time }
+      example: '2026-08-12T06:15:00Z'
+
+    IncludeInactive:
+      name: include_inactive
+      in: query
+      required: false
+      description: Include deactivated enrollments (unenrolled, refunded, transferred).
+      schema: { type: boolean, default: false }
+
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 1000, default: 100 }
+
+    Offset:
+      name: offset
+      in: query
+      required: false
+      schema: { type: integer, minimum: 0, default: 0 }
+
+  schemas:
+
+    OrganizationEnvelope:
+      type: object
+      description: Shared response envelope; `data` is typed per endpoint.
+      required: [organization_id, as_of, total_count, outcomes_withheld_count, data]
+      properties:
+        organization_id:
+          type: string
+          format: uuid
+        as_of:
+          type: [string, 'null']
+          format: date-time
+          description: Last refresh of the backing data. Null before an organization's first refresh.
+        total_count:
+          type: integer
+          minimum: 0
+          description: Matching records across all pages, not this page.
+        outcomes_withheld_count:
+          type: integer
+          minimum: 0
+          description: >-
+            Records in `total_count` carrying `outcomes_shared: false`. Always 0
+            on `/courses` and `/exports`.
+        data:
+          type: array
+          items: {}
+
+    Learner:
+      type: object
+      description: >-
+        One learner's association with the organization. Fields below
+        `outcomes_shared` are null unless it is true.
+      required:
+        - learner_id
+        - organization_id
+        - organization_name
+        - membership_source
+        - is_organization_manager
+        - courses_enrolled
+        - outcomes_shared
+      properties:
+        learner_id:
+          type: string
+          format: uuid
+          description: Stable opaque identifier, consistent across endpoints and stable across email changes. Use as the join key.
+          x-data-readiness: available
+        email:
+          type: [string, 'null']
+          format: email
+          description: Null without `learner-records:read-pii`. Not a join key — may differ from the enrolling address.
+          x-data-readiness: available
+        full_name:
+          type: [string, 'null']
+          description: Null without `learner-records:read-pii`, and often null regardless.
+          x-data-readiness: available
+        organization_id:
+          type: string
+          format: uuid
+          x-data-readiness: available
+        organization_name:
+          type: string
+          x-data-readiness: available
+        membership_source:
+          $ref: '#/components/schemas/MembershipSource'
+        is_organization_manager:
+          type: boolean
+          description: Administers the organization in MITx Online.
+          x-data-readiness: available
+        first_enrolled_on:
+          type: [string, 'null']
+          format: date-time
+          description: Null for a roster member with no enrollments.
+          x-data-readiness: available
+        last_enrolled_on:
+          type: [string, 'null']
+          format: date-time
+          x-data-readiness: available
+        courses_enrolled:
+          type: integer
+          minimum: 0
+          description: Distinct course runs under the organization's contracts. Not consent-gated.
+          x-data-readiness: derived
+        outcomes_shared:
+          type: boolean
+          description: >-
+            Whether this learner has opted in to sharing their course status.
+            False means every field below is null.
+          x-data-readiness: pending-model
+        outcomes_consent_on:
+          type: [string, 'null']
+          format: date-time
+          description: When consent was recorded. Null when `outcomes_shared` is false.
+          x-data-readiness: pending-model
+        last_active_on:
+          type: [string, 'null']
+          format: date
+          description: Most recent day with recorded course activity. A date, not a timestamp — activity is aggregated per day.
+          x-data-readiness: pending-model
+        courses_in_progress:
+          type: [integer, 'null']
+          minimum: 0
+          x-data-readiness: pending-model
+        courses_passed:
+          type: [integer, 'null']
+          minimum: 0
+          x-data-readiness: derived
+        courses_certified:
+          type: [integer, 'null']
+          minimum: 0
+          x-data-readiness: derived
+        certificates_earned:
+          type: [integer, 'null']
+          minimum: 0
+          description: Includes program certificates, which have no course run and so are not in `courses_certified`.
+          x-data-readiness: derived
+
+    Enrollment:
+      type: object
+      description: >-
+        One learner's enrollment in one course run. Fields below
+        `outcomes_shared` are null unless it is true.
+      required:
+        - learner_id
+        - organization_id
+        - contract_id
+        - courserun_id
+        - courserun_title
+        - enrolled_on
+        - enrollment_is_active
+        - outcomes_shared
+      properties:
+        learner_id:
+          type: string
+          format: uuid
+          x-data-readiness: available
+        email:
+          type: [string, 'null']
+          format: email
+          description: Null without `learner-records:read-pii`.
+          x-data-readiness: available
+        full_name:
+          type: [string, 'null']
+          description: Null without `learner-records:read-pii`.
+          x-data-readiness: available
+        organization_id:
+          type: string
+          format: uuid
+          x-data-readiness: available
+        contract_id:
+          type: string
+          x-data-readiness: available
+        contract_name:
+          type: string
+          x-data-readiness: available
+        courserun_id:
+          type: string
+          description: 'Readable course-run identifier, e.g. `course-v1:MITxT+14.310x+2T2026`.'
+          x-data-readiness: available
+        courserun_title:
+          type: string
+          description: Mutable display title — key on `courserun_id`.
+          x-data-readiness: available
+        courserun_start_on:
+          type: [string, 'null']
+          format: date-time
+          x-data-readiness: available
+        courserun_end_on:
+          type: [string, 'null']
+          format: date-time
+          description: Null for self-paced runs.
+          x-data-readiness: available
+        enrolled_on:
+          type: string
+          format: date-time
+          description: This run's enrollment, not an earlier run of the same course. Not consent-gated.
+          x-data-readiness: available
+        enrollment_is_active:
+          type: boolean
+          description: Not consent-gated.
+          x-data-readiness: available
+        enrollment_mode:
+          type: [string, 'null']
+          description: 'e.g. `verified`, `audit`. Determines whether the run is certificate-bearing.'
+          x-data-readiness: available
+        enrollment_status:
+          type: [string, 'null']
+          description: Deactivation reason where one was recorded.
+          x-data-readiness: available
+        outcomes_shared:
+          type: boolean
+          description: Whether the learner has opted in to sharing their course status. False means every field below is null.
+          x-data-readiness: pending-model
+        completion_status:
+          oneOf:
+            - $ref: '#/components/schemas/CompletionStatus'
+            - type: 'null'
+          description: Single derived answer per row. Null when outcomes are withheld.
+          x-data-readiness: derived
+        is_passing:
+          type: [boolean, 'null']
+          description: Null where no grade has been computed.
+          x-data-readiness: available
+        grade:
+          type: [number, 'null']
+          format: float
+          minimum: 0
+          maximum: 1
+          x-data-readiness: available
+        letter_grade:
+          type: [string, 'null']
+          description: Frequently null — not every platform records one.
+          x-data-readiness: available
+        certificate_issued_on:
+          type: [string, 'null']
+          format: date-time
+          x-data-readiness: available
+        certificate_is_revoked:
+          type: [boolean, 'null']
+          description: Null where no certificate exists. A revoked certificate leaves `completion_status` at `passed`.
+          x-data-readiness: available
+        last_active_on:
+          type: [string, 'null']
+          format: date
+          description: Most recent day with recorded activity in this course run.
+          x-data-readiness: pending-model
+        days_active:
+          type: [integer, 'null']
+          minimum: 0
+          description: Distinct days with recorded activity in this course run.
+          x-data-readiness: pending-model
+        videos_watched:
+          type: [integer, 'null']
+          minimum: 0
+          description: Distinct video blocks played.
+          x-data-readiness: pending-model
+        problems_attempted:
+          type: [integer, 'null']
+          minimum: 0
+          description: Distinct problem blocks attempted.
+          x-data-readiness: pending-model
+        chatbot_interactions:
+          type: [integer, 'null']
+          minimum: 0
+          x-data-readiness: pending-model
+
+    CourseRun:
+      type: object
+      description: One course run covered by one of the organization's contracts. No personal data.
+      required:
+        - organization_id
+        - organization_name
+        - contract_id
+        - contract_name
+        - contract_is_active
+        - courserun_id
+        - courserun_title
+      properties:
+        organization_id: { type: string, format: uuid, x-data-readiness: available }
+        organization_name: { type: string, x-data-readiness: available }
+        contract_id: { type: string, x-data-readiness: available }
+        contract_name: { type: string, x-data-readiness: available }
+        contract_is_active: { type: boolean, x-data-readiness: available }
+        contract_start_date:
+          type: [string, 'null']
+          format: date
+          x-data-readiness: available
+        contract_end_date:
+          type: [string, 'null']
+          format: date
+          x-data-readiness: available
+        seat_limit:
+          type: [integer, 'null']
+          minimum: 0
+          description: Null means uncapped, not zero.
+          x-data-readiness: available
+        courserun_id: { type: string, x-data-readiness: available }
+        courserun_title: { type: string, x-data-readiness: available }
+        courserun_start_on:
+          type: [string, 'null']
+          format: date-time
+          x-data-readiness: available
+        courserun_end_on:
+          type: [string, 'null']
+          format: date-time
+          x-data-readiness: available
+
+    ExportFile:
+      type: object
+      description: One bulk-export file. Contents use this API's record schemas.
+      required: [collection, as_of, format, record_count, uri, expires_on]
+      properties:
+        collection:
+          type: string
+          enum: [learners, enrollments, courses]
+        as_of:
+          type: string
+          format: date-time
+          description: The refresh this file was written from.
+        format:
+          type: string
+          enum: [jsonl, csv, parquet]
+        record_count:
+          type: integer
+          minimum: 0
+        size_bytes:
+          type: [integer, 'null']
+          minimum: 0
+        checksum_sha256:
+          type: [string, 'null']
+          pattern: '^[a-f0-9]{64}$'
+        uri:
+          type: string
+          format: uri
+          description: '`s3://` or `sftp://` location, readable with the credentials issued alongside the API client.'
+        expires_on:
+          type: string
+          format: date-time
+          description: After this, the file is deleted and must be re-fetched from a newer refresh.
+
+    MembershipSource:
+      type: string
+      description: >-
+        `roster` = on the organization's membership roster with no enrollments
+        (an assigned, unstarted seat). `enrollment` = enrolled under a contract
+        but absent from the roster (usually a provisioning lag). `both` = the
+        expected state.
+      enum: [roster, enrollment, both]
+      x-data-readiness: available
+
+    CompletionStatus:
+      type: string
+      description: >-
+        `passed` without `certified` is normal — certificates are issued on a
+        schedule after grading, and audit-mode enrollments never certify.
+      enum: [not_started, in_progress, passed, certified]
+      x-data-readiness: derived
+
+    Error:
+      type: object
+      required: [detail]
+      properties:
+        detail: { type: string }
+
+  responses:
+
+    BadRequest:
+      description: Malformed parameter.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { detail: 'limit must be between 1 and 1000' }
+
+    Unauthorized:
+      description: Missing, malformed or expired token.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { detail: 'Invalid or expired access token' }
+
+    Forbidden:
+      description: >-
+        Token valid but lacks a grant for this organization, or lacks the
+        required scope. Identical whether the organization is ungranted or does
+        not exist, so this cannot be used to enumerate organizations.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { detail: 'No grant for the requested organization' }
+
+    TooManyRequests:
+      description: Per-client rate limit exceeded.
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { detail: 'Rate limit exceeded' }
+
+    ServiceUnavailable:
+      description: Analytics store unreachable or saturated.
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { detail: 'Analytics store unavailable' }
+```
