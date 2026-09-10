@@ -46,13 +46,11 @@ the partner rather than by the learner's consent choice.
 individual and continue to cover the whole cohort. No consent join, no change to
 the aggregate models.
 
-**Consent enforcement fails closed by default.** No recorded opt-in means no
-outcome data, unless a deployment sets `consent_fail_open` to disclose outcomes
-for learners with no recorded decision. Because suppression is per-field rather
-than per-record, the service can ship before the consent field exists — failing
-closed, every record simply reads `outcomes_shared: false` with outcomes null,
-which is a degraded response rather than an empty one, so partner integration
-can proceed against real records. One upstream
+**Consent enforcement fails closed.** No recorded opt-in means no outcome data.
+Because suppression is per-field rather than per-record, the service can ship
+before the consent field exists — every record simply reads `outcomes_shared:
+false` with outcomes null, which is a degraded response rather than an empty
+one, so partner integration can proceed against real records. One upstream
 property is a hard requirement and cheap only if specified now: *withdrawal must
 be a retained state change, not a deleted row*. A deleted consent row is
 indistinguishable from one never granted and does not move the record's change
@@ -117,7 +115,7 @@ Every collection returns the same envelope, with `data` typed to its record:
   "email": "rgarcia@contoso.example",
   "full_name": "R. Garcia",
   "organization_id": "8f14e45f-ceea-467a-9c1b-2f4b9c0a3d21",
-  "contract_id": 42,
+  "contract_id": "6a2f0b9d-77c4-4e1a-bb52-08f3ad91c7e6",
   "contract_name": "Contoso 2026 Site Licence",
   "courserun_id": "course-v1:MITxT+14.310x+2T2026",
   "courserun_title": "Data Analysis for Social Scientists",
@@ -148,7 +146,7 @@ Every collection returns the same envelope, with `data` typed to its record:
 {
   "organization_id": "8f14e45f-ceea-467a-9c1b-2f4b9c0a3d21",
   "organization_name": "Contoso Manufacturing",
-  "contract_id": 42,
+  "contract_id": "6a2f0b9d-77c4-4e1a-bb52-08f3ad91c7e6",
   "contract_name": "Contoso 2026 Site Licence",
   "contract_is_active": true,
   "contract_start_date": "2026-01-01",
@@ -184,17 +182,20 @@ consent withdrawal arrives on the sync cursor.
 
 ## Open questions
 
-**1. Does withholding outcomes actually protect the learner?** *Decided: out of
-scope for this service.* The organization holds the full roster, so it can tell
-who did not share by set difference, whatever the response reports. How an
-organization may use learner data is set by its contract, which legal and
-contracting own, and issuing a client presumes those terms are in place. The
-record shape stays per-learner: identity intact, outcomes suppressed.
+**1. Does withholding outcomes actually protect the learner?** Because the
+organization holds the full roster, it can identify exactly who did not share by
+set difference — whatever the response reports. The mechanism therefore hides a
+learner's *outcomes* but not their *decision*, which exposes them to a different
+pressure from their employer. Options are contractual (terms forbidding adverse
+action on non-participation), or design-side (report participation only in
+aggregate above a threshold, and accept degraded seat reporting). Unresolved,
+and the sharpest issue in this design.
 
-**2. Does a contracted provider receive learner identity at all?** *Decided:
-yes.* The organization already holds its learners' identity (they are its
-employees or students), so redacting it gains nothing. There is one read scope,
-and records and exports always carry identity.
+**2. Does a contracted provider receive learner identity at all?** Identity is
+available to the *organization*. A provider is a different principal, and
+"the org may see it" does not settle "the provider may see it." Cheap to support
+either way — credentials can be scoped to pseudonymous records — but it needs a
+policy owner, not a default.
 
 **3. Who authorizes a provider, through what workflow?** No provisioning design
 exists. MIT-issued-by-ticket is simplest and leaves the organization with no
@@ -202,11 +203,13 @@ visible record of who can read its data; org self-service authorization is more
 work but puts the data relationship where it belongs. This is an operational gap,
 not a configuration detail.
 
-*Decided:*
+*Proposed answer, pending sign-off:*
 [`b2b-learner-records-provider-authorization.md`](b2b-learner-records-provider-authorization.md).
-The contract settles access. MIT issues one Keycloak client per contracted
-integration, carrying its organizations as a claim. The partner handles
-per-user authorization in its own LMS.
+The organization authorizes, and MIT records it. The provider's credential
+(Pulumi) is separate from the organization grant (mitxonline). Phase 1 grants
+are staff-recorded on written authorization, visible to the organization, and
+revocable by it. Self-service authorization waits for manager designation via
+Keycloak Organization Groups.
 
 **4. Is consent per-organization or global?** A learner holding seats under two
 organizations should be able to share with one and not the other. A single
@@ -218,6 +221,5 @@ the consent design rather than a question this service can answer.
 Both are degrading rather than blocking — the service ships without either and
 fills in as they land. The learner-consent field, without which every record
 reads `outcomes_shared: false`; and a per-learner activity model, without which
-"last active" and the engagement counters are null. Onboarding the first
-partner also needs the per-contract Keycloak client template and a bearer-only
-gateway route.
+"last active" and the engagement counters are null. A provider-authorization
+workflow is the one genuine blocker, and only for onboarding the first provider.

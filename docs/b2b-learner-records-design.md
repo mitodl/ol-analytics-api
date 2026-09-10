@@ -22,7 +22,7 @@ names explicitly — is the gap.**
 | --- | --- | --- |
 | Stable learner id | `dim_user.user_global_id` | Keycloak `sub`; already the cross-system identifier. Survives email changes. |
 | Email, full name | `dim_user.email`, `.full_name` | `email` is a *coalesce* across platform accounts — the most recently active address, not necessarily the one the org enrolled them under. Not a safe join key. |
-| Org membership roster | `bridge_user_organization` | `(user_fk, organization_fk, userorganization_is_manager)`. Includes members with zero enrollments. |
+| Org membership roster | `bridge_user_organization` | `(user_fk, organization_fk, is_manager)`. Includes members with zero enrollments. |
 | Org identity | `dim_organization` | `sso_organization_id` is the Keycloak org UUID the existing tenant already filters on. |
 | Contract | `dim_contract` | Name, term, `b2b_contract_max_learners` (seat limit), membership type. |
 | Contract → course run | `bridge_organization_courserun` | Grain `(org, contract, courserun)`. |
@@ -32,7 +32,7 @@ names explicitly — is the gap.**
 
 ### The gaps
 
-**1. No learner-grain view exists.** All eight `b2b_analytics` MVs are
+**1. No learner-grain view exists.** All six `b2b_analytics` MVs are
 pre-aggregated by design. A learner roster needs a new dbt model — call it
 `mv_b2b_learner_enrollment` at `(org × contract × courserun × learner)` — plus a
 learner-grain rollup. This is the bulk of the upstream work, but it is
@@ -179,9 +179,8 @@ Three collections, all org-scoped, all read-only:
 
 - `GET /organizations/{organization_id}/learners` — learner grain, roster plus
   progress rollup. Answers "who is on our licence and how are they doing".
-- `GET /organizations/{organization_id}/enrollments` — `(learner × contract ×
-  course run)` grain, matching `mv_b2b_learner_enrollment` above. Answers "did
-  this learner complete this course". The primary endpoint;
+- `GET /organizations/{organization_id}/enrollments` — `(learner × course run)`
+  grain. Answers "did this learner complete this course". The primary endpoint;
   `/learners` is a convenience rollup over the same records.
 - `GET /organizations/{organization_id}/courses` — the contracts and course runs
   the identifiers refer to. Small, slow-changing, no personal data, cacheable.
@@ -213,18 +212,22 @@ rendering a dashboard should use the API.
   add a router over the same StarRocks views under its own gate. Keeping the
   concerns separate now is cheaper than un-merging them later.
 
-### Identity is not redacted
+### Identity is a contractual limit, not a consent one
 
-Every record carries `email` and `full_name`, and there is one scope,
-`learner-records:read`.
+`learner-records:read` returns records with `email` and `full_name` as `null`;
+`learner-records:read-pii` populates them. Both scopes return the same progress
+data.
 
-Redacting identity would protect nothing. The organization already holds its
-learners' names and addresses: they are its employees or students, and it
-assigned the seats. A contracted provider reads on the organization's behalf
-under the contract and handles per-user access in its own LMS. Consent governs
-outcomes (§4), not identity.
+This split is **not** the consent mechanism — consent governs outcomes (§4), and
+the organization already holds its learners' names and addresses because it
+assigned the seats. The split exists because a contracted training provider is a
+different principal from the organization: "the org may see it" does not settle
+"the provider may see it." Since `learner_id` is stable, a provider that enrolled
+the learners can join on an identifier it already supplied and never receive
+contact details from MIT at all.
 
-One read scope also means one bulk export per organization serves every client.
+Whether any given provider gets the PII scope is a contractual call, and one
+nobody has made yet — see §4's open questions.
 
 
 ## 4. Learner consent
@@ -241,15 +244,10 @@ null; identity, contract, course run and enrollment facts are unaffected. The
 envelope's `outcomes_withheld_count` reports how many records in the result are
 in that state.
 
-The field does not exist upstream yet. Until it ships, the tenant's
-`consent_fail_open` setting (`OL_ANALYTICS_API_B2B_LEARNER_RECORDS_CONSENT_FAIL_OPEN`)
-decides every record. It defaults to false, which fails closed: every record
-reads `outcomes_shared: false` and the outcome columns are uniformly null. That
-is a degraded response rather than an empty one, which means partner
-integration can proceed against real records. A deployment that sets it to
-true discloses outcomes for learners with no recorded decision. Once the field
-lands, a recorded decision always wins and the setting covers only learners
-with none.
+The field does not exist upstream yet. Enforcement fails closed, so until it
+ships every record reads `outcomes_shared: false` and the outcome columns are
+uniformly null. That is a degraded response rather than an empty one, which
+means partner integration can proceed against real records.
 
 ### Why suppression rather than exclusion
 
@@ -293,25 +291,43 @@ The existing `b2b_dashboard` tenant's k-anonymized org-level views disclose no
 individual and continue to cover the whole cohort. No consent join, no change to
 `mv_b2b_*`.
 
-### Settled: the organization can see who declined
+### Open: does withholding outcomes actually protect the learner?
 
-The organization holds the full roster and the identities, so it can see exactly
-which of its learners carry `outcomes_shared: false`. Field suppression conceals
-a learner's *outcomes*, not their *decision*, and no response shape changes that
-while records stay individually identifiable.
+This is the sharpest unresolved issue in the design.
 
-This service doesn't try to. How an organization may use learner data is set by
-its contract, which legal and contracting own. Issuing a client presumes those
-terms are already in place. The record shape stays as specified: per-learner,
-identity intact, outcomes nulled when `outcomes_shared` is false.
+Because the organization holds the full roster and the identities, it can see
+exactly which of its learners carry `outcomes_shared: false`. The mechanism
+therefore conceals a learner's *outcomes* but publishes their *decision* — and
+an employee visibly declining to share progress with their employer may be more
+exposed than one whose completion data was simply shared.
 
-### Settled: a contracted provider receives identity
+No response shape fixes this while the record remains individually identifiable.
+The available directions are:
 
-Yes. Identity is not redacted for any client (§3).
+* **Contractual** — terms of use forbidding adverse action on non-participation.
+  Cheap, and the only option that preserves the current record shape.
+* **Aggregate-only participation reporting** — expose consent coverage as a
+  floored count per organization and never per learner, accepting that seat
+  reconciliation degrades.
+* **Revisit what the learner is asked** — if consent cannot be declined without
+  the employer knowing, the consent language should probably say so.
 
-### Settled: who authorizes a provider, through what workflow?
+Worth putting to whoever owns the consent language early, since the third option
+changes their work rather than ours.
 
-The contract settles access. MIT issues one Keycloak client per contracted
-integration, with the organizations it may read carried as a claim. The
-partner handles per-user authorization in its own LMS. See
+### Open: does a contracted provider receive identity at all?
+
+Identity is available to the *organization*. A provider is a different
+principal, and the API supports either answer today via the `read` /
+`read-pii` scope split (§3). It needs a policy owner rather than a default.
+
+### Open: who authorizes a provider, through what workflow?
+
+No provisioning design exists. MIT-issued-by-ticket is simplest and leaves the
+organization with no visible record of who can read its learners' data;
+org self-service authorization is more work but puts the data relationship where
+it belongs. This is an operational gap, not a configuration detail, and it
+blocks onboarding the first provider rather than the first organization.
+
+Proposed answer, pending sign-off:
 [`b2b-learner-records-provider-authorization.md`](b2b-learner-records-provider-authorization.md).
