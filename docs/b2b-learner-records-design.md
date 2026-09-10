@@ -22,7 +22,7 @@ names explicitly — is the gap.**
 | --- | --- | --- |
 | Stable learner id | `dim_user.user_global_id` | Keycloak `sub`; already the cross-system identifier. Survives email changes. |
 | Email, full name | `dim_user.email`, `.full_name` | `email` is a *coalesce* across platform accounts — the most recently active address, not necessarily the one the org enrolled them under. Not a safe join key. |
-| Org membership roster | `bridge_user_organization` | `(user_fk, organization_fk, is_manager)`. Includes members with zero enrollments. |
+| Org membership roster | `bridge_user_organization` | `(user_fk, organization_fk, userorganization_is_manager)`. Includes members with zero enrollments. |
 | Org identity | `dim_organization` | `sso_organization_id` is the Keycloak org UUID the existing tenant already filters on. |
 | Contract | `dim_contract` | Name, term, `b2b_contract_max_learners` (seat limit), membership type. |
 | Contract → course run | `bridge_organization_courserun` | Grain `(org, contract, courserun)`. |
@@ -32,7 +32,7 @@ names explicitly — is the gap.**
 
 ### The gaps
 
-**1. No learner-grain view exists.** All six `b2b_analytics` MVs are
+**1. No learner-grain view exists.** All eight `b2b_analytics` MVs are
 pre-aggregated by design. A learner roster needs a new dbt model — call it
 `mv_b2b_learner_enrollment` at `(org × contract × courserun × learner)` — plus a
 learner-grain rollup. This is the bulk of the upstream work, but it is
@@ -321,14 +321,10 @@ Identity is available to the *organization*. A provider is a different
 principal, and the API supports either answer today via the `read` /
 `read-pii` scope split (§3). It needs a policy owner rather than a default.
 
-### Open: who authorizes a provider, through what workflow?
+### Settled: who authorizes a provider, through what workflow?
 
-No provisioning design exists. MIT-issued-by-ticket is simplest and leaves the
-organization with no visible record of who can read its learners' data;
-org self-service authorization is more work but puts the data relationship where
-it belongs. This is an operational gap, not a configuration detail, and it
-blocks onboarding the first provider rather than the first organization.
-
-Decided: the contract settles access, and MIT issues per-contract client
-credentials that encode it. See
+The contract settles access. MIT issues one Keycloak client per contracted
+integration, with the organizations it may read carried as a claim and
+identity carried as the `read-pii` scope. The partner handles per-user
+authorization in its own LMS. See
 [`b2b-learner-records-provider-authorization.md`](b2b-learner-records-provider-authorization.md).

@@ -115,7 +115,7 @@ Every collection returns the same envelope, with `data` typed to its record:
   "email": "rgarcia@contoso.example",
   "full_name": "R. Garcia",
   "organization_id": "8f14e45f-ceea-467a-9c1b-2f4b9c0a3d21",
-  "contract_id": "6a2f0b9d-77c4-4e1a-bb52-08f3ad91c7e6",
+  "contract_id": 42,
   "contract_name": "Contoso 2026 Site Licence",
   "courserun_id": "course-v1:MITxT+14.310x+2T2026",
   "courserun_title": "Data Analysis for Social Scientists",
@@ -146,7 +146,7 @@ Every collection returns the same envelope, with `data` typed to its record:
 {
   "organization_id": "8f14e45f-ceea-467a-9c1b-2f4b9c0a3d21",
   "organization_name": "Contoso Manufacturing",
-  "contract_id": "6a2f0b9d-77c4-4e1a-bb52-08f3ad91c7e6",
+  "contract_id": 42,
   "contract_name": "Contoso 2026 Site Licence",
   "contract_is_active": true,
   "contract_start_date": "2026-01-01",
