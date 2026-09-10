@@ -360,7 +360,7 @@ components:
       name: contract_id
       in: query
       required: false
-      schema: { type: integer }
+      schema: { type: integer, format: int64 }
       example: 42
 
     CourseRunId:
@@ -575,6 +575,7 @@ components:
           x-data-readiness: available
         contract_id:
           type: integer
+          format: int64
           x-data-readiness: available
         contract_name:
           type: string
@@ -684,7 +685,7 @@ components:
       properties:
         organization_id: { type: string, format: uuid, x-data-readiness: available }
         organization_name: { type: string, x-data-readiness: available }
-        contract_id: { type: integer, x-data-readiness: available }
+        contract_id: { type: integer, format: int64, x-data-readiness: available }
         contract_name: { type: string, x-data-readiness: available }
         contract_is_active: { type: boolean, x-data-readiness: available }
         contract_start_date:
