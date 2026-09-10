@@ -6,6 +6,7 @@ Redis integrations for Starlette/FastAPI equivalents.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, cast
 
 import sentry_sdk
@@ -26,8 +27,11 @@ _SHUTDOWN_ERRORS = (SystemExit,)
 # exception value, where no SDK privacy setting reaches it: send_default_pii
 # governs user/cookie/header capture and max_request_body_size governs request
 # bodies, and neither touches exception text.
-_PG_DETAIL_MARKER = "\nDETAIL:"
-_PG_DETAIL_REPLACEMENT = "\nDETAIL:  [scrubbed]"
+#
+# The newline is matched both raw and as a literal backslash-n: the SDK repr()s
+# frame locals and non-string logging params during serialization, so there the
+# DETAIL line arrives as "...constraint\\nDETAIL: ..." inside a repr string.
+_PG_DETAIL_RE = re.compile(r"(\n|\\n)DETAIL:.*", re.DOTALL)
 
 
 def _scrub_pg_detail(text: str) -> str:
@@ -36,10 +40,7 @@ def _scrub_pg_detail(text: str) -> str:
     Keeps the primary message, which is what identifies the failure, and drops
     the row echo plus any HINT/CONTEXT Postgres appends after it.
     """
-    index = text.find(_PG_DETAIL_MARKER)
-    if index == -1:
-        return text
-    return text[:index] + _PG_DETAIL_REPLACEMENT
+    return _PG_DETAIL_RE.sub(lambda match: match.group(1) + "DETAIL:  [scrubbed]", text, count=1)
 
 
 def _scrub_pg_details(event: Event) -> Event:
@@ -47,15 +48,15 @@ def _scrub_pg_details(event: Event) -> Event:
 
     The row echo reaches Sentry through more fields than the exception value:
     LoggingIntegration puts the log message in a breadcrumb
-    (integrations/logging.py:311), logger.error("...: %s", exc) puts it in
-    logentry.params (:274), and captured stack-frame locals carry it in
-    frame vars because include_local_variables defaults to True
-    (consts.py:1028, utils.py:616).  Walking the whole event covers those
-    without enumerating them, and does not go stale when the SDK adds another.
+    (BreadcrumbHandler._breadcrumb_from_record), logger.error("...: %s", exc)
+    puts it in logentry.params (EventHandler._emit), and captured stack-frame
+    locals carry it in frame vars because include_local_variables defaults to
+    True (serialize_frame).  Walking the whole event covers those without
+    enumerating them, and does not go stale when the SDK adds another.
 
-    Safe to walk naively because client._prepare_event serializes the event
-    before calling before_send (client.py:650 vs :658), so every leaf here is
-    already a JSON primitive -- no live exception objects to coerce.
+    Safe to walk naively because Client._prepare_event serializes the event
+    before calling before_send, so every leaf here is already a JSON
+    primitive -- no live exception objects to coerce.
     """
     return cast("Event", _scrub_node(event))
 
@@ -71,8 +72,6 @@ def _scrub_node(node: Any) -> Any:  # noqa: ANN401 -- walks arbitrary JSON
     if isinstance(node, list):
         node[:] = [_scrub_node(item) for item in node]
         return node
-    if isinstance(node, tuple):
-        return tuple(_scrub_node(item) for item in node)
     return node
 
 
@@ -106,11 +105,15 @@ def init_sentry(  # noqa: PLR0913 -- matches the org's established init_sentry()
         environment=environment,
         release=version,
         before_send=_before_send,
-        # Request bodies are NOT gated on send_default_pii: the SDK sets
-        # request.data unconditionally (sentry_sdk/integrations/_wsgi_common.py
-        # :123) and this is the only control (:61).  Left unset it defaults to
+        # Request bodies are NOT gated on send_default_pii: the Starlette and
+        # FastAPI integrations set request.data unconditionally
+        # (StarletteRequestExtractor.extract_request_info) and this is the only
+        # control (request_body_within_bounds).  extract_request_info attaches
+        # no body when the content-length header is absent, and applies the
+        # bound to the declared value otherwise.  Left unset it defaults to
         # "medium", i.e. 10,000-byte bodies.  Set explicitly so the choice is
-        # findable here rather than in a dependency's defaults.
+        # findable here rather than in a dependency's defaults.  Every route
+        # this service registers is a GET.
         max_request_body_size="small",
         # This service serves aggregated-only analytics (no individual
         # learner PII) — default to not sending request/user PII to Sentry.
