@@ -191,11 +191,10 @@ action on non-participation), or design-side (report participation only in
 aggregate above a threshold, and accept degraded seat reporting). Unresolved,
 and the sharpest issue in this design.
 
-**2. Does a contracted provider receive learner identity at all?** Identity is
-available to the *organization*. A provider is a different principal, and
-"the org may see it" does not settle "the provider may see it." Cheap to support
-either way — credentials can be scoped to pseudonymous records — but it needs a
-policy owner, not a default.
+**2. Does a contracted provider receive learner identity at all?** *Decided:
+yes.* The organization already holds its learners' identity (they are its
+employees or students), so redacting it gains nothing. There is one read scope,
+and records and exports always carry identity.
 
 **3. Who authorizes a provider, through what workflow?** No provisioning design
 exists. MIT-issued-by-ticket is simplest and leaves the organization with no
@@ -206,8 +205,8 @@ not a configuration detail.
 *Decided:*
 [`b2b-learner-records-provider-authorization.md`](b2b-learner-records-provider-authorization.md).
 The contract settles access. MIT issues one Keycloak client per contracted
-integration, carrying its organizations as a claim and identity as the
-`read-pii` scope. The partner handles per-user authorization in its own LMS.
+integration, carrying its organizations as a claim. The partner handles
+per-user authorization in its own LMS.
 
 **4. Is consent per-organization or global?** A learner holding seats under two
 organizations should be able to share with one and not the other. A single

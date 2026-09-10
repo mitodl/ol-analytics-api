@@ -10,9 +10,8 @@ Access is settled when the contract is signed. MIT does not decide it or check
 it against another system at request time.
 
 The contract with the organization says who may read its learners' records
-(the organization itself, or a training provider it has contracted), and
-whether names and email addresses are included. MIT then issues client
-credentials that encode those terms. The partner builds the integration into
+(the organization itself, or a training provider it has contracted). MIT then
+issues client credentials that encode those terms. The partner builds the integration into
 its own LMS and handles per-user authorization on its side. MIT does not model
 the partner's users, and a credential reads everything its contract covers.
 
@@ -26,7 +25,7 @@ that creates the client is MIT's record of the access.
 | Contract term | On the client |
 | --- | --- |
 | Which organizations | A hardcoded claim (working name `learner_records_organizations`) listing the Keycloak organization UUIDs, via `keycloak.openid.HardcodedClaimProtocolMapper` |
-| Identity included or not | Default client scopes: `learner-records:read` always; `learner-records:read-pii` only if the contract includes identity |
+| Read access | Default client scope `learner-records:read`. There is no separate identity scope; see Consequences |
 | API audience | `keycloak.openid.AudienceProtocolMapper`, as the Superset client already uses |
 | Client-credentials only | `service_accounts_enabled=True`, standard flow and direct grants off |
 
@@ -45,17 +44,19 @@ In `tenants/b2b_learner_records/auth.py`, per request:
 1. Read the organization claim and scopes from the validated token.
 2. If the path's `organization_id` is not in the claim, return the existing
    403, identical to the response for an organization that does not exist.
-3. Populate `email` and `full_name` only when the token holds
-   `learner-records:read-pii`.
+3. Require the `learner-records:read` scope. Identity fields are always
+   populated.
 
 No call to mitxonline or any other service, and no grant store. The client
 definition is the only place access is recorded.
 
 ## Consequences
 
-- **Open question 2 now has an owner.** Whether a provider receives learner
-  identity is decided per contract and expressed as the `read-pii` scope. The
-  draft OpenAPI contract's scope split already supports this unchanged.
+- **No identity split.** The organization already holds its learners' names
+  and addresses (they are its employees or students), so redacting them gains
+  nothing. The draft's `read-pii` scope is dropped. Records and exports always
+  carry identity, and one export set per organization serves every client. This
+  settles open question 2.
 - **Revocation is a Pulumi change.** Tokens issued before the client is removed
   stay valid until they expire. The access-token lifespan for these clients
   bounds that window. It has not been checked for the `olapps` realm yet.
