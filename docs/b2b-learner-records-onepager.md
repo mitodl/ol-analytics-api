@@ -203,13 +203,11 @@ visible record of who can read its data; org self-service authorization is more
 work but puts the data relationship where it belongs. This is an operational gap,
 not a configuration detail.
 
-*Proposed answer, pending sign-off:*
+*Decided:*
 [`b2b-learner-records-provider-authorization.md`](b2b-learner-records-provider-authorization.md).
-The organization authorizes, and MIT records it. The provider's credential
-(Pulumi) is separate from the organization grant (mitxonline). Phase 1 grants
-are staff-recorded on written authorization, visible to the organization, and
-revocable by it. Self-service authorization waits for manager designation via
-Keycloak Organization Groups.
+The contract settles access. MIT issues one Keycloak client per contracted
+integration, carrying its organizations as a claim and identity as the
+`read-pii` scope. The partner handles per-user authorization in its own LMS.
 
 **4. Is consent per-organization or global?** A learner holding seats under two
 organizations should be able to share with one and not the other. A single
@@ -221,5 +219,6 @@ the consent design rather than a question this service can answer.
 Both are degrading rather than blocking — the service ships without either and
 fills in as they land. The learner-consent field, without which every record
 reads `outcomes_shared: false`; and a per-learner activity model, without which
-"last active" and the engagement counters are null. A provider-authorization
-workflow is the one genuine blocker, and only for onboarding the first provider.
+"last active" and the engagement counters are null. Onboarding the first
+partner also needs the per-contract Keycloak client template and a bearer-only
+gateway route.
