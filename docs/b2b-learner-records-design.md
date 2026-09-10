@@ -329,5 +329,6 @@ org self-service authorization is more work but puts the data relationship where
 it belongs. This is an operational gap, not a configuration detail, and it
 blocks onboarding the first provider rather than the first organization.
 
-Proposed answer, pending sign-off:
+Decided: the contract settles access, and MIT issues per-contract client
+credentials that encode it. See
 [`b2b-learner-records-provider-authorization.md`](b2b-learner-records-provider-authorization.md).
