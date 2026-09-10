@@ -179,8 +179,9 @@ Three collections, all org-scoped, all read-only:
 
 - `GET /organizations/{organization_id}/learners` — learner grain, roster plus
   progress rollup. Answers "who is on our licence and how are they doing".
-- `GET /organizations/{organization_id}/enrollments` — `(learner × course run)`
-  grain. Answers "did this learner complete this course". The primary endpoint;
+- `GET /organizations/{organization_id}/enrollments` — `(learner × contract ×
+  course run)` grain, matching `mv_b2b_learner_enrollment` above. Answers "did
+  this learner complete this course". The primary endpoint;
   `/learners` is a convenience rollup over the same records.
 - `GET /organizations/{organization_id}/courses` — the contracts and course runs
   the identifiers refer to. Small, slow-changing, no personal data, cacheable.
@@ -212,22 +213,18 @@ rendering a dashboard should use the API.
   add a router over the same StarRocks views under its own gate. Keeping the
   concerns separate now is cheaper than un-merging them later.
 
-### Identity is a contractual limit, not a consent one
+### Identity is not redacted
 
-`learner-records:read` returns records with `email` and `full_name` as `null`;
-`learner-records:read-pii` populates them. Both scopes return the same progress
-data.
+Every record carries `email` and `full_name`, and there is one scope,
+`learner-records:read`.
 
-This split is **not** the consent mechanism — consent governs outcomes (§4), and
-the organization already holds its learners' names and addresses because it
-assigned the seats. The split exists because a contracted training provider is a
-different principal from the organization: "the org may see it" does not settle
-"the provider may see it." Since `learner_id` is stable, a provider that enrolled
-the learners can join on an identifier it already supplied and never receive
-contact details from MIT at all.
+Redacting identity would protect nothing. The organization already holds its
+learners' names and addresses: they are its employees or students, and it
+assigned the seats. A contracted provider reads on the organization's behalf
+under the contract and handles per-user access in its own LMS. Consent governs
+outcomes (§4), not identity.
 
-Whether any given provider gets the PII scope is a contractual call, and one
-nobody has made yet — see §4's open questions.
+One read scope also means one bulk export per organization serves every client.
 
 
 ## 4. Learner consent
@@ -315,16 +312,13 @@ The available directions are:
 Worth putting to whoever owns the consent language early, since the third option
 changes their work rather than ours.
 
-### Open: does a contracted provider receive identity at all?
+### Settled: a contracted provider receives identity
 
-Identity is available to the *organization*. A provider is a different
-principal, and the API supports either answer today via the `read` /
-`read-pii` scope split (§3). It needs a policy owner rather than a default.
+Yes. Identity is not redacted for any client (§3).
 
 ### Settled: who authorizes a provider, through what workflow?
 
 The contract settles access. MIT issues one Keycloak client per contracted
-integration, with the organizations it may read carried as a claim and
-identity carried as the `read-pii` scope. The partner handles per-user
-authorization in its own LMS. See
+integration, with the organizations it may read carried as a claim. The
+partner handles per-user authorization in its own LMS. See
 [`b2b-learner-records-provider-authorization.md`](b2b-learner-records-provider-authorization.md).

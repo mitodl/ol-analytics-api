@@ -30,9 +30,10 @@ info:
       normal changed record with `outcomes_shared: false` and outcome fields
       nulled, which the client upserts to drop the data it held.
 
-    Every schema property carries `x-data-readiness`: `available` (backed
-    today), `derived` (computable from existing sources), `pending-model`
-    (needs upstream work; ships `null` until then).
+    Every property of the `Learner`, `Enrollment` and `CourseRun` record
+    schemas carries `x-data-readiness`: `available` (backed today),
+    `derived` (computable from existing sources), `pending-model` (needs
+    upstream work; ships `null` until then).
 
   contact:
     name: MIT Open Learning — Data Engineering
@@ -64,7 +65,11 @@ paths:
       tags: [learners]
       operationId: listLearners
       summary: Learner roster with progress rollups
-      description: One row per learner associated with the organization, rolled up across all its contracts.
+      description: >-
+        One row per learner associated with the organization, rolled up across
+        all its contracts. With `contract_id`, returns learners holding that
+        contract and recomputes every rollup from that contract's enrollments
+        only. Ordered by `learner_id`, which is unique.
       parameters:
         - $ref: '#/components/parameters/OrganizationId'
         - $ref: '#/components/parameters/ContractId'
@@ -140,8 +145,9 @@ paths:
       operationId: listEnrollments
       summary: Learner-by-course-run enrollment and completion records
       description: >-
-        One row per (learner, course run) under the organization's contracts.
-        Ordered by `(learner_id, courserun_id)`.
+        One row per (learner, contract, course run) under the organization's
+        contracts. Ordered by `(learner_id, contract_id, courserun_id)`, which
+        is unique, so offset paging is stable.
       parameters:
         - $ref: '#/components/parameters/OrganizationId'
         - $ref: '#/components/parameters/ContractId'
@@ -236,7 +242,9 @@ paths:
       tags: [catalog]
       operationId: listCourses
       summary: Contracts and course runs covered by the organization's licence
-      description: Slow-changing and free of personal data. Cache it rather than joining per learner.
+      description: >-
+        Slow-changing and free of personal data. Cache it rather than joining
+        per learner. Ordered by `(contract_id, courserun_id)`, which is unique.
       parameters:
         - $ref: '#/components/parameters/OrganizationId'
         - $ref: '#/components/parameters/ContractId'
@@ -288,7 +296,9 @@ paths:
       summary: Bulk export files available for this organization
       description: >-
         Manifest of the S3/SFTP bulk exports, one set per collection per
-        refresh. Records inside carry the same schemas as this API.
+        refresh. Records inside carry the same schemas as this API, identity
+        fields included. Ordered by `as_of` descending, then `collection` and
+        `format`, which is unique.
       parameters:
         - $ref: '#/components/parameters/OrganizationId'
         - $ref: '#/components/parameters/UpdatedSince'
@@ -336,15 +346,15 @@ components:
       type: oauth2
       description: >-
         Keycloak client credentials, validated at the gateway. One client is
-        issued per contract and lists the organizations it may read. Scopes
+        issued per contracted integration and lists the organizations it may
+        read. Scopes
         bound to a client are a contractual limit on that credential; they are
         not the consent mechanism.
       flows:
         clientCredentials:
           tokenUrl: https://sso.mit.edu/realms/olapps/protocol/openid-connect/token
           scopes:
-            learner-records:read: Read records; `email` and `full_name` return null.
-            learner-records:read-pii: Additionally populate `email` and `full_name`.
+            learner-records:read: Read records, identity fields included.
 
   parameters:
 
@@ -459,12 +469,22 @@ components:
         `outcomes_shared` are null unless it is true.
       required:
         - learner_id
+        - email
+        - full_name
         - organization_id
         - organization_name
         - membership_source
         - is_organization_manager
+        - first_enrolled_on
+        - last_enrolled_on
         - courses_enrolled
         - outcomes_shared
+        - outcomes_consent_on
+        - last_active_on
+        - courses_in_progress
+        - courses_passed
+        - courses_certified
+        - certificates_earned
       properties:
         learner_id:
           type: string
@@ -474,11 +494,11 @@ components:
         email:
           type: [string, 'null']
           format: email
-          description: Null without `learner-records:read-pii`. Not a join key — may differ from the enrolling address.
+          description: Not a join key; may differ from the enrolling address.
           x-data-readiness: available
         full_name:
           type: [string, 'null']
-          description: Null without `learner-records:read-pii`, and often null regardless.
+          description: Often null.
           x-data-readiness: available
         organization_id:
           type: string
@@ -544,17 +564,36 @@ components:
     Enrollment:
       type: object
       description: >-
-        One learner's enrollment in one course run. Fields below
-        `outcomes_shared` are null unless it is true.
+        One learner's enrollment in one course run, attributed to one of the
+        organization's contracts. Fields below `outcomes_shared` are null
+        unless it is true.
       required:
         - learner_id
+        - email
+        - full_name
         - organization_id
         - contract_id
+        - contract_name
         - courserun_id
         - courserun_title
+        - courserun_start_on
+        - courserun_end_on
         - enrolled_on
         - enrollment_is_active
+        - enrollment_mode
+        - enrollment_status
         - outcomes_shared
+        - completion_status
+        - is_passing
+        - grade
+        - letter_grade
+        - certificate_issued_on
+        - certificate_is_revoked
+        - last_active_on
+        - days_active
+        - videos_watched
+        - problems_attempted
+        - chatbot_interactions
       properties:
         learner_id:
           type: string
@@ -563,11 +602,10 @@ components:
         email:
           type: [string, 'null']
           format: email
-          description: Null without `learner-records:read-pii`.
           x-data-readiness: available
         full_name:
           type: [string, 'null']
-          description: Null without `learner-records:read-pii`.
+          description: Often null.
           x-data-readiness: available
         organization_id:
           type: string
@@ -680,8 +718,13 @@ components:
         - contract_id
         - contract_name
         - contract_is_active
+        - contract_start_date
+        - contract_end_date
+        - seat_limit
         - courserun_id
         - courserun_title
+        - courserun_start_on
+        - courserun_end_on
       properties:
         organization_id: { type: string, format: uuid, x-data-readiness: available }
         organization_name: { type: string, x-data-readiness: available }
@@ -715,7 +758,7 @@ components:
     ExportFile:
       type: object
       description: One bulk-export file. Contents use this API's record schemas.
-      required: [collection, as_of, format, record_count, uri, expires_on]
+      required: [collection, as_of, format, record_count, size_bytes, checksum_sha256, uri, expires_on]
       properties:
         collection:
           type: string
