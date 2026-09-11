@@ -288,29 +288,17 @@ The existing `b2b_dashboard` tenant's k-anonymized org-level views disclose no
 individual and continue to cover the whole cohort. No consent join, no change to
 `mv_b2b_*`.
 
-### Open: does withholding outcomes actually protect the learner?
+### Settled: the organization can see who declined
 
-This is the sharpest unresolved issue in the design.
+The organization holds the full roster and the identities, so it can see exactly
+which of its learners carry `outcomes_shared: false`. Field suppression conceals
+a learner's *outcomes*, not their *decision*, and no response shape changes that
+while records stay individually identifiable.
 
-Because the organization holds the full roster and the identities, it can see
-exactly which of its learners carry `outcomes_shared: false`. The mechanism
-therefore conceals a learner's *outcomes* but publishes their *decision* — and
-an employee visibly declining to share progress with their employer may be more
-exposed than one whose completion data was simply shared.
-
-No response shape fixes this while the record remains individually identifiable.
-The available directions are:
-
-* **Contractual** — terms of use forbidding adverse action on non-participation.
-  Cheap, and the only option that preserves the current record shape.
-* **Aggregate-only participation reporting** — expose consent coverage as a
-  floored count per organization and never per learner, accepting that seat
-  reconciliation degrades.
-* **Revisit what the learner is asked** — if consent cannot be declined without
-  the employer knowing, the consent language should probably say so.
-
-Worth putting to whoever owns the consent language early, since the third option
-changes their work rather than ours.
+This service doesn't try to. How an organization may use learner data is set by
+its contract, which legal and contracting own. Issuing a client presumes those
+terms are already in place. The record shape stays as specified: per-learner,
+identity intact, outcomes nulled when `outcomes_shared` is false.
 
 ### Settled: a contracted provider receives identity
 
