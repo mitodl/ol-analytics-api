@@ -182,14 +182,12 @@ consent withdrawal arrives on the sync cursor.
 
 ## Open questions
 
-**1. Does withholding outcomes actually protect the learner?** Because the
-organization holds the full roster, it can identify exactly who did not share by
-set difference — whatever the response reports. The mechanism therefore hides a
-learner's *outcomes* but not their *decision*, which exposes them to a different
-pressure from their employer. Options are contractual (terms forbidding adverse
-action on non-participation), or design-side (report participation only in
-aggregate above a threshold, and accept degraded seat reporting). Unresolved,
-and the sharpest issue in this design.
+**1. Does withholding outcomes actually protect the learner?** *Decided: out of
+scope for this service.* The organization holds the full roster, so it can tell
+who did not share by set difference, whatever the response reports. How an
+organization may use learner data is set by its contract, which legal and
+contracting own, and issuing a client presumes those terms are in place. The
+record shape stays per-learner: identity intact, outcomes suppressed.
 
 **2. Does a contracted provider receive learner identity at all?** *Decided:
 yes.* The organization already holds its learners' identity (they are its
