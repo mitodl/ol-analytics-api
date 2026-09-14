@@ -21,6 +21,10 @@ class B2BLearnerRecordsSettings(BaseSettings):
     def _validate_starrocks_schema(cls, value: str) -> str:
         return validate_sql_identifier(value)
 
+    # Advertised in this tenant's OpenAPI security scheme so generated clients
+    # know where to get a token. APISIX, not this service, validates tokens.
+    token_url: str = "https://sso.ol.mit.edu/realms/olapps/protocol/openid-connect/token"  # noqa: S105
+
     default_page_size: int = 100
     max_page_size: int = 1000
     max_learner_ids: int = 100

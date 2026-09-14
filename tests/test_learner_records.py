@@ -408,3 +408,29 @@ def test_tenant_never_imports_the_anonymization_module():
                 assert all("anonymization" not in alias.name for alias in node.names), path
             if isinstance(node, ast.Import):
                 assert all("anonymization" not in alias.name for alias in node.names), path
+
+
+def test_generated_schema_declares_the_client_credentials_scheme():
+    # Without it a generated client has no reason to obtain or send a token.
+    spec = b2b_learner_records.app.create_app().openapi()
+    scheme = spec["components"]["securitySchemes"]["oauth2ClientCredentials"]
+    assert "learner-records:read" in scheme["flows"]["clientCredentials"]["scopes"]
+    for operations in spec["paths"].values():
+        assert operations["get"]["security"] == [
+            {"oauth2ClientCredentials": ["learner-records:read"]}
+        ]
+
+
+async def test_as_of_is_read_before_the_records(app, monkeypatch):
+    # Read after, a refresh landing in between would label old rows with the new
+    # refresh time, and a client syncing from that as_of would skip the new rows.
+    pool = _FakePool()
+    await _get(
+        app, f"/organizations/{ORG_ID}/enrollments", _partner_header(ORG_ID), pool, monkeypatch
+    )
+    kinds = [
+        "as_of" if "information_schema" in query else "count" if "COUNT(*)" in query else "page"
+        for query, _ in pool.calls
+    ]
+    assert kinds.index("as_of") < kinds.index("page")
+    assert kinds.index("as_of") < kinds.index("count")

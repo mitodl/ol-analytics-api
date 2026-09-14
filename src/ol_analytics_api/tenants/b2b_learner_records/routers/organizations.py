@@ -74,11 +74,15 @@ async def _as_of(sources: tuple[str, ...]) -> datetime.datetime | None:
 async def _respond(
     query: queries.RecordQuery, organization_id: uuid.UUID, page: Page, model: type[BaseModel]
 ) -> LearnerRecordsResponse[BaseModel]:
+    # Freshness first. A refresh landing between this and the record queries then
+    # labels newer rows with the older as_of, so the next sync re-sends them
+    # rather than skipping them.
+    as_of = await _as_of(query.sources)
     rows = await starrocks_pool.fetch_all(query.page, (*query.params, page.limit, page.offset))
     counts = (await starrocks_pool.fetch_all(query.count, query.params))[0]
     return LearnerRecordsResponse(
         organization_id=organization_id,
-        as_of=await _as_of(query.sources),
+        as_of=as_of,
         total_count=int(counts["total_count"]),
         # SUM over zero rows is NULL.
         outcomes_withheld_count=int(counts["outcomes_withheld_count"] or 0),

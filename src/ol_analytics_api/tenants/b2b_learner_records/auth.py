@@ -15,12 +15,29 @@ import uuid
 from typing import Annotated, Any
 
 import structlog
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Security, status
+from fastapi.openapi.models import OAuthFlowClientCredentials, OAuthFlows
+from fastapi.security import OAuth2
 
 from ol_analytics_api.core.auth.userinfo import get_userinfo
+from ol_analytics_api.tenants.b2b_learner_records.config import settings
 
 ORGANIZATIONS_CLAIM = "learner_records_organizations"
 READ_SCOPE = "learner-records:read"
+
+# Declares the contract's security scheme in this tenant's OpenAPI, so generated
+# clients obtain and send a token. It enforces nothing: auto_error=False, and
+# the checks below read the claims APISIX forwards after validating the token.
+oauth2_client_credentials = OAuth2(
+    flows=OAuthFlows(
+        clientCredentials=OAuthFlowClientCredentials(
+            tokenUrl=settings.token_url,
+            scopes={READ_SCOPE: "Read records, identity fields included."},
+        )
+    ),
+    scheme_name="oauth2ClientCredentials",
+    auto_error=False,
+)
 
 # The same refusal whether the organization is ungranted or doesn't exist, so
 # a client can't use this endpoint to enumerate organizations.
@@ -44,7 +61,11 @@ def _granted_organizations(userinfo: dict[str, Any]) -> set[uuid.UUID]:
     return granted
 
 
-def require_organization_grant(organization_id: uuid.UUID, userinfo: UserInfo) -> None:
+def require_organization_grant(
+    organization_id: uuid.UUID,
+    userinfo: UserInfo,
+    _token: Annotated[str | None, Security(oauth2_client_credentials, scopes=[READ_SCOPE])],
+) -> None:
     scopes = userinfo.get("scope")
     if not isinstance(scopes, str) or READ_SCOPE not in scopes.split():
         raise HTTPException(
