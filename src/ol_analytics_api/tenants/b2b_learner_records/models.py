@@ -21,7 +21,7 @@ import uuid
 from enum import StrEnum
 from typing import Annotated, Self
 
-from pydantic import AfterValidator, BaseModel, model_validator
+from pydantic import AfterValidator, BaseModel, Field, model_validator
 
 
 def _assume_utc(value: datetime.datetime) -> datetime.datetime:
@@ -43,12 +43,20 @@ def _withhold_outcomes[RecordT: BaseModel](record: RecordT, fields: tuple[str, .
 
 
 class MembershipSource(StrEnum):
+    """``roster`` = on the organization's membership roster with no enrollments
+    (an assigned, unstarted seat). ``enrollment`` = enrolled under a contract
+    but absent from the roster (usually a provisioning lag). ``both`` = the
+    expected state."""
+
     ROSTER = "roster"
     ENROLLMENT = "enrollment"
     BOTH = "both"
 
 
 class CompletionStatus(StrEnum):
+    """``passed`` without ``certified`` is normal — certificates are issued on
+    a schedule after grading, and audit-mode enrollments never certify."""
+
     NOT_STARTED = "not_started"
     IN_PROGRESS = "in_progress"
     PASSED = "passed"
@@ -56,34 +64,85 @@ class CompletionStatus(StrEnum):
 
 
 class LearnerRecordsResponse[RowT: BaseModel](BaseModel):
-    organization_id: uuid.UUID
-    # Last refresh of the backing view(s). Null before the first refresh.
-    as_of: UtcDatetime | None
-    total_count: int
-    outcomes_withheld_count: int
-    data: list[RowT]
+    organization_id: uuid.UUID = Field(description="The organization's Keycloak organization UUID.")
+    as_of: UtcDatetime | None = Field(
+        description="Last refresh of the backing data. Null before an organization's first refresh."
+    )
+    total_count: int = Field(description="Matching records across all pages, not this page.")
+    outcomes_withheld_count: int = Field(
+        description=(
+            "Records in total_count carrying outcomes_shared: false. Always 0 on endpoints "
+            "with no consent gate."
+        )
+    )
+    data: list[RowT] = Field(description="The requested page of records.")
 
 
 class Learner(BaseModel):
     """One learner's association with the organization."""
 
-    learner_id: uuid.UUID
-    email: str | None
-    full_name: str | None
-    organization_id: uuid.UUID
-    organization_name: str
-    membership_source: MembershipSource
-    is_organization_manager: bool
-    first_enrolled_on: UtcDatetime | None
-    last_enrolled_on: UtcDatetime | None
-    courses_enrolled: int
-    outcomes_shared: bool
-    outcomes_consent_on: UtcDatetime | None
-    last_active_on: datetime.date | None
-    courses_in_progress: int | None
-    courses_passed: int | None
-    courses_certified: int | None
-    certificates_earned: int | None
+    learner_id: uuid.UUID = Field(
+        description=(
+            "Stable opaque identifier, consistent across endpoints and stable across email "
+            "changes. Use as the join key."
+        )
+    )
+    email: str | None = Field(description="Not a join key; may differ from the enrolling address.")
+    full_name: str | None = Field(description="Often null.")
+    organization_id: uuid.UUID = Field(description="The organization's Keycloak organization UUID.")
+    organization_name: str = Field(description="Display name of the organization.")
+    membership_source: MembershipSource = Field(
+        description=(
+            "How the learner is associated with the organization; see MembershipSource for "
+            "the individual values."
+        )
+    )
+    is_organization_manager: bool = Field(
+        description="Administers the organization in MITx Online."
+    )
+    first_enrolled_on: UtcDatetime | None = Field(
+        description="Null for a roster member with no enrollments."
+    )
+    last_enrolled_on: UtcDatetime | None = Field(
+        description="Timestamp of the learner's most recent enrollment."
+    )
+    courses_enrolled: int = Field(
+        description="Distinct course runs under the organization's contracts. Not consent-gated."
+    )
+    outcomes_shared: bool = Field(
+        description=(
+            "Whether this learner has opted in to sharing their course status. False means "
+            "every field below is null."
+        )
+    )
+    outcomes_consent_on: UtcDatetime | None = Field(
+        description="When consent was recorded. Null when outcomes_shared is false."
+    )
+    last_active_on: datetime.date | None = Field(
+        description=(
+            "Most recent day with recorded course activity. A date, not a timestamp — "
+            "activity is aggregated per day."
+        )
+    )
+    courses_in_progress: int | None = Field(
+        description=(
+            "Distinct course runs the learner has started but not yet passed or certified. "
+            "Not yet populated upstream — always null until activity data lands, on top of "
+            "being null whenever outcomes_shared is false."
+        )
+    )
+    courses_passed: int | None = Field(
+        description="Distinct course runs where the learner has a passing grade."
+    )
+    courses_certified: int | None = Field(
+        description="Distinct course runs where the learner holds a non-revoked certificate."
+    )
+    certificates_earned: int | None = Field(
+        description=(
+            "Includes program certificates, which have no course run and so are not in "
+            "courses_certified."
+        )
+    )
 
     @model_validator(mode="after")
     def _gate_outcomes(self) -> Self:
@@ -103,32 +162,71 @@ class Learner(BaseModel):
 class Enrollment(BaseModel):
     """One learner's enrollment in one course run under one contract."""
 
-    learner_id: uuid.UUID
-    email: str | None
-    full_name: str | None
-    organization_id: uuid.UUID
-    contract_id: int
-    contract_name: str
-    courserun_id: str
-    courserun_title: str
-    courserun_start_on: UtcDatetime | None
-    courserun_end_on: UtcDatetime | None
-    enrolled_on: UtcDatetime
-    enrollment_is_active: bool
-    enrollment_mode: str | None
-    enrollment_status: str | None
-    outcomes_shared: bool
-    completion_status: CompletionStatus | None
-    is_passing: bool | None
-    grade: float | None
-    letter_grade: str | None
-    certificate_issued_on: UtcDatetime | None
-    certificate_is_revoked: bool | None
-    last_active_on: datetime.date | None
-    days_active: int | None
-    videos_watched: int | None
-    problems_attempted: int | None
-    chatbot_interactions: int | None
+    learner_id: uuid.UUID = Field(
+        description=(
+            "Stable opaque identifier, consistent across endpoints and stable across email "
+            "changes. Use as the join key."
+        )
+    )
+    email: str | None = Field(description="Not a join key; may differ from the enrolling address.")
+    full_name: str | None = Field(description="Often null.")
+    organization_id: uuid.UUID = Field(description="The organization's Keycloak organization UUID.")
+    contract_id: int = Field(
+        description="Numeric identifier of the B2B contract the enrollment is attributed to."
+    )
+    contract_name: str = Field(description="Name of the B2B contract.")
+    courserun_id: str = Field(
+        description="Readable course-run identifier, e.g. `course-v1:MITxT+14.310x+2T2026`."
+    )
+    courserun_title: str = Field(description="Mutable display title — key on courserun_id.")
+    courserun_start_on: UtcDatetime | None = Field(
+        description="Start date/time of the course run, or null if unscheduled."
+    )
+    courserun_end_on: UtcDatetime | None = Field(description="Null for self-paced runs.")
+    enrolled_on: UtcDatetime = Field(
+        description=(
+            "This run's enrollment, not an earlier run of the same course. Not consent-gated."
+        )
+    )
+    enrollment_is_active: bool = Field(description="Not consent-gated.")
+    enrollment_mode: str | None = Field(
+        description=("e.g. `verified`, `audit`. Determines whether the run is certificate-bearing.")
+    )
+    enrollment_status: str | None = Field(description="Deactivation reason where one was recorded.")
+    outcomes_shared: bool = Field(
+        description=(
+            "Whether the learner has opted in to sharing their course status. False means "
+            "every field below is null."
+        )
+    )
+    completion_status: CompletionStatus | None = Field(
+        description="Single derived answer per row. Null when outcomes are withheld."
+    )
+    is_passing: bool | None = Field(description="Null where no grade has been computed.")
+    grade: float | None = Field(description="Numeric grade between 0 and 1.")
+    letter_grade: str | None = Field(
+        description="Frequently null — not every platform records one."
+    )
+    certificate_issued_on: UtcDatetime | None = Field(
+        description="Timestamp the certificate was issued, or null if none exists."
+    )
+    certificate_is_revoked: bool | None = Field(
+        description=(
+            "Null where no certificate exists. A revoked certificate leaves completion_status "
+            "at 'passed'."
+        )
+    )
+    last_active_on: datetime.date | None = Field(
+        description="Most recent day with recorded activity in this course run."
+    )
+    days_active: int | None = Field(
+        description="Distinct days with recorded activity in this course run."
+    )
+    videos_watched: int | None = Field(description="Distinct video blocks played.")
+    problems_attempted: int | None = Field(description="Distinct problem blocks attempted.")
+    chatbot_interactions: int | None = Field(
+        description="Distinct chatbot interactions recorded for this course run."
+    )
 
     @model_validator(mode="after")
     def _gate_outcomes(self) -> Self:
