@@ -34,6 +34,14 @@ def _assume_utc(value: datetime.datetime) -> datetime.datetime:
 
 UtcDatetime = Annotated[datetime.datetime, AfterValidator(_assume_utc)]
 
+# Activity is a separate gap from consent. These fields are hardcoded NULL in
+# the queries until the activity fact is wired into the MVs, so they stay null
+# even for a record whose outcomes are shared.
+_ACTIVITY_PENDING = (
+    "Not yet populated upstream: null for every record until activity data lands, "
+    "whatever outcomes_shared says."
+)
+
 
 def _withhold_outcomes[RecordT: BaseModel](record: RecordT, fields: tuple[str, ...]) -> RecordT:
     if not getattr(record, "outcomes_shared"):  # noqa: B009
@@ -120,15 +128,14 @@ class Learner(BaseModel):
     )
     last_active_on: datetime.date | None = Field(
         description=(
-            "Most recent day with recorded course activity. A date, not a timestamp — "
-            "activity is aggregated per day."
+            "Most recent day with recorded course activity. A date, not a timestamp: "
+            f"activity is aggregated per day. {_ACTIVITY_PENDING}"
         )
     )
     courses_in_progress: int | None = Field(
         description=(
             "Distinct course runs the learner has started but not yet passed or certified. "
-            "Not yet populated upstream — always null until activity data lands, on top of "
-            "being null whenever outcomes_shared is false."
+            f"{_ACTIVITY_PENDING}"
         )
     )
     courses_passed: int | None = Field(
@@ -200,7 +207,12 @@ class Enrollment(BaseModel):
         )
     )
     completion_status: CompletionStatus | None = Field(
-        description="Single derived answer per row. Null when outcomes are withheld."
+        description=(
+            "Single derived answer per row. Null when outcomes are withheld. Until activity "
+            "data lands, not_started and in_progress come from the grade alone: in_progress "
+            "means a nonzero grade, so a learner active in the run with no graded work yet "
+            "reads not_started."
+        )
     )
     is_passing: bool | None = Field(description="Null where no grade has been computed.")
     grade: float | None = Field(description="Numeric grade between 0 and 1.")
@@ -217,15 +229,21 @@ class Enrollment(BaseModel):
         )
     )
     last_active_on: datetime.date | None = Field(
-        description="Most recent day with recorded activity in this course run."
+        description=(
+            f"Most recent day with recorded activity in this course run. {_ACTIVITY_PENDING}"
+        )
     )
     days_active: int | None = Field(
-        description="Distinct days with recorded activity in this course run."
+        description=f"Distinct days with recorded activity in this course run. {_ACTIVITY_PENDING}"
     )
-    videos_watched: int | None = Field(description="Distinct video blocks played.")
-    problems_attempted: int | None = Field(description="Distinct problem blocks attempted.")
+    videos_watched: int | None = Field(
+        description=f"Distinct video blocks played. {_ACTIVITY_PENDING}"
+    )
+    problems_attempted: int | None = Field(
+        description=f"Distinct problem blocks attempted. {_ACTIVITY_PENDING}"
+    )
     chatbot_interactions: int | None = Field(
-        description="Distinct chatbot interactions recorded for this course run."
+        description=f"Chatbot interactions recorded for this course run. {_ACTIVITY_PENDING}"
     )
 
     @model_validator(mode="after")
