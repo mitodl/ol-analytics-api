@@ -1,6 +1,6 @@
 """Shared query -> suppress -> construct helper.
 
-Every read endpoint in this service follows the same three steps: run a
+Every aggregate read endpoint follows the same three steps: run a
 query against the shared StarRocks pool, suppress small-cohort rows, and
 wrap the remainder in a response model. Collapsing that into one call means
 a future change to the contract (error handling, suppressed-row logging,
@@ -11,8 +11,13 @@ declared ``cohort_policy`` and enforces the k-anonymity floor before any row
 leaves the database layer. A model with no ``cohort_policy`` cannot be
 returned through here, so shipping a new endpoint forces an explicit
 governance decision about which columns are cohort counts rather than
-letting rows out unsuppressed. Endpoints must go through this function
-instead of calling ``starrocks_pool.fetch_all`` directly.
+letting rows out unsuppressed. Aggregate endpoints must go through this
+function instead of calling ``starrocks_pool.fetch_all`` directly.
+
+The b2b_learner_records tenant is the exception, and deliberately so: it
+serves identifiable per-learner records under a contract, which a k-anonymity
+floor would suppress entirely. It never imports this module's suppression
+path; see that tenant's queries.py.
 """
 
 from __future__ import annotations

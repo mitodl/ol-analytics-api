@@ -53,6 +53,7 @@ from ol_analytics_api.core.observability.telemetry import (
     instrument_fastapi_app,
 )
 from ol_analytics_api.tenants.b2b_dashboard import app as b2b_dashboard
+from ol_analytics_api.tenants.b2b_learner_records import app as b2b_learner_records
 
 # Sentry first, so it can capture errors in the setup that follows.
 init_sentry(
@@ -107,6 +108,7 @@ class Tenant:
 # Add a new tenant by appending a Tenant() entry here.
 TENANTS: list[Tenant] = [
     Tenant("/api/v1/analytics", b2b_dashboard.create_app, b2b_dashboard.lifespan),
+    Tenant("/api/v1/learner-records", b2b_learner_records.create_app),
 ]
 
 
