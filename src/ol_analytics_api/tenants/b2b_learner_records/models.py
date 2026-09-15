@@ -179,7 +179,8 @@ class Enrollment(BaseModel):
     full_name: str | None = Field(description="Often null.")
     organization_id: uuid.UUID = Field(description="The organization's Keycloak organization UUID.")
     contract_id: int = Field(
-        description="Numeric identifier of the B2B contract the enrollment is attributed to."
+        description="Numeric identifier of the B2B contract the enrollment is attributed to.",
+        json_schema_extra={"format": "int64"},
     )
     contract_name: str = Field(description="Name of the B2B contract.")
     courserun_id: str = Field(
@@ -224,8 +225,9 @@ class Enrollment(BaseModel):
     )
     certificate_is_revoked: bool | None = Field(
         description=(
-            "Null where no certificate exists. A revoked certificate leaves completion_status "
-            "at 'passed'."
+            "Null where no certificate exists. A revoked certificate doesn't count as certified: "
+            "completion_status then follows the grade, so it can read passed, in_progress or "
+            "not_started."
         )
     )
     last_active_on: datetime.date | None = Field(
