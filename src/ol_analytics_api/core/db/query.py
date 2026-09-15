@@ -14,10 +14,11 @@ governance decision about which columns are cohort counts rather than
 letting rows out unsuppressed. Aggregate endpoints must go through this
 function instead of calling ``starrocks_pool.fetch_all`` directly.
 
-The b2b_learner_records tenant is the exception, and deliberately so: it
-serves identifiable per-learner records under a contract, which a k-anonymity
-floor would suppress entirely. It never imports this module's suppression
-path; see that tenant's queries.py.
+Identifiable per-learner records are the exception, and deliberately so: a
+k-anonymity floor would suppress them entirely. The b2b_learner_records tenant
+and the b2b_dashboard tenant's learner-progress endpoint never import this
+module's suppression path; see that tenant's queries.py and
+b2b_dashboard/learner_queries.py.
 """
 
 from __future__ import annotations
