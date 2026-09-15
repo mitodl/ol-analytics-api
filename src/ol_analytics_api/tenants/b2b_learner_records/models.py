@@ -92,7 +92,10 @@ class CourseRun(BaseModel):
 
     organization_id: uuid.UUID = Field(description="The organization's Keycloak organization UUID.")
     organization_name: str = Field(description="Display name of the organization.")
-    contract_id: int = Field(description="Numeric identifier of the B2B contract.")
+    contract_id: int = Field(
+        description="Numeric identifier of the B2B contract.",
+        json_schema_extra={"format": "int64"},
+    )
     contract_name: str = Field(description="Name of the B2B contract.")
     contract_is_active: bool = Field(description="Whether the contract is currently active.")
     contract_start_date: datetime.date | None = Field(
