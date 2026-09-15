@@ -320,7 +320,19 @@ async def test_contract_filter_recomputes_learners_from_that_contracts_enrollmen
     )
     query, params = pool.page_call()
     assert "RIGHT JOIN (SELECT user_pk, MAX(user_global_id)" in query
-    assert "contract_id = %s AND enrollment_is_active = TRUE GROUP BY user_pk" in query
+    # Learners whose seats in the contract were reclaimed stay in, as they do in
+    # mv_b2b_learner: the scope has no active filter. Only courses_enrolled and
+    # the enrolled dates look at enrollment_is_active; completions count every
+    # enrollment, so filtering by contract can't lower them.
+    assert "WHERE sso_organization_id = %s AND contract_id = %s GROUP BY user_pk" in query
+    assert (
+        "COUNT(DISTINCT CASE WHEN enrollment_is_active = TRUE THEN courserun_pk END)"
+        " AS courses_enrolled"
+    ) in query
+    assert (
+        "COUNT(DISTINCT CASE WHEN is_passing = TRUE THEN courserun_pk END) AS courses_passed"
+        in query
+    )
     # Both org predicates are bound, then the contract, then paging.
     assert params == (ORG_ID, ORG_ID, 42, 10, 20)
 

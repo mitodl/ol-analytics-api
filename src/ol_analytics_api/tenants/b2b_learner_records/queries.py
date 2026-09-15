@@ -253,11 +253,14 @@ def enrollments(schema: str, filters: RecordFilters) -> RecordQuery:
 def learners(schema: str, filters: RecordFilters) -> RecordQuery:
     """The learner rollup.
 
-    ``mv_b2b_learner`` precomputes it over active enrollments across all the
-    organization's contracts, which serves the default request. A
-    ``contract_id`` or ``include_inactive`` request recomputes the rollup from
-    ``mv_b2b_learner_enrollment`` and joins it back to ``mv_b2b_learner`` for
-    roster membership and program certificates.
+    ``mv_b2b_learner`` precomputes it across all the organization's contracts,
+    which serves the default request. ``courses_enrolled``, the enrolled_on
+    dates and ``both`` membership count active enrollments. Completions and the
+    cursor count every enrollment, so a learner whose seats were all reclaimed
+    keeps a row with ``courses_enrolled = 0`` and the completions already sent.
+    A ``contract_id`` or ``include_inactive`` request recomputes the rollup from
+    ``mv_b2b_learner_enrollment`` on the same definitions and joins it back to
+    ``mv_b2b_learner`` for roster membership and program certificates.
     """
     schema = validate_sql_identifier(schema)
     if filters.contract_id is None and not filters.include_inactive:
@@ -295,13 +298,24 @@ def _recomputed_learners(schema: str, filters: RecordFilters) -> tuple[str, list
     if filters.contract_id is not None:
         scope.append("contract_id = %s")
         params.append(filters.contract_id)
-    if not filters.include_inactive:
-        scope.append("enrollment_is_active = TRUE")
+
+    # The same definitions as mv_b2b_learner (ol-data-platform#2669). Only
+    # courses_enrolled and the enrolled_on dates look at enrollment_is_active, and
+    # only without include_inactive. Completions and the cursor span every
+    # enrollment, so a filtered request can't report fewer completions than the
+    # default one, and deactivation moves the cursor forward.
+    if filters.include_inactive:
+        enrolled_run = "courserun_pk"
+        enrolled_on = "enrollment_created_on"
+    else:
+        enrolled_run = "CASE WHEN enrollment_is_active = TRUE THEN courserun_pk END"
+        enrolled_on = "CASE WHEN enrollment_is_active = TRUE THEN enrollment_created_on END"
 
     if filters.contract_id is not None:
-        # Learners holding the contract only. A program certificate has no
-        # course run and so belongs to no one contract; it is left out, matching
-        # "every rollup from that contract's enrollments only".
+        # Learners with any enrollment in the contract, active or not, as the
+        # default rollup keeps learners whose seats were reclaimed. A program
+        # certificate has no course run and so belongs to no one contract; it is
+        # left out, matching "every rollup from that contract's enrollments only".
         join = "RIGHT JOIN"
         program_certificates = "0"
         record_updated_on = "e.record_updated_on"
@@ -319,25 +333,26 @@ def _recomputed_learners(schema: str, filters: RecordFilters) -> tuple[str, list
         "SELECT user_pk, MAX(user_global_id) AS user_global_id, MAX(email) AS email,"  # noqa: S608
         " MAX(full_name) AS full_name, MAX(sso_organization_id) AS sso_organization_id,"
         " MAX(organization_name) AS organization_name,"
-        " MIN(enrollment_created_on) AS first_enrolled_on,"
-        " MAX(enrollment_created_on) AS last_enrolled_on,"
-        " COUNT(DISTINCT courserun_pk) AS courses_enrolled,"
+        f" MIN({enrolled_on}) AS first_enrolled_on,"
+        f" MAX({enrolled_on}) AS last_enrolled_on,"
+        f" COUNT(DISTINCT {enrolled_run}) AS courses_enrolled,"
         " COUNT(DISTINCT CASE WHEN is_passing = TRUE THEN courserun_pk END) AS courses_passed,"
         " COUNT(DISTINCT CASE WHEN certificate_is_revoked = FALSE THEN courserun_pk END)"
         " AS courses_certified,"
         " MAX(record_updated_on) AS record_updated_on"
         f" FROM {schema}.{ENROLLMENT_MV} WHERE {' AND '.join(scope)} GROUP BY user_pk"
     )
-    # mv_b2b_learner's own membership_source counts active enrollments. Here
-    # "enrolled" means present in the recomputed rollup, so a roster member
-    # whose only enrollment is inactive reads as `both` under include_inactive.
+    # On the roster means mv_b2b_learner says roster or both. Enrolled means at
+    # least one enrollment counted by courses_enrolled, as in the view, so a
+    # roster member whose only enrollment is inactive reads as `roster` by default
+    # and as `both` under include_inactive.
     records = (
         "SELECT COALESCE(l.user_pk, e.user_pk) AS user_pk,"  # noqa: S608
         " COALESCE(l.user_global_id, e.user_global_id) AS learner_id,"
         " COALESCE(l.email, e.email) AS email, COALESCE(l.full_name, e.full_name) AS full_name,"
         " COALESCE(l.sso_organization_id, e.sso_organization_id) AS organization_id,"
         " COALESCE(l.organization_name, e.organization_name) AS organization_name,"
-        " CASE WHEN l.membership_source IN ('roster', 'both') AND e.user_pk IS NOT NULL"
+        " CASE WHEN l.membership_source IN ('roster', 'both') AND e.courses_enrolled > 0"
         " THEN 'both' WHEN l.membership_source IN ('roster', 'both') THEN 'roster'"
         " ELSE 'enrollment' END AS membership_source,"
         " COALESCE(l.is_organization_manager, FALSE) AS is_organization_manager,"
