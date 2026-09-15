@@ -9,6 +9,7 @@ how consent shapes it.
 import base64
 import datetime
 import json
+import re
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -18,7 +19,10 @@ from ol_analytics_api.core.db.refresh_metadata import _clear_cache
 from ol_analytics_api.main import create_app
 from ol_analytics_api.tenants.b2b_dashboard import learner_queries
 from ol_analytics_api.tenants.b2b_dashboard.config import settings
-from ol_analytics_api.tenants.b2b_dashboard.learner_models import LearnerProgress
+from ol_analytics_api.tenants.b2b_dashboard.learner_models import (
+    LearnerProgress,
+    LearnerProgressResponse,
+)
 
 ORG_ID = "11111111-1111-1111-1111-111111111111"
 CONTRACT_ID = 101
@@ -223,3 +227,15 @@ def test_every_outcome_column_is_consent_gated_in_the_query():
     )
     for name in ("completion_status", "is_passing", "grade", "letter_grade"):
         assert f"CASE WHEN FALSE THEN {name} END AS {name}" in query.page
+
+
+@pytest.mark.parametrize("model", [LearnerProgress, LearnerProgressResponse])
+def test_every_field_has_a_manager_facing_description(model):
+    # The dashboard can show these as help text to a manager, who never sees
+    # field names, so every field needs one and none may lean on another field's
+    # name.
+    field_names = set(LearnerProgress.model_fields) | set(LearnerProgressResponse.model_fields)
+    for name, field in model.model_fields.items():
+        assert field.description, f"{name} has no description"
+        named = set(re.findall(r"\b[a-z]+(?:_[a-z]+)+\b", field.description)) & field_names
+        assert not named, f"{name}'s description names {named}"
