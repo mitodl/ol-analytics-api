@@ -113,10 +113,13 @@ async def test_envelope_withholds_outcomes_and_counts_them(app):
     assert response.status_code == 200
     body = response.json()
     assert body["organization_id"] == ORG_ID
-    assert body["as_of"] == "2026-09-15T06:00:00"
+    # Zone-less UTC from StarRocks goes out with an offset, so a browser doesn't
+    # read it as local time.
+    assert body["as_of"] == "2026-09-15T06:00:00Z"
     assert body["total_count"] == 12
     assert body["outcomes_withheld_count"] == 12
     [row] = body["data"]
+    assert row["enrolled_on"] == "2026-02-03T14:22:11Z"
     assert row["email"] == "rgarcia@contoso.example"
     assert row["outcomes_shared"] is False
     assert row["completion_status"] is None
