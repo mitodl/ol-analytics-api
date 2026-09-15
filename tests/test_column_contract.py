@@ -118,6 +118,19 @@ def test_cohort_policy_columns_are_real_model_fields(case):
 
 
 @_cases
+def test_every_field_is_described_in_the_published_schema(case):
+    # The descriptions are this tenant's API documentation. A field added without
+    # one, or a description that stops reaching the JSON schema, would ship an
+    # undocumented column.
+    properties = case.model.model_json_schema()["properties"]
+    for name, field in case.model.model_fields.items():
+        assert field.description, f"{case.label}: {name} has no description"
+        assert properties[name].get("description") == field.description, (
+            f"{case.label}: {name}'s description is missing from the schema"
+        )
+
+
+@_cases
 def test_projected_columns_are_all_safe_identifiers(case):
     # The whole point of centralizing splicing in build_select: everything it
     # interpolates is a validated identifier, nothing free-form.
