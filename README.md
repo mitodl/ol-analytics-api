@@ -74,9 +74,9 @@ src/ol_analytics_api/
         admin.py
     b2b_learner_records/
       app.py                   # sub-app; contract-shaped 400s for malformed parameters
-      config.py                # schema (b2b_learner_records), page caps
+      config.py                # schema (b2b_learner_records), page caps, consent_fail_open
       auth.py                  # client-credentials org grant + learner-records:read scope
-      queries.py               # SQL templates; consent enforcement (fails closed)
+      queries.py               # SQL templates; consent enforcement (fails closed unless toggled)
       models.py                # Learner, Enrollment — no CohortPolicy, outcome fields consent-gated
       routers/
         organizations.py       # /organizations/{id}/learners, /enrollments

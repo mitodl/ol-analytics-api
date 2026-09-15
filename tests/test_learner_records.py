@@ -19,6 +19,7 @@ from ol_analytics_api.main import create_app
 from ol_analytics_api.tenants import b2b_learner_records
 from ol_analytics_api.tenants.b2b_learner_records import queries
 from ol_analytics_api.tenants.b2b_learner_records.auth import NO_GRANT_DETAIL
+from ol_analytics_api.tenants.b2b_learner_records.config import settings
 from ol_analytics_api.tenants.b2b_learner_records.models import Enrollment, Learner
 
 BASE = "/api/v1/learner-records"
@@ -252,6 +253,23 @@ async def test_outcome_columns_read_null_while_consent_is_absent(app, monkeypatc
     assert "CASE WHEN FALSE THEN grade END AS grade" in page_query
     count_query, _ = pool.count_call()
     assert "SUM(CASE WHEN FALSE THEN 0 ELSE 1 END) AS outcomes_withheld_count" in count_query
+
+
+async def test_consent_fail_open_discloses_outcomes(app, monkeypatch):
+    monkeypatch.setattr(settings, "consent_fail_open", True)
+    pool = _FakePool()
+    await _get(
+        app, f"/organizations/{ORG_ID}/enrollments", _partner_header(ORG_ID), pool, monkeypatch
+    )
+    page_query, _ = pool.page_call()
+    assert "TRUE AS outcomes_shared" in page_query
+    assert "CASE WHEN TRUE THEN grade END AS grade" in page_query
+    count_query, _ = pool.count_call()
+    assert "SUM(CASE WHEN TRUE THEN 0 ELSE 1 END) AS outcomes_withheld_count" in count_query
+
+
+def test_consent_fails_closed_by_default():
+    assert type(settings)().consent_fail_open is False
 
 
 def test_models_null_outcomes_a_row_carries_when_not_shared():
