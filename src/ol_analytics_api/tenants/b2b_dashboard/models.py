@@ -83,7 +83,10 @@ class ContractUtilization(SQLModel):
         description="Date the contract's coverage ends, or null if the contract has no end date."
     )
     seat_limit: int | None = Field(
-        description="Maximum number of seats the contract allows, or null if unlimited."
+        description=(
+            "Maximum number of seats the contract allows. Zero or null means unlimited, and "
+            "seat_utilization_pct is null for both."
+        )
     )
     b2b_contract_membership_type: str | None = Field(
         description="Membership type configured for the contract, or null if not set."
@@ -546,7 +549,10 @@ class MitAdminContractHealth(SQLModel):
         description="Date the contract's coverage ends, or null if the contract has no end date."
     )
     seat_limit: int | None = Field(
-        description="Maximum number of seats the contract allows, or null if unlimited."
+        description=(
+            "Maximum number of seats the contract allows. Zero or null means unlimited, and "
+            "seat_utilization_pct is null for both."
+        )
     )
     b2b_contract_membership_type: str | None = Field(
         description="Membership type configured for the contract, or null if not set."
