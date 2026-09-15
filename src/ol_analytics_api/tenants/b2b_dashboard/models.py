@@ -10,6 +10,12 @@ distinct-entity counts subject to the k-anonymity floor and the derived
 values computed over them. The response layer nulls sub-floor secondary
 counts and their derivatives, so any count/rate/average column that can be
 suppressed is typed Optional even though the view never emits a NULL there.
+
+Field descriptions are written for an organization's managers, because the
+dashboard can show them as help text: plain language, no field names. Which
+counts are withheld, and what each rate is derived from, is defined by the
+model's ``cohort_policy`` and explained in its docstring rather than repeated
+per field.
 """
 
 from __future__ import annotations
@@ -21,6 +27,17 @@ from pydantic import BaseModel
 from sqlmodel import Field, SQLModel
 
 from ol_analytics_api.core.anonymization import CohortPolicy
+
+# The same wording the MIT Learn dashboard uses for a withheld figure.
+_WITHHELD = "Withheld when too few learners are in the group to report without identifying them."
+_ROW_WITHHELD = (
+    "When too few learners are in the group, the whole row is withheld to avoid identifying them."
+)
+_DERIVED_WITHHELD = "Withheld when the learner count it is based on is withheld."
+_ANY_ACTIVITY = (
+    "watched a video, attempted a problem, posted in a discussion, used the chatbot, moved "
+    "through course pages or earned a certificate"
+)
 
 
 class OrgAnalyticsResponse[RowT: SQLModel](BaseModel):
@@ -58,7 +75,15 @@ class AdminAnalyticsResponse[RowT: SQLModel](BaseModel):
 
 
 class ContractUtilization(SQLModel):
-    """mv_b2b_contract_utilization — grain: org x contract."""
+    """mv_b2b_contract_utilization — grain: org x contract.
+
+    ``seats_consumed`` is the primary cohort. ``active_learners`` and
+    ``learners_certified`` are secondary counts, nulled when nonzero but below
+    the floor. ``completion_rate_pct`` is ``learners_certified`` over
+    ``seats_consumed`` and is nulled with it. ``seat_utilization_pct`` is
+    ``seats_consumed`` over ``seat_limit``, null when the limit is zero or null
+    (the view divides by ``nullif(seat_limit, 0)``).
+    """
 
     cohort_policy: ClassVar[CohortPolicy] = CohortPolicy(
         primary="seats_consumed",
@@ -66,63 +91,56 @@ class ContractUtilization(SQLModel):
         derived={"completion_rate_pct": ("learners_certified",)},
     )
 
-    organization_key: str = Field(
-        description="Internal surrogate key identifying the organization."
-    )
-    organization_name: str = Field(description="Display name of the organization.")
-    contract_pk: str = Field(description="Surrogate primary key of the B2B contract.")
-    contract_id: int = Field(
-        description="Numeric identifier of the B2B contract in the source system."
-    )
-    b2b_contract_name: str = Field(description="Name of the B2B contract.")
+    organization_key: str = Field(description="Internal identifier for the organization.")
+    organization_name: str = Field(description="The organization's name.")
+    contract_pk: str = Field(description="Internal identifier for the contract.")
+    contract_id: int = Field(description="The contract's ID in MITx Online.")
+    b2b_contract_name: str = Field(description="The contract's name.")
     b2b_contract_is_active: bool = Field(description="Whether the contract is currently active.")
     b2b_contract_start_date: datetime.date | None = Field(
-        description="Date the contract's coverage begins, or null if unset."
+        description="When the contract starts. Empty if no start date is set."
     )
     b2b_contract_end_date: datetime.date | None = Field(
-        description="Date the contract's coverage ends, or null if the contract has no end date."
+        description="When the contract ends. Empty if it has no end date."
     )
     seat_limit: int | None = Field(
-        description=(
-            "Maximum number of seats the contract allows. Zero or null means unlimited, and "
-            "seat_utilization_pct is null for both."
-        )
+        description="How many seats the contract includes. Empty or zero means unlimited."
     )
     b2b_contract_membership_type: str | None = Field(
-        description="Membership type configured for the contract, or null if not set."
+        description="The contract's membership type. Empty if not set."
     )
     seats_consumed: int = Field(
-        description=(
-            "Distinct learners enrolled in any course run covered by the contract. The row's "
-            "primary cohort: a row whose count is below the anonymization floor is withheld "
-            "entirely."
-        )
+        description=f"Learners enrolled in at least one course under the contract. {_ROW_WITHHELD}"
     )
     active_learners: int | None = Field(
-        description=(
-            "Distinct seats_consumed learners with a currently active enrollment. Nulled when "
-            "nonzero but below the anonymization floor."
-        )
+        description=f"Learners on the contract whose enrollment is still active. {_WITHHELD}"
     )
     learners_certified: int | None = Field(
         description=(
-            "Distinct seats_consumed learners who earned a non-revoked certificate. Nulled when "
-            "nonzero but below the anonymization floor."
+            f"Learners on the contract who earned a certificate that hasn't been revoked. "
+            f"{_WITHHELD}"
         )
     )
     seat_utilization_pct: float | None = Field(
-        description="seats_consumed as a percentage of seat_limit."
+        description=(
+            "Percentage of the contract's seats in use. Empty when the contract has unlimited "
+            "seats."
+        )
     )
     completion_rate_pct: float | None = Field(
         description=(
-            "learners_certified as a percentage of seats_consumed. Nulled whenever "
-            "learners_certified is suppressed."
+            f"Percentage of enrolled learners who earned a certificate. {_DERIVED_WITHHELD}"
         )
     )
 
 
 class EnrollmentCompletionFunnel(SQLModel):
-    """mv_b2b_enrollment_completion_funnel — grain: org x contract x course_run."""
+    """mv_b2b_enrollment_completion_funnel — grain: org x contract x course_run.
+
+    ``enrolled_learners`` is the primary cohort. ``active_rate_pct`` and
+    ``completion_rate_pct`` are ``active_learners`` and ``certified_learners``
+    over ``enrolled_learners``, each nulled with its numerator.
+    """
 
     cohort_policy: ClassVar[CohortPolicy] = CohortPolicy(
         primary="enrolled_learners",
@@ -133,54 +151,38 @@ class EnrollmentCompletionFunnel(SQLModel):
         },
     )
 
-    organization_key: str = Field(
-        description="Internal surrogate key identifying the organization."
-    )
-    organization_name: str = Field(description="Display name of the organization.")
-    contract_pk: str = Field(description="Surrogate primary key of the B2B contract.")
-    contract_id: int = Field(
-        description="Numeric identifier of the B2B contract in the source system."
-    )
-    b2b_contract_name: str = Field(description="Name of the B2B contract.")
-    courserun_pk: str = Field(description="Surrogate primary key of the course run.")
+    organization_key: str = Field(description="Internal identifier for the organization.")
+    organization_name: str = Field(description="The organization's name.")
+    contract_pk: str = Field(description="Internal identifier for the contract.")
+    contract_id: int = Field(description="The contract's ID in MITx Online.")
+    b2b_contract_name: str = Field(description="The contract's name.")
+    courserun_pk: str = Field(description="Internal identifier for the course run.")
     courserun_readable_id: str = Field(
-        description="Human-readable identifier of the course run (course + run tag)."
+        description="The course run's ID, e.g. course-v1:MITxT+14.310x+2T2026."
     )
-    courserun_title: str = Field(description="Title of the course run.")
+    courserun_title: str = Field(description="The course's title.")
     enrolled_learners: int = Field(
-        description=(
-            "Distinct learners enrolled in the course run. The row's primary cohort: a row "
-            "whose count is below the anonymization floor is withheld entirely."
-        )
+        description=f"Learners enrolled in this course run. {_ROW_WITHHELD}"
     )
     active_learners: int | None = Field(
-        description=(
-            "Distinct enrolled_learners with a currently active enrollment. Nulled when nonzero "
-            "but below the anonymization floor."
-        )
+        description=f"Enrolled learners whose enrollment is still active. {_WITHHELD}"
     )
     passing_learners: int | None = Field(
-        description=(
-            "Distinct enrolled_learners with a passing grade. Nulled when nonzero but below the "
-            "anonymization floor."
-        )
+        description=f"Enrolled learners with a passing grade. {_WITHHELD}"
     )
     certified_learners: int | None = Field(
         description=(
-            "Distinct enrolled_learners who earned a non-revoked certificate. Nulled when "
-            "nonzero but below the anonymization floor."
+            f"Enrolled learners who earned a certificate that hasn't been revoked. {_WITHHELD}"
         )
     )
     active_rate_pct: float | None = Field(
         description=(
-            "active_learners as a percentage of enrolled_learners. Nulled whenever "
-            "active_learners is suppressed."
+            f"Percentage of enrolled learners whose enrollment is still active. {_DERIVED_WITHHELD}"
         )
     )
     completion_rate_pct: float | None = Field(
         description=(
-            "certified_learners as a percentage of enrolled_learners. Nulled whenever "
-            "certified_learners is suppressed."
+            f"Percentage of enrolled learners who earned a certificate. {_DERIVED_WITHHELD}"
         )
     )
 
@@ -243,82 +245,51 @@ class MonthlyEngagementTrend(SQLModel):
         },
     )
 
-    organization_key: str = Field(
-        description="Internal surrogate key identifying the organization."
-    )
-    organization_name: str = Field(description="Display name of the organization.")
-    activity_year_and_month: str = Field(
-        description="Calendar year and month the activity occurred in (e.g. '2026-08')."
-    )
+    organization_key: str = Field(description="Internal identifier for the organization.")
+    organization_name: str = Field(description="The organization's name.")
+    activity_year_and_month: str = Field(description="The month, e.g. 2026-08.")
     monthly_active_learners: int = Field(
         description=(
-            "Distinct learners with any activity in the month — navigation, discussion, video, "
-            "problem, chatbot, or certificate activity; enrolling alone does not count. The "
-            "row's primary cohort: a month whose count is below the anonymization floor is "
-            "withheld entirely."
+            f"Learners who did anything in a course this month: {_ANY_ACTIVITY}. Enrolling "
+            "alone doesn't count. If too few learners were active, the whole month is withheld "
+            "to avoid identifying them."
         )
     )
     new_enrollments: int | None = Field(
         description=(
-            "Total enrollment events in the month, counted per learner per course run (one "
-            "learner enrolling in six runs counts as six). Derived from enrolling_learners and "
-            "nulled whenever it is suppressed."
+            "Course enrollments made this month. A learner who enrolled in six courses counts "
+            f"six times. {_DERIVED_WITHHELD}"
         )
     )
     enrolling_learners: int | None = Field(
-        description=(
-            "Distinct learners who enrolled in at least one course run during the month. Not a "
-            "subset of monthly_active_learners — enrolling alone does not set the primary "
-            "cohort. Nulled when nonzero but below the anonymization floor."
-        )
+        description=f"Learners who enrolled in at least one course this month. {_WITHHELD}"
     )
     certificates_earned: int | None = Field(
         description=(
-            "Total certificates earned in the month (an event count, not distinct learners). "
-            "Derived from certified_learners and nulled whenever it is suppressed."
+            "Certificates earned this month. A learner who earned two counts twice. "
+            f"{_DERIVED_WITHHELD}"
         )
     )
     certified_learners: int | None = Field(
-        description=(
-            "Distinct learners who earned a certificate during the month. Nulled when nonzero "
-            "but below the anonymization floor."
-        )
+        description=f"Learners who earned at least one certificate this month. {_WITHHELD}"
     )
     total_videos_watched: int | None = Field(
-        description=(
-            "Total video-watch events in the month. Derived from video_watchers and nulled "
-            "whenever it is suppressed."
-        )
+        description=f"Videos watched this month, counting every view. {_DERIVED_WITHHELD}"
     )
     video_watchers: int | None = Field(
-        description=(
-            "Distinct learners who watched a video during the month. Nulled when nonzero but "
-            "below the anonymization floor."
-        )
+        description=f"Learners who watched at least one video this month. {_WITHHELD}"
     )
     total_problems_attempted: int | None = Field(
-        description=(
-            "Total problem-attempt events in the month. Derived from problem_attempters and "
-            "nulled whenever it is suppressed."
-        )
+        description=f"Problem attempts this month, counting every attempt. {_DERIVED_WITHHELD}"
     )
     problem_attempters: int | None = Field(
-        description=(
-            "Distinct learners who attempted a problem during the month. Nulled when nonzero "
-            "but below the anonymization floor."
-        )
+        description=f"Learners who attempted at least one problem this month. {_WITHHELD}"
     )
     total_chatbot_interactions: int | None = Field(
-        description=(
-            "Total chatbot-interaction events in the month. Derived from chatbot_users and "
-            "nulled whenever it is suppressed."
-        )
+        description=f"Chatbot interactions this month. {_DERIVED_WITHHELD}"
     )
     chatbot_users: int | None = Field(
-        description=(
-            "Distinct learners who used the chatbot during the month. Nulled when nonzero but "
-            "below the anonymization floor."
-        )
+        description=f"Learners who used the chatbot this month. {_WITHHELD}"
     )
 
 
@@ -326,6 +297,10 @@ class ProgramFunnel(SQLModel):
     """mv_b2b_program_funnel — grain: org x contract x program.
 
     ``total_courses`` counts courses, not learners, so it is not a cohort.
+
+    ``program_course_completers`` approximates program completion: it counts a
+    non-revoked certificate in any contract-covered course of the program, not
+    a program-level certificate, pending a program-certificate fact table.
     """
 
     cohort_policy: ClassVar[CohortPolicy] = CohortPolicy(
@@ -333,44 +308,30 @@ class ProgramFunnel(SQLModel):
         secondary=("enrolled_via_program", "program_course_completers"),
     )
 
-    organization_key: str = Field(
-        description="Internal surrogate key identifying the organization."
-    )
-    organization_name: str = Field(description="Display name of the organization.")
-    contract_pk: str = Field(description="Surrogate primary key of the B2B contract.")
-    contract_id: int = Field(
-        description="Numeric identifier of the B2B contract in the source system."
-    )
-    b2b_contract_name: str = Field(description="Name of the B2B contract.")
-    program_pk: str = Field(description="Surrogate primary key of the program.")
-    program_title: str = Field(description="Title of the program.")
-    total_courses: int = Field(
-        description=(
-            "Number of distinct courses in the program that the contract covers. Not a learner "
-            "cohort, so exempt from the anonymization floor."
-        )
-    )
+    organization_key: str = Field(description="Internal identifier for the organization.")
+    organization_name: str = Field(description="The organization's name.")
+    contract_pk: str = Field(description="Internal identifier for the contract.")
+    contract_id: int = Field(description="The contract's ID in MITx Online.")
+    b2b_contract_name: str = Field(description="The contract's name.")
+    program_pk: str = Field(description="Internal identifier for the program.")
+    program_title: str = Field(description="The program's title.")
+    total_courses: int = Field(description="Courses in the program that the contract covers.")
     enrolled_in_contract_courses: int = Field(
         description=(
-            "Distinct learners enrolled in any contract-covered course belonging to the "
-            "program. The row's primary cohort: a row whose count is below the anonymization "
-            "floor is withheld entirely."
+            "Learners enrolled in at least one of the program's courses under the contract. "
+            f"{_ROW_WITHHELD}"
         )
     )
     enrolled_via_program: int | None = Field(
         description=(
-            "Distinct enrolled_in_contract_courses learners who enrolled through the program "
-            "pathway itself, rather than directly in one of its courses. Nulled when nonzero "
-            "but below the anonymization floor."
+            "Of those learners, how many enrolled in the program itself rather than directly in "
+            f"one of its courses. {_WITHHELD}"
         )
     )
     program_course_completers: int | None = Field(
         description=(
-            "Distinct learners who earned a non-revoked certificate in any contract-covered "
-            "course of the program. An approximation of program completion — it counts a "
-            "certificate in any program course, not a true program-level certificate — pending "
-            "a dedicated program-certificate fact table. Nulled when nonzero but below the "
-            "anonymization floor."
+            "Learners who earned a certificate in at least one of the program's courses under "
+            f"the contract. This isn't the same as completing the whole program. {_WITHHELD}"
         )
     )
 
@@ -433,98 +394,72 @@ class ContentEngagementDepth(SQLModel):
         },
     )
 
-    organization_key: str = Field(
-        description="Internal surrogate key identifying the organization."
-    )
-    organization_name: str = Field(description="Display name of the organization.")
+    organization_key: str = Field(description="Internal identifier for the organization.")
+    organization_name: str = Field(description="The organization's name.")
     courserun_readable_id: str = Field(
-        description="Human-readable identifier of the course run (course + run tag)."
+        description="The course run's ID, e.g. course-v1:MITxT+14.310x+2T2026."
     )
-    courserun_title: str = Field(description="Title of the course run.")
+    courserun_title: str = Field(description="The course's title.")
     total_enrolled_learners: int = Field(
-        description=(
-            "Distinct learners ever enrolled in the course run. The row's primary cohort: a "
-            "row whose count is below the anonymization floor is withheld entirely."
-        )
+        description=f"Learners who have ever enrolled in this course run. {_ROW_WITHHELD}"
     )
     engaged_learners: int | None = Field(
         description=(
-            "Distinct total_enrolled_learners with any activity — navigation, discussion, "
-            "video, problem, chatbot, or certificate. Nulled when nonzero but below the "
-            "anonymization floor."
+            f"Enrolled learners who did anything in the course: {_ANY_ACTIVITY}. {_WITHHELD}"
         )
     )
     engagement_rate_pct: float | None = Field(
         description=(
-            "engaged_learners as a percentage of total_enrolled_learners. Nulled whenever "
-            "engaged_learners is suppressed."
+            f"Percentage of enrolled learners who did anything in the course. {_DERIVED_WITHHELD}"
         )
     )
     total_videos_watched: int | None = Field(
-        description=(
-            "Total video-watch events for the course run. Derived from video_watchers and "
-            "nulled whenever it is suppressed."
-        )
+        description=(f"Videos watched in this course run, counting every view. {_DERIVED_WITHHELD}")
     )
     video_watchers: int | None = Field(
-        description=(
-            "Distinct learners who watched a video in the course run. Nulled when nonzero but "
-            "below the anonymization floor."
-        )
+        description=f"Learners who watched at least one video in this course run. {_WITHHELD}"
     )
     avg_videos_per_engaged_learner: float | None = Field(
         description=(
-            "total_videos_watched divided by engaged_learners. Nulled whenever either "
-            "video_watchers or engaged_learners is suppressed."
+            "Average videos watched per learner who did anything in the course. "
+            f"{_DERIVED_WITHHELD}"
         )
     )
     total_problems_attempted: int | None = Field(
         description=(
-            "Total problem-attempt events for the course run. Derived from problem_attempters "
-            "and nulled whenever it is suppressed."
+            f"Problem attempts in this course run, counting every attempt. {_DERIVED_WITHHELD}"
         )
     )
     problem_attempters: int | None = Field(
-        description=(
-            "Distinct learners who attempted a problem in the course run. Nulled when nonzero "
-            "but below the anonymization floor."
-        )
+        description=(f"Learners who attempted at least one problem in this course run. {_WITHHELD}")
     )
     avg_problems_per_engaged_learner: float | None = Field(
         description=(
-            "total_problems_attempted divided by engaged_learners. Nulled whenever either "
-            "problem_attempters or engaged_learners is suppressed."
+            "Average problem attempts per learner who did anything in the course. "
+            f"{_DERIVED_WITHHELD}"
         )
     )
     total_chatbot_interactions: int | None = Field(
-        description=(
-            "Total chatbot-interaction events for the course run. Derived from chatbot_users "
-            "and nulled whenever it is suppressed."
-        )
+        description=f"Chatbot interactions in this course run. {_DERIVED_WITHHELD}"
     )
     chatbot_users: int | None = Field(
-        description=(
-            "Distinct learners who used the chatbot in the course run. Nulled when nonzero but "
-            "below the anonymization floor."
-        )
+        description=f"Learners who used the chatbot in this course run. {_WITHHELD}"
     )
     chatbot_adoption_pct: float | None = Field(
-        description=(
-            "chatbot_users as a percentage of total_enrolled_learners. Nulled whenever "
-            "chatbot_users is suppressed."
-        )
+        description=f"Percentage of enrolled learners who used the chatbot. {_DERIVED_WITHHELD}"
     )
     certificates_earned: int | None = Field(
-        description=(
-            "Total certificates earned for the course run (an event count, not distinct "
-            "learners; this view emits no certified-learner cohort to attribute it to). Nulled "
-            "when nonzero but below the anonymization floor."
-        )
+        description=f"Certificates earned in this course run. {_WITHHELD}"
     )
 
 
 class MitAdminContractHealth(SQLModel):
-    """mv_b2b_mit_admin_contract_health — grain: org x contract (MIT admin only)."""
+    """mv_b2b_mit_admin_contract_health — grain: org x contract (MIT admin only).
+
+    Floored like ``ContractUtilization``. ``health_status`` is computed in the
+    view from ``b2b_contract_is_active``, ``seat_utilization_pct`` and
+    ``b2b_contract_end_date``.
+    """
 
     cohort_policy: ClassVar[CohortPolicy] = CohortPolicy(
         primary="seats_consumed",
@@ -532,65 +467,53 @@ class MitAdminContractHealth(SQLModel):
         derived={"completion_rate_pct": ("certified_learners",)},
     )
 
-    organization_key: str = Field(
-        description="Internal surrogate key identifying the organization."
-    )
-    organization_name: str = Field(description="Display name of the organization.")
-    contract_pk: str = Field(description="Surrogate primary key of the B2B contract.")
-    contract_id: int = Field(
-        description="Numeric identifier of the B2B contract in the source system."
-    )
-    b2b_contract_name: str = Field(description="Name of the B2B contract.")
+    organization_key: str = Field(description="Internal identifier for the organization.")
+    organization_name: str = Field(description="The organization's name.")
+    contract_pk: str = Field(description="Internal identifier for the contract.")
+    contract_id: int = Field(description="The contract's ID in MITx Online.")
+    b2b_contract_name: str = Field(description="The contract's name.")
     b2b_contract_is_active: bool = Field(description="Whether the contract is currently active.")
     b2b_contract_start_date: datetime.date | None = Field(
-        description="Date the contract's coverage begins, or null if unset."
+        description="When the contract starts. Empty if no start date is set."
     )
     b2b_contract_end_date: datetime.date | None = Field(
-        description="Date the contract's coverage ends, or null if the contract has no end date."
+        description="When the contract ends. Empty if it has no end date."
     )
     seat_limit: int | None = Field(
-        description=(
-            "Maximum number of seats the contract allows. Zero or null means unlimited, and "
-            "seat_utilization_pct is null for both."
-        )
+        description="How many seats the contract includes. Empty or zero means unlimited."
     )
     b2b_contract_membership_type: str | None = Field(
-        description="Membership type configured for the contract, or null if not set."
+        description="The contract's membership type. Empty if not set."
     )
     seats_consumed: int = Field(
-        description=(
-            "Distinct learners enrolled in any course run covered by the contract. The row's "
-            "primary cohort: a row whose count is below the anonymization floor is withheld "
-            "entirely."
-        )
+        description=f"Learners enrolled in at least one course under the contract. {_ROW_WITHHELD}"
     )
     active_learners: int | None = Field(
-        description=(
-            "Distinct seats_consumed learners with a currently active enrollment. Nulled when "
-            "nonzero but below the anonymization floor."
-        )
+        description=f"Learners on the contract whose enrollment is still active. {_WITHHELD}"
     )
     certified_learners: int | None = Field(
         description=(
-            "Distinct seats_consumed learners who earned a non-revoked certificate. Nulled "
-            "when nonzero but below the anonymization floor."
+            f"Learners on the contract who earned a certificate that hasn't been revoked. "
+            f"{_WITHHELD}"
         )
     )
     seat_utilization_pct: float | None = Field(
-        description="seats_consumed as a percentage of seat_limit."
+        description=(
+            "Percentage of the contract's seats in use. Empty when the contract has unlimited "
+            "seats."
+        )
     )
     completion_rate_pct: float | None = Field(
         description=(
-            "certified_learners as a percentage of seats_consumed. Nulled whenever "
-            "certified_learners is suppressed."
+            f"Percentage of enrolled learners who earned a certificate. {_DERIVED_WITHHELD}"
         )
     )
     health_status: str = Field(
         description=(
-            "Coarse contract-health classification: 'inactive' if the contract is not active; "
-            "else 'high_utilization' when seat_utilization_pct is at least 90; 'at_risk' when "
-            "seat_utilization_pct is below 25 and the contract ends within 90 days; 'healthy' "
-            "when seat_utilization_pct is at least 50; otherwise 'early_stage'."
+            "Overall contract health: inactive (the contract isn't active), high_utilization "
+            "(90% or more of seats in use), at_risk (under 25% of seats in use and the contract "
+            "ends within 90 days), healthy (50% or more of seats in use), or early_stage "
+            "(anything else)."
         )
     )
 
@@ -612,11 +535,9 @@ class ContractMonthlyEngagementTrend(MonthlyEngagementTrend):
     figure. Activity totals, being sums of events, do add up.
     """
 
-    contract_pk: str = Field(description="Surrogate primary key of the B2B contract.")
-    contract_id: int = Field(
-        description="Numeric identifier of the B2B contract in the source system."
-    )
-    b2b_contract_name: str = Field(description="Name of the B2B contract.")
+    contract_pk: str = Field(description="Internal identifier for the contract.")
+    contract_id: int = Field(description="The contract's ID in MITx Online.")
+    b2b_contract_name: str = Field(description="The contract's name.")
 
 
 class ContractContentEngagementDepth(ContentEngagementDepth):
@@ -634,8 +555,6 @@ class ContractContentEngagementDepth(ContentEngagementDepth):
     defend against differencing across the two grains.
     """
 
-    contract_pk: str = Field(description="Surrogate primary key of the B2B contract.")
-    contract_id: int = Field(
-        description="Numeric identifier of the B2B contract in the source system."
-    )
-    b2b_contract_name: str = Field(description="Name of the B2B contract.")
+    contract_pk: str = Field(description="Internal identifier for the contract.")
+    contract_id: int = Field(description="The contract's ID in MITx Online.")
+    b2b_contract_name: str = Field(description="The contract's name.")
