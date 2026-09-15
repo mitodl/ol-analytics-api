@@ -19,7 +19,7 @@ from ol_analytics_api.core.db.client import PoolAcquireTimeoutError
 from ol_analytics_api.core.db.refresh_metadata import _clear_cache
 from ol_analytics_api.main import create_app
 
-_AS_OF = datetime.datetime(2026, 7, 2, 4, 0, 0)  # noqa: DTZ001
+_AS_OF = datetime.datetime(2026, 7, 2, 4, 0, 0)
 
 
 def _userinfo_header(payload: dict) -> str:
@@ -686,7 +686,7 @@ async def test_contract_endpoint_filters_on_both_org_and_contract(app):
 async def test_contract_endpoint_reads_the_contract_grained_mv(app):
     captured = {}
 
-    async def fetch_all(query, params):  # noqa: ARG001
+    async def fetch_all(query, params):
         if "information_schema" in query:
             return [{"as_of": _AS_OF}]
         if query.startswith("SELECT 1 "):
@@ -812,7 +812,7 @@ async def test_contract_endpoint_rejects_a_non_numeric_contract_id(app):
     request error rather than a lookup that could never match."""
     reached_db = False
 
-    async def fetch_all(query, params):  # noqa: ARG001
+    async def fetch_all(query, params):
         nonlocal reached_db
         reached_db = True
         return []

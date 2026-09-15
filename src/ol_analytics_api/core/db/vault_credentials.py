@@ -45,6 +45,6 @@ def fetch_starrocks_credentials() -> tuple[str, str, int]:
             f"Vault path not found: "
             f"{settings.vault_starrocks_mount}/creds/{settings.vault_starrocks_credential_role}"
         )
-        raise RuntimeError(msg)  # noqa: TRY004 -- isinstance narrows a "not found" response
+        raise RuntimeError(msg)
     data = response["data"]
     return data["username"], data["password"], response["lease_duration"]

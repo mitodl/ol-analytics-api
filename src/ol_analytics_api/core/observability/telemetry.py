@@ -109,7 +109,7 @@ def _auto_instrument() -> None:
     OL_ANALYTICS_API_OTEL_SKIP_INSTRUMENTORS (comma-separated) excludes
     specific instrumentors; unset means instrument everything found.
     """
-    global _instrumented  # noqa: PLW0603
+    global _instrumented
     if _instrumented:
         return
     _instrumented = True
@@ -127,7 +127,7 @@ def _auto_instrument() -> None:
         try:
             ep.load()().instrument()
             log.debug("Instrumented: %s", ep.name)
-        except Exception:  # noqa: BLE001
+        except Exception:
             log.warning("Failed to auto-instrument %s", ep.name, exc_info=True)
 
 
@@ -143,7 +143,7 @@ def configure_opentelemetry(
 
     Idempotent — safe to call multiple times.
     """
-    global _configured, _tracing_enabled  # noqa: PLW0603
+    global _configured, _tracing_enabled
     if _configured:
         existing = trace.get_tracer_provider()
         return existing if isinstance(existing, TracerProvider) else None
@@ -180,7 +180,7 @@ def configure_opentelemetry(
                 "OpenTelemetry: OTLP exporter configured from %s",
                 "environment" if env_endpoint else "OPENTELEMETRY_ENDPOINT",
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             log.warning("OpenTelemetry: failed to configure OTLP exporter", exc_info=True)
 
     _tracing_enabled = True
@@ -213,7 +213,7 @@ def instrument_fastapi_app(app: FastAPI) -> None:
 
 def reset_configuration() -> None:
     """Reset configuration state — test-only."""
-    global _configured, _instrumented, _tracing_enabled  # noqa: PLW0603
+    global _configured, _instrumented, _tracing_enabled
     _configured = False
     _instrumented = False
     _tracing_enabled = False

@@ -33,15 +33,15 @@ async def test_tenant_lifespan_actually_runs(monkeypatch):
         patch("ol_analytics_api.core.db.client.starrocks_pool.start", new=AsyncMock()),
         patch("ol_analytics_api.core.db.client.starrocks_pool.stop", new=AsyncMock()),
     ):
-        assert mitxonline_client._client is None  # noqa: SLF001
+        assert mitxonline_client._client is None
         async with LifespanManager(app):
             # b2b_dashboard.lifespan()'s startup half calls
             # mitxonline_client.start() — if main.py's root lifespan didn't
             # enter it (the bug this test guards against), _client would
             # still be None here.
-            assert mitxonline_client._client is not None  # noqa: SLF001
+            assert mitxonline_client._client is not None
         # The shutdown half closes it back down.
-        assert mitxonline_client._client is None  # noqa: SLF001
+        assert mitxonline_client._client is None
 
 
 async def test_partial_tenant_startup_failure_still_stops_pool():

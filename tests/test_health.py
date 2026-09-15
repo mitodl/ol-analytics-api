@@ -170,7 +170,7 @@ async def test_register_readiness_check_with_no_check_still_registers_tenant():
         ):
             result = await health.tenant_readiness(tenant)
     finally:
-        del health._tenant_readiness_checks[tenant]  # noqa: SLF001
+        del health._tenant_readiness_checks[tenant]
     assert result == {"status": "ready"}
 
 

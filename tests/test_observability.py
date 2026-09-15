@@ -26,7 +26,7 @@ def test_configure_structlog_is_idempotent():
     obs_logging.reset_configuration()
     obs_logging.configure_structlog(debug=True)
     obs_logging.configure_structlog(debug=True)  # should not raise or reconfigure
-    assert obs_logging._configured is True  # noqa: SLF001
+    assert obs_logging._configured is True
 
 
 def test_configure_opentelemetry_noop_without_endpoint_or_debug(monkeypatch):
@@ -163,8 +163,8 @@ def test_auto_instrument_is_idempotent():
         "ol_analytics_api.core.observability.telemetry.importlib.metadata.entry_points",
         return_value=[],
     ) as entry_points:
-        telemetry._auto_instrument()  # noqa: SLF001
-        telemetry._auto_instrument()  # noqa: SLF001
+        telemetry._auto_instrument()
+        telemetry._auto_instrument()
     entry_points.assert_called_once()
     telemetry.reset_configuration()
 
@@ -188,7 +188,7 @@ def test_auto_instrument_skips_configured_instrumentors_and_survives_a_failure(m
         "ol_analytics_api.core.observability.telemetry.importlib.metadata.entry_points",
         return_value=[skip_ep, ok_ep, failing_ep],
     ):
-        telemetry._auto_instrument()  # noqa: SLF001
+        telemetry._auto_instrument()
 
     skip_ep.load.assert_not_called()
     ok_ep.load.assert_called_once()
@@ -209,7 +209,7 @@ def test_auto_instrument_never_sweeps_fastapi():
         "ol_analytics_api.core.observability.telemetry.importlib.metadata.entry_points",
         return_value=[fastapi_ep, httpx_ep],
     ):
-        telemetry._auto_instrument()  # noqa: SLF001
+        telemetry._auto_instrument()
 
     fastapi_ep.load.assert_not_called()
     httpx_ep.load.assert_called_once()

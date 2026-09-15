@@ -112,6 +112,7 @@ select = ["ALL"]
 ignore = [
     "D",       # docstrings not required project-wide
     "COM812",  # conflicts with ruff format
+    "CPY001",  # no per-file copyright headers; stabilized in ruff 0.16
     "TC001",   # FastAPI needs response/dependency types available at runtime
     "TC002",
     "TC003",

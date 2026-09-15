@@ -47,10 +47,10 @@ _CASES = (
         _Case(
             spec.mv,
             build_select(
-                organizations._SCHEMA,  # noqa: SLF001
+                organizations._SCHEMA,
                 spec.mv,
                 spec.model,
-                filter_columns=(organizations._ORG_FILTER_COLUMN,),  # noqa: SLF001
+                filter_columns=(organizations._ORG_FILTER_COLUMN,),
                 order_by=spec.order_by,
             ),
             spec.model,
@@ -62,10 +62,10 @@ _CASES = (
         _Case(
             f"{spec.mv} (contract-scoped)",
             build_select(
-                contracts._SCHEMA,  # noqa: SLF001
+                contracts._SCHEMA,
                 spec.mv,
                 spec.model,
-                filter_columns=contracts._FILTER_COLUMNS,  # noqa: SLF001
+                filter_columns=contracts._FILTER_COLUMNS,
                 order_by=spec.order_by,
             ),
             spec.model,
@@ -75,15 +75,15 @@ _CASES = (
     ]
     + [
         _Case(
-            admin._MV,  # noqa: SLF001
+            admin._MV,
             build_select(
                 "b2b_analytics",
-                admin._MV,  # noqa: SLF001
+                admin._MV,
                 MitAdminContractHealth,
-                order_by=admin._ORDER_BY,  # noqa: SLF001
+                order_by=admin._ORDER_BY,
             ),
             MitAdminContractHealth,
-            admin._ORDER_BY,  # noqa: SLF001
+            admin._ORDER_BY,
         ),
     ]
 )

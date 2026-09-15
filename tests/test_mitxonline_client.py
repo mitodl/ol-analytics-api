@@ -34,9 +34,9 @@ def _token_response(httpx_mock, *, token: str = "tok-1", expires_in: int | None 
 def _clear_manager_cache():
     # The org-manager cache is module-level, so it would otherwise leak
     # answers between tests.
-    client_module._cache.clear()  # noqa: SLF001
+    client_module._cache.clear()
     yield
-    client_module._cache.clear()  # noqa: SLF001
+    client_module._cache.clear()
 
 
 @pytest.fixture
@@ -120,13 +120,13 @@ async def test_concurrent_cold_misses_mint_one_token(client):
         nonlocal calls
         calls += 1
         await release.wait()
-        client._token = "tok-concurrent"  # noqa: SLF001
-        client._token_expires_at = time.monotonic() + 3600  # noqa: SLF001
+        client._token = "tok-concurrent"
+        client._token_expires_at = time.monotonic() + 3600
         return "tok-concurrent"
 
     with patch.object(client, "_fetch_token", new=slow_fetch_token):
-        first = asyncio.create_task(client._access_token())  # noqa: SLF001
-        second = asyncio.create_task(client._access_token())  # noqa: SLF001
+        first = asyncio.create_task(client._access_token())
+        second = asyncio.create_task(client._access_token())
         # Let both reach the lock -- one holding it, one queued behind it.
         await asyncio.sleep(0)
         await asyncio.sleep(0)
@@ -169,7 +169,7 @@ async def test_unparseable_expires_in_is_treated_as_absent(client, httpx_mock, e
 
     assert await client.is_org_manager("user-junk", ORG_A) is True
     # Not cached: an unknown lifetime must not become an indefinite one.
-    assert client._token_expires_at == 0.0  # noqa: SLF001
+    assert client._token_expires_at == 0.0
 
 
 async def test_401_triggers_one_token_refresh_and_retry(client, httpx_mock):
@@ -211,11 +211,11 @@ async def test_is_org_manager_reuses_one_httpx_client_across_calls(client, httpx
     httpx_mock.add_response(url=_check_url(ORG_A, "user-reuse-1"), json={"is_manager": True})
     httpx_mock.add_response(url=_check_url(ORG_B, "user-reuse-2"), json={"is_manager": True})
 
-    client_before = client._client  # noqa: SLF001
+    client_before = client._client
     assert await client.is_org_manager("user-reuse-1", ORG_A) is True
-    assert client._client is client_before  # noqa: SLF001
+    assert client._client is client_before
     assert await client.is_org_manager("user-reuse-2", ORG_B) is True
-    assert client._client is client_before  # noqa: SLF001
+    assert client._client is client_before
 
 
 @pytest.mark.parametrize(
@@ -265,8 +265,8 @@ async def test_aclose_discards_the_cached_token(client, httpx_mock):
 
     await client.aclose()
 
-    assert client._token is None  # noqa: SLF001
-    assert client._token_expires_at == 0.0  # noqa: SLF001
+    assert client._token is None
+    assert client._token_expires_at == 0.0
 
 
 async def test_require_org_manager_returns_503_not_raw_500_when_mitxonline_unreachable():
