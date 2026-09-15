@@ -86,6 +86,32 @@ class LearnerRecordsResponse[RowT: BaseModel](BaseModel):
     data: list[RowT] = Field(description="The requested page of records.")
 
 
+class CourseRun(BaseModel):
+    """One course run covered by one of the organization's contracts. No personal data,
+    so no consent gate."""
+
+    organization_id: uuid.UUID = Field(description="The organization's Keycloak organization UUID.")
+    organization_name: str = Field(description="Display name of the organization.")
+    contract_id: int = Field(description="Numeric identifier of the B2B contract.")
+    contract_name: str = Field(description="Name of the B2B contract.")
+    contract_is_active: bool = Field(description="Whether the contract is currently active.")
+    contract_start_date: datetime.date | None = Field(
+        description="Null where the contract records no start date."
+    )
+    contract_end_date: datetime.date | None = Field(
+        description="Null where the contract records no end date."
+    )
+    seat_limit: int | None = Field(description="Null means uncapped, not zero.")
+    courserun_id: str = Field(
+        description="Readable course-run identifier, e.g. `course-v1:MITxT+14.310x+2T2026`."
+    )
+    courserun_title: str = Field(description="Mutable display title — key on courserun_id.")
+    courserun_start_on: UtcDatetime | None = Field(
+        description="Start date/time of the course run, or null if unscheduled."
+    )
+    courserun_end_on: UtcDatetime | None = Field(description="Null for self-paced runs.")
+
+
 class Learner(BaseModel):
     """One learner's association with the organization."""
 

@@ -19,6 +19,7 @@ from ol_analytics_api.tenants.b2b_learner_records import queries
 from ol_analytics_api.tenants.b2b_learner_records.auth import require_organization_grant
 from ol_analytics_api.tenants.b2b_learner_records.config import settings
 from ol_analytics_api.tenants.b2b_learner_records.models import (
+    CourseRun,
     Enrollment,
     Learner,
     LearnerRecordsResponse,
@@ -147,4 +148,23 @@ async def list_enrollments(  # noqa: PLR0913
     )
     return await _respond(
         queries.enrollments(settings.starrocks_schema, filters), organization_id, page, Enrollment
+    )
+
+
+@router.get(
+    "/courses",
+    operation_id="listCourses",
+    tags=["catalog"],
+    response_model=LearnerRecordsResponse[CourseRun],
+    summary="Contracts and course runs covered by the organization's licence",
+)
+async def list_courses(
+    *,
+    organization_id: uuid.UUID,
+    page: PageParams,
+    contract_id: int | None = None,
+) -> LearnerRecordsResponse[BaseModel]:
+    filters = queries.RecordFilters(organization_id=organization_id, contract_id=contract_id)
+    return await _respond(
+        queries.courses(settings.starrocks_schema, filters), organization_id, page, CourseRun
     )

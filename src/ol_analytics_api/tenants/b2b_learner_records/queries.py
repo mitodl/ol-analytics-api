@@ -36,6 +36,7 @@ from ol_analytics_api.tenants.b2b_learner_records.config import settings
 
 LEARNER_MV = "mv_b2b_learner"
 ENROLLMENT_MV = "mv_b2b_learner_enrollment"
+CONTRACT_COURSERUN_MV = "mv_b2b_contract_courserun"
 
 
 def _outcomes_shared() -> str:
@@ -366,3 +367,32 @@ def _recomputed_learners(schema: str, filters: RecordFilters) -> tuple[str, list
         f" {join} ({enrollment_rollup}) e ON l.user_pk = e.user_pk"
     )
     return records, params
+
+
+def courses(schema: str, filters: RecordFilters) -> RecordQuery:
+    """The organization's contracts and their course runs.
+
+    Built without ``_assemble``: these rows carry no personal data, so there is
+    no consent projection, and ``outcomes_withheld_count`` is always 0.
+    """
+    table = f"{validate_sql_identifier(schema)}.{CONTRACT_COURSERUN_MV}"
+    scope = ["sso_organization_id = %s"]
+    params: list[Any] = [str(filters.organization_id)]
+    if filters.contract_id is not None:
+        scope.append("contract_id = %s")
+        params.append(filters.contract_id)
+    where = " AND ".join(scope)
+    page = (
+        "SELECT sso_organization_id AS organization_id, organization_name, contract_id,"  # noqa: S608
+        " b2b_contract_name AS contract_name, b2b_contract_is_active AS contract_is_active,"
+        " b2b_contract_start_date AS contract_start_date,"
+        " b2b_contract_end_date AS contract_end_date, seat_limit,"
+        " courserun_readable_id AS courserun_id, courserun_title, courserun_start_on,"
+        f" courserun_end_on FROM {table} WHERE {where}"
+        " ORDER BY contract_id, courserun_id LIMIT %s OFFSET %s"
+    )
+    count = (
+        "SELECT COUNT(*) AS total_count, 0 AS outcomes_withheld_count"  # noqa: S608
+        f" FROM {table} WHERE {where}"
+    )
+    return RecordQuery(page, count, tuple(params), (CONTRACT_COURSERUN_MV,))
