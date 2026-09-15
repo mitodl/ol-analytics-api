@@ -241,10 +241,15 @@ null; identity, contract, course run and enrollment facts are unaffected. The
 envelope's `outcomes_withheld_count` reports how many records in the result are
 in that state.
 
-The field does not exist upstream yet. Enforcement fails closed, so until it
-ships every record reads `outcomes_shared: false` and the outcome columns are
-uniformly null. That is a degraded response rather than an empty one, which
-means partner integration can proceed against real records.
+The field does not exist upstream yet. Until it ships, the tenant's
+`consent_fail_open` setting (`OL_ANALYTICS_API_B2B_LEARNER_RECORDS_CONSENT_FAIL_OPEN`)
+decides every record. It defaults to false, which fails closed: every record
+reads `outcomes_shared: false` and the outcome columns are uniformly null. That
+is a degraded response rather than an empty one, which means partner
+integration can proceed against real records. A deployment that sets it to
+true discloses outcomes for learners with no recorded decision. Once the field
+lands, a recorded decision always wins and the setting covers only learners
+with none.
 
 ### Why suppression rather than exclusion
 

@@ -19,8 +19,10 @@ info:
       activity fields are populated only where the learner has opted in to
       sharing their course status. `outcomes_shared` says which. Identity and
       enrollment facts are not consent-gated — the organization assigned the
-      seat. Enforcement fails closed, so every record reads
-      `outcomes_shared: false` until the upstream consent field ships.
+      seat. Until the upstream consent field ships, a learner with no
+      recorded decision reads `outcomes_shared: false` where enforcement fails
+      closed (the default) and `outcomes_shared: true` where the deployment
+      fails open.
     * **The same schemas are delivered two ways.** This REST API, and a
       per-organization bulk export (S3/SFTP) written on each refresh. The export
       carries the same records under the same field names.

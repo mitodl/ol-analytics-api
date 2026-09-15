@@ -6,7 +6,7 @@ core/anonymization.py.
 
 Consent gates outcome fields, not the record. Each record model nulls its
 outcome fields unless ``outcomes_shared`` is true. The queries already project
-NULL for them (see queries._OUTCOMES_SHARED). This is a second check, so a
+NULL for them (see queries._outcomes_shared). This is a second check, so a
 query change that projects a raw outcome column still can't disclose it.
 
 Fields the warehouse doesn't carry yet (consent date, activity) are projected

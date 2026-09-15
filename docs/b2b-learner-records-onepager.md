@@ -46,11 +46,13 @@ the partner rather than by the learner's consent choice.
 individual and continue to cover the whole cohort. No consent join, no change to
 the aggregate models.
 
-**Consent enforcement fails closed.** No recorded opt-in means no outcome data.
-Because suppression is per-field rather than per-record, the service can ship
-before the consent field exists — every record simply reads `outcomes_shared:
-false` with outcomes null, which is a degraded response rather than an empty
-one, so partner integration can proceed against real records. One upstream
+**Consent enforcement fails closed by default.** No recorded opt-in means no
+outcome data, unless a deployment sets `consent_fail_open` to disclose outcomes
+for learners with no recorded decision. Because suppression is per-field rather
+than per-record, the service can ship before the consent field exists — failing
+closed, every record simply reads `outcomes_shared: false` with outcomes null,
+which is a degraded response rather than an empty one, so partner integration
+can proceed against real records. One upstream
 property is a hard requirement and cheap only if specified now: *withdrawal must
 be a retained state change, not a deleted row*. A deleted consent row is
 indistinguishable from one never granted and does not move the record's change

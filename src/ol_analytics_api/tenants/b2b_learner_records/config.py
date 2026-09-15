@@ -29,5 +29,11 @@ class B2BLearnerRecordsSettings(BaseSettings):
     max_page_size: int = 1000
     max_learner_ids: int = 100
 
+    # Whether a learner with no recorded consent decision shares their outcomes.
+    # No consent field exists upstream yet, so today this decides every record.
+    # False fails closed, and is the default so a deployment that never sets it
+    # discloses nothing; deployments opt in through ol-infrastructure.
+    consent_fail_open: bool = False
+
 
 settings = B2BLearnerRecordsSettings()

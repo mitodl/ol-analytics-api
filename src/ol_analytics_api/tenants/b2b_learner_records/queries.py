@@ -12,11 +12,13 @@ tie-break, never returned) and ``record_updated_on`` (the ``updated_since``
 cursor). The outer select applies consent, the cross-collection filters,
 ordering and paging, so the page and its count always share one WHERE clause.
 
-Consent is enforced here, and fails closed. ``_OUTCOMES_SHARED`` is the SQL
-expression deciding whether a record's outcomes may be disclosed. No consent
-field exists upstream yet, so it is the literal FALSE and every outcome column
-reads NULL. When the field lands, the inner selects project it and this
-becomes a column reference.
+Consent is enforced here. ``_outcomes_shared()`` returns the SQL expression
+deciding whether a record's outcomes may be disclosed. No consent field exists
+upstream yet, so it is a literal chosen by ``consent_fail_open``: FALSE by
+default, which fails closed and nulls every outcome column, or TRUE where a
+deployment opts to fail open. When the field lands, the inner selects project
+it and this becomes ``COALESCE(<consent column>, <that literal>)``, so a
+recorded decision always wins and the setting only covers learners with none.
 
 Columns the warehouse doesn't carry yet (consent date, activity) are projected
 as NULL by the inner selects, so filling one in touches the inner select only.
@@ -30,11 +32,15 @@ from dataclasses import dataclass
 from typing import Any
 
 from ol_analytics_api.core.db.identifiers import validate_sql_identifier
+from ol_analytics_api.tenants.b2b_learner_records.config import settings
 
 LEARNER_MV = "mv_b2b_learner"
 ENROLLMENT_MV = "mv_b2b_learner_enrollment"
 
-_OUTCOMES_SHARED = "FALSE"
+
+def _outcomes_shared() -> str:
+    return "TRUE" if settings.consent_fail_open else "FALSE"
+
 
 # An unrevoked certificate is certified without requiring is_passing: production
 # has enrollments with an unrevoked certificate and is_passing false
@@ -158,11 +164,12 @@ def _assemble(  # noqa: PLR0913
     predicate_params: list[Any],
     sources: tuple[str, ...],
 ) -> RecordQuery:
+    shared = _outcomes_shared()
     projection = ", ".join(
         [
             *columns,
-            f"{_OUTCOMES_SHARED} AS outcomes_shared",
-            *(f"CASE WHEN {_OUTCOMES_SHARED} THEN {name} END AS {name}" for name in outcomes),
+            f"{shared} AS outcomes_shared",
+            *(f"CASE WHEN {shared} THEN {name} END AS {name}" for name in outcomes),
         ]
     )
     where = f" WHERE {' AND '.join(predicates)}" if predicates else ""
@@ -172,7 +179,7 @@ def _assemble(  # noqa: PLR0913
     )
     count = (
         "SELECT COUNT(*) AS total_count,"  # noqa: S608
-        f" SUM(CASE WHEN {_OUTCOMES_SHARED} THEN 0 ELSE 1 END) AS outcomes_withheld_count"
+        f" SUM(CASE WHEN {shared} THEN 0 ELSE 1 END) AS outcomes_withheld_count"
         f" FROM ({records}) records{where}"
     )
     return RecordQuery(page, count, (*record_params, *predicate_params), sources)
@@ -219,15 +226,16 @@ def enrollments(schema: str, filters: RecordFilters) -> RecordQuery:
         # Status values match only records whose outcomes are shared; `unknown`
         # selects the withheld ones. Otherwise a status filter would reveal the
         # status it is withholding.
+        shared = _outcomes_shared()
         known = [value for value in filters.completion_statuses if value != "unknown"]
         alternatives = []
         if known:
             alternatives.append(
-                f"({_OUTCOMES_SHARED} AND completion_status IN ({_placeholders(len(known))}))"
+                f"({shared} AND completion_status IN ({_placeholders(len(known))}))"
             )
             params.extend(known)
         if "unknown" in filters.completion_statuses:
-            alternatives.append(f"NOT {_OUTCOMES_SHARED}")
+            alternatives.append(f"NOT {shared}")
         predicates.append(f"({' OR '.join(alternatives)})")
 
     return _assemble(
