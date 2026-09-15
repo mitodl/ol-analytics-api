@@ -1,4 +1,4 @@
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS build
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim@sha256:e5b65587bce7de595f299855d7385fe7fca39b8a74baa261ba1b7147afa78e58 AS build
 
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
@@ -12,7 +12,7 @@ RUN uv venv --relocatable /app/.venv && \
 COPY src/ ./src/
 RUN uv sync --frozen --no-dev
 
-FROM python:3.12-slim-bookworm
+FROM python:3.12-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254
 
 # Matches this org's non-Django service convention (e.g.
 # ol_infrastructure/applications/kubewatch_webhook_handler,
