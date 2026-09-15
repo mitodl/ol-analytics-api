@@ -127,7 +127,7 @@ def _auto_instrument() -> None:
         try:
             ep.load()().instrument()
             log.debug("Instrumented: %s", ep.name)
-        except Exception:  # noqa: BLE001
+        except Exception:
             log.warning("Failed to auto-instrument %s", ep.name, exc_info=True)
 
 
@@ -180,7 +180,7 @@ def configure_opentelemetry(
                 "OpenTelemetry: OTLP exporter configured from %s",
                 "environment" if env_endpoint else "OPENTELEMETRY_ENDPOINT",
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             log.warning("OpenTelemetry: failed to configure OTLP exporter", exc_info=True)
 
     _tracing_enabled = True
