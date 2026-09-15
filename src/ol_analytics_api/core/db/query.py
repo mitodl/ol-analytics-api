@@ -66,7 +66,7 @@ def build_select(
     where = f" WHERE {predicates}" if predicates else ""
     # The single S608 suppression in the service: justified because every
     # interpolated token above is a validate_sql_identifier'd identifier.
-    return f"SELECT {columns} FROM {schema_table}{where} ORDER BY {order} LIMIT %s OFFSET %s"
+    return f"SELECT {columns} FROM {schema_table}{where} ORDER BY {order} LIMIT %s OFFSET %s"  # noqa: S608
 
 
 def build_count(
@@ -96,7 +96,7 @@ def build_count(
     cohort_gate = f"{validate_sql_identifier(policy.primary)} >= %s"
     # Same justification as build_select: every interpolated token is a
     # validate_sql_identifier'd identifier, and values are bound params.
-    return f"SELECT COUNT(*) AS total_count FROM {schema_table} WHERE {scope_filter}{cohort_gate}"
+    return f"SELECT COUNT(*) AS total_count FROM {schema_table} WHERE {scope_filter}{cohort_gate}"  # noqa: S608
 
 
 def build_existence_check(schema: str, table: str, filter_columns: tuple[str, ...]) -> str:
@@ -119,7 +119,7 @@ def build_existence_check(schema: str, table: str, filter_columns: tuple[str, ..
     schema_table = f"{validate_sql_identifier(schema)}.{validate_sql_identifier(table)}"
     predicates = " AND ".join(f"{validate_sql_identifier(name)} = %s" for name in filter_columns)
     # Same justification as build_select: identifiers validated, values bound.
-    return f"SELECT 1 FROM {schema_table} WHERE {predicates} LIMIT 1"
+    return f"SELECT 1 FROM {schema_table} WHERE {predicates} LIMIT 1"  # noqa: S608
 
 
 class SuppressibleModel(Protocol):

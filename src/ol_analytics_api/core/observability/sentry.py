@@ -28,7 +28,7 @@ def _before_send(event: Event, hint: Hint) -> Event | None:
     return event
 
 
-def init_sentry(
+def init_sentry(  # noqa: PLR0913 -- matches the org's established init_sentry() shape
     *,
     dsn: str,
     environment: str,

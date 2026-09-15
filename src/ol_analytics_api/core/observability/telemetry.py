@@ -109,7 +109,7 @@ def _auto_instrument() -> None:
     OL_ANALYTICS_API_OTEL_SKIP_INSTRUMENTORS (comma-separated) excludes
     specific instrumentors; unset means instrument everything found.
     """
-    global _instrumented
+    global _instrumented  # noqa: PLW0603
     if _instrumented:
         return
     _instrumented = True
@@ -143,7 +143,7 @@ def configure_opentelemetry(
 
     Idempotent — safe to call multiple times.
     """
-    global _configured, _tracing_enabled
+    global _configured, _tracing_enabled  # noqa: PLW0603
     if _configured:
         existing = trace.get_tracer_provider()
         return existing if isinstance(existing, TracerProvider) else None
@@ -213,7 +213,7 @@ def instrument_fastapi_app(app: FastAPI) -> None:
 
 def reset_configuration() -> None:
     """Reset configuration state — test-only."""
-    global _configured, _instrumented, _tracing_enabled
+    global _configured, _instrumented, _tracing_enabled  # noqa: PLW0603
     _configured = False
     _instrumented = False
     _tracing_enabled = False

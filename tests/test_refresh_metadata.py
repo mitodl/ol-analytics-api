@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, patch
 
 from ol_analytics_api.core.db.refresh_metadata import _clear_cache, latest_refresh_timestamp
 
-_AS_OF = datetime.datetime(2026, 7, 2, 4, 0, 0)
+_AS_OF = datetime.datetime(2026, 7, 2, 4, 0, 0)  # noqa: DTZ001
 
 
 def _patch_fetch_all(fetch_all):

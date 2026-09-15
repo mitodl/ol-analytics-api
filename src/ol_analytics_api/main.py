@@ -157,7 +157,7 @@ async def _refresh_starrocks_credentials_forever(initial_lease_duration: int) ->
                 # real lease. Treat it as a transient failure and retry
                 # rather than crash the whole background task.
                 msg = "Vault refresh returned no lease_duration"
-                raise RuntimeError(msg)
+                raise RuntimeError(msg)  # noqa: TRY301
             await starrocks_pool.rotate(user, password)
         except asyncio.CancelledError:
             raise

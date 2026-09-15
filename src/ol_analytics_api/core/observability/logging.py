@@ -50,7 +50,7 @@ def configure_structlog(*, debug: bool, log_level: str = "INFO", force: bool = F
 
     Idempotent — safe to call multiple times (e.g. under `--reload`).
     """
-    global _configured
+    global _configured  # noqa: PLW0603
     if _configured and not force:
         return
     _configured = True
@@ -128,5 +128,5 @@ def configure_structlog(*, debug: bool, log_level: str = "INFO", force: bool = F
 
 def reset_configuration() -> None:
     """Reset configuration state — test-only, mirrors the Django plugin's helper."""
-    global _configured
+    global _configured  # noqa: PLW0603
     _configured = False

@@ -33,13 +33,13 @@ async def test_rotate_swaps_in_a_new_pool_and_closes_the_old_one():
     pool = StarRocksPool()
     with patch.object(pool, "_create_pool", new=AsyncMock(return_value=old_pool)):
         await pool.start("old-user", "old-password")
-    assert pool._pool is old_pool
+    assert pool._pool is old_pool  # noqa: SLF001
 
     with patch.object(pool, "_create_pool", new=AsyncMock(return_value=new_pool)) as create:
         await pool.rotate("new-user", "new-password")
 
     create.assert_called_once_with("new-user", "new-password")
-    assert pool._pool is new_pool
+    assert pool._pool is new_pool  # noqa: SLF001
     old_pool.close.assert_called_once()
     old_pool.wait_closed.assert_awaited_once()
 
@@ -49,7 +49,7 @@ async def test_rotate_before_start_just_sets_the_pool():
     pool = StarRocksPool()
     with patch.object(pool, "_create_pool", new=AsyncMock(return_value=new_pool)):
         await pool.rotate("new-user", "new-password")
-    assert pool._pool is new_pool
+    assert pool._pool is new_pool  # noqa: SLF001
 
 
 async def test_create_pool_sets_dos_bounds():
@@ -61,7 +61,7 @@ async def test_create_pool_sets_dos_bounds():
     with patch(
         "ol_analytics_api.core.db.client.aiomysql.create_pool", new=AsyncMock()
     ) as create_pool:
-        await pool._create_pool("u", "p")
+        await pool._create_pool("u", "p")  # noqa: SLF001
     kwargs = create_pool.await_args.kwargs
     assert kwargs["connect_timeout"] == settings.starrocks_connect_timeout_seconds
     assert kwargs["pool_recycle"] == settings.starrocks_pool_recycle_seconds
@@ -82,7 +82,7 @@ async def test_cursor_raises_pool_acquire_timeout_when_pool_saturated():
     fake_pool.acquire = MagicMock(side_effect=never_returns)
 
     pool = StarRocksPool()
-    pool._pool = fake_pool
+    pool._pool = fake_pool  # noqa: SLF001
     with (
         patch.object(settings, "starrocks_pool_acquire_timeout_seconds", 0.01),
         pytest.raises(PoolAcquireTimeoutError, match="pool saturated"),
@@ -135,7 +135,7 @@ def _fake_cursor(rows):
 async def test_fetch_all_executes_query_and_returns_rows():
     fake_pool, cur = _fake_cursor([{"a": 1}, {"a": 2}])
     pool = StarRocksPool()
-    pool._pool = fake_pool
+    pool._pool = fake_pool  # noqa: SLF001
 
     rows = await pool.fetch_all("SELECT a FROM t WHERE b = %s", ("x",))
 
@@ -146,7 +146,7 @@ async def test_fetch_all_executes_query_and_returns_rows():
 async def test_ping_executes_select_1_when_pool_started():
     fake_pool, cur = _fake_cursor([{"1": 1}])
     pool = StarRocksPool()
-    pool._pool = fake_pool
+    pool._pool = fake_pool  # noqa: SLF001
 
     await pool.ping()  # must not raise
 
@@ -168,7 +168,7 @@ async def test_cursor_releases_connection_back_to_pool():
     fake_pool.release = MagicMock()
 
     pool = StarRocksPool()
-    pool._pool = fake_pool
+    pool._pool = fake_pool  # noqa: SLF001
     async with pool.cursor():
         pass
     fake_pool.release.assert_called_once_with(conn)
