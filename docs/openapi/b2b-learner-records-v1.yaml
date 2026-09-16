@@ -33,8 +33,9 @@ info:
       `outcomes_shared: false` and outcome fields nulled, a deactivated
       enrollment with `enrollment_is_active: false`, and a learner who left the
       organization with `is_current: false`. A client that upserts drops what
-      it held. Activity changes don't arrive on sync; reload in full
-      periodically.
+      it held. Activity (`last_active_on`, `days_active`, the counters, and
+      the `in_progress` status and count they drive) does not move
+      `updated_since`; a full reload picks it up.
     * **Paging is stable within one refresh.** Every collection has a unique
       order, but a refresh between two pages can shift rows across the offset.
       If `as_of` changes between pages, restart from offset 0.
@@ -593,12 +594,20 @@ components:
         last_active_on:
           type: [string, 'null']
           format: date
-          description: Most recent day with recorded course activity. A date, not a timestamp — activity is aggregated per day. Changes to it do not move `updated_since`; a full reload picks them up.
-          x-data-readiness: pending-model
+          description: >-
+            Most recent day with tracked course activity (video play, problem
+            check, navigation, discussion or chatbot submit) across the
+            enrollments the request covers. The course platform's local day,
+            not a UTC day. Null with no activity.
+          x-data-readiness: available
         courses_in_progress:
           type: [integer, 'null']
           minimum: 0
-          x-data-readiness: pending-model
+          description: >-
+            Distinct course runs whose `completion_status` is `in_progress`:
+            not passed or certified, with a nonzero grade or any tracked
+            activity.
+          x-data-readiness: derived
         courses_passed:
           type: [integer, 'null']
           minimum: 0
@@ -717,7 +726,10 @@ components:
           oneOf:
             - $ref: '#/components/schemas/CompletionStatus'
             - type: 'null'
-          description: Single derived answer per row. Null when outcomes are withheld.
+          description: >-
+            Single derived answer per row. Null when outcomes are withheld.
+            `in_progress` means not passed or certified, with a nonzero grade
+            or any tracked activity in the run; `not_started` means neither.
           x-data-readiness: derived
         is_passing:
           type: [boolean, 'null']
@@ -747,28 +759,36 @@ components:
         last_active_on:
           type: [string, 'null']
           format: date
-          description: Most recent day with recorded activity in this course run. Changes to it do not move `updated_since`; a full reload picks them up.
-          x-data-readiness: pending-model
+          description: >-
+            Most recent day with tracked activity in this course run. The
+            course platform's local day, not a UTC day. Null with no activity.
+          x-data-readiness: available
         days_active:
           type: [integer, 'null']
           minimum: 0
-          description: Distinct days with recorded activity in this course run. Changes to it do not move `updated_since`; a full reload picks them up.
-          x-data-readiness: pending-model
+          description: Distinct days with tracked activity in this course run.
+          x-data-readiness: available
         videos_watched:
           type: [integer, 'null']
           minimum: 0
-          description: Distinct video blocks played. Changes to it do not move `updated_since`; a full reload picks them up.
-          x-data-readiness: pending-model
+          description: >-
+            Video blocks played, counted once per day: a block played on two
+            days counts twice.
+          x-data-readiness: available
         problems_attempted:
           type: [integer, 'null']
           minimum: 0
-          description: Distinct problem blocks attempted. Changes to it do not move `updated_since`; a full reload picks them up.
-          x-data-readiness: pending-model
+          description: >-
+            Problem blocks checked, counted once per day: a block attempted on
+            two days counts twice. Viewing an answer is not an attempt.
+          x-data-readiness: available
         chatbot_interactions:
           type: [integer, 'null']
           minimum: 0
-          description: Changes to it do not move `updated_since`; a full reload picks them up.
-          x-data-readiness: pending-model
+          description: >-
+            Chatbot submits in this course run, counting each (session, block)
+            once per day.
+          x-data-readiness: available
 
     CourseRun:
       type: object
