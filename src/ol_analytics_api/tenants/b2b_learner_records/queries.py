@@ -20,8 +20,8 @@ deployment opts to fail open. When the field lands, the inner selects project
 it and this becomes ``COALESCE(<consent column>, <that literal>)``, so a
 recorded decision always wins and the setting only covers learners with none.
 
-Columns the warehouse doesn't carry yet (consent date, activity) are projected
-as NULL by the inner selects, so filling one in touches the inner select only.
+The consent date isn't in the warehouse yet, so the inner selects project it
+as NULL; filling it in touches the inner select only.
 """
 
 from __future__ import annotations
@@ -46,12 +46,13 @@ def _outcomes_shared() -> str:
 # An unrevoked certificate is certified without requiring is_passing: production
 # has enrollments with an unrevoked certificate and is_passing false
 # (ol-data-platform#2669). A revoked certificate falls through to the grade.
-# Until activity data lands, "in progress" can only mean a nonzero grade.
+# in_progress must match mv_b2b_learner.courses_in_progress: a nonzero grade or
+# any tracked activity (ol-data-platform#2693).
 _COMPLETION_STATUS = (
     "CASE"
     " WHEN certificate_is_revoked = FALSE THEN 'certified'"
     " WHEN is_passing = TRUE THEN 'passed'"
-    " WHEN grade_value > 0 THEN 'in_progress'"
+    " WHEN grade_value > 0 OR last_active_on IS NOT NULL THEN 'in_progress'"
     " ELSE 'not_started'"
     " END"
 )
@@ -76,9 +77,7 @@ _LEARNER_OUTCOMES = (
     "courses_certified",
     "certificates_earned",
 )
-_LEARNER_PENDING = (
-    " NULL AS outcomes_consent_on, NULL AS last_active_on, NULL AS courses_in_progress,"
-)
+_LEARNER_PENDING = " NULL AS outcomes_consent_on,"
 
 _ENROLLMENT_COLUMNS = (
     "learner_id",
@@ -108,10 +107,6 @@ _ENROLLMENT_OUTCOMES = (
     "videos_watched",
     "problems_attempted",
     "chatbot_interactions",
-)
-_ENROLLMENT_PENDING = (
-    " NULL AS last_active_on, NULL AS days_active, NULL AS videos_watched,"
-    " NULL AS problems_attempted, NULL AS chatbot_interactions,"
 )
 
 
@@ -218,7 +213,8 @@ def enrollments(schema: str, filters: RecordFilters) -> RecordQuery:
         " enrollment_created_on AS enrolled_on, enrollment_is_active, enrollment_mode,"
         f" enrollment_status, {_COMPLETION_STATUS} AS completion_status, is_passing,"
         " grade_value AS grade, letter_grade, certificate_issued_on, certificate_is_revoked,"
-        f"{_ENROLLMENT_PENDING} record_updated_on"
+        " last_active_on, days_active, videos_played AS videos_watched, problems_attempted,"
+        " chatbot_interactions, record_updated_on"
         f" FROM {table} WHERE {' AND '.join(scope)}"
     )
 
@@ -271,7 +267,7 @@ def learners(schema: str, filters: RecordFilters) -> RecordQuery:
             " is_organization_manager, first_enrolled_on, last_enrolled_on, courses_enrolled,"
             " courses_passed, courses_certified,"
             " courses_certified + program_certificates_earned AS certificates_earned,"
-            f"{_LEARNER_PENDING} record_updated_on"
+            f"{_LEARNER_PENDING} last_active_on, courses_in_progress, record_updated_on"
             f" FROM {schema}.{LEARNER_MV} WHERE sso_organization_id = %s"
         )
         record_params: list[Any] = [str(filters.organization_id)]
@@ -340,6 +336,9 @@ def _recomputed_learners(schema: str, filters: RecordFilters) -> tuple[str, list
         " COUNT(DISTINCT CASE WHEN is_passing = TRUE THEN courserun_pk END) AS courses_passed,"
         " COUNT(DISTINCT CASE WHEN certificate_is_revoked = FALSE THEN courserun_pk END)"
         " AS courses_certified,"
+        " MAX(last_active_on) AS last_active_on,"
+        f" COUNT(DISTINCT CASE WHEN {_COMPLETION_STATUS} = 'in_progress'"
+        " THEN courserun_pk END) AS courses_in_progress,"
         " MAX(record_updated_on) AS record_updated_on"
         f" FROM {schema}.{ENROLLMENT_MV} WHERE {' AND '.join(scope)} GROUP BY user_pk"
     )
@@ -362,7 +361,9 @@ def _recomputed_learners(schema: str, filters: RecordFilters) -> tuple[str, list
         " COALESCE(e.courses_passed, 0) AS courses_passed,"
         " COALESCE(e.courses_certified, 0) AS courses_certified,"
         f" COALESCE(e.courses_certified, 0) + {program_certificates} AS certificates_earned,"
-        f"{_LEARNER_PENDING} {record_updated_on} AS record_updated_on"
+        f"{_LEARNER_PENDING} e.last_active_on,"
+        " COALESCE(e.courses_in_progress, 0) AS courses_in_progress,"
+        f" {record_updated_on} AS record_updated_on"
         f" FROM (SELECT * FROM {schema}.{LEARNER_MV} WHERE sso_organization_id = %s) l"
         f" {join} ({enrollment_rollup}) e ON l.user_pk = e.user_pk"
     )
