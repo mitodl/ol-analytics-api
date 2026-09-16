@@ -101,8 +101,38 @@ Out of scope; say so to partners rather than letting them discover it.
 
 **8. Freshness.** The MVs are `refresh_method='manual'`, driven by a Dagster
 asset. "Last active" is as stale as the last refresh. The `as_of` envelope the
-existing tenant already returns carries this honestly and doubles as the
-`updated_since` cursor for incremental sync.
+existing tenant already returns carries this honestly.
+
+**9. Incremental sync needs a per-row change timestamp.** `as_of` is one
+timestamp for the whole view, so it can't say which rows changed. Each
+learner-grain model needs a `record_updated_on` column that `updated_since` is
+compared against: the latest of the enrollment's created and updated times, the
+grade's updated time and the certificate's updated time, rolled up per learner
+on the learner model. Consent's change timestamp (§4) and removal time (gap 10)
+feed it when they land. Activity doesn't: a day's activity first appears at a
+refresh after that day began, so a timestamp derived from it would already sort
+below the `updated_since` a client passes. Activity changes reach a partner only
+through a full reload, and the spec says so on each activity field.
+
+**10. Removals don't reach a syncing client.** A record that stops appearing
+sends no signal to a client applying changes: the partner's copy keeps it
+forever. Three cases:
+
+- *Deactivated enrollment* (unenrolled, refunded, reassigned seat). Already a
+  state change: `enrollment_is_active` flips and `record_updated_on` moves.
+  It is filtered out by default, so a syncing client has to pass
+  `include_inactive=true` to receive it.
+- *Learner removed from the organization.* `bridge_user_organization` is
+  current state, so the row vanishes. A learner removed from the roster who
+  still holds a contract enrollment stays on `/learners` as
+  `membership_source: enrollment`. A roster-only learner drops out entirely.
+  The learner model needs to keep that row with `is_current: false`, using
+  `snapshot_mitxonline_b2b_userorganization`, which closes a removed
+  membership's version (`hard_deletes: invalidate`, one-run resolution) rather
+  than deleting it. `dbt_valid_to` becomes the row's `record_updated_on`.
+- *Erasure request.* Not covered. A non-current row still carries email and
+  name, which an erasure has to remove. How retirement reaches the warehouse,
+  and what a departed row keeps afterward, is an open gap.
 
 ## 2. Existing tenant, or a new one?
 
@@ -128,9 +158,10 @@ exists to return.
 `require_org_manager` needs three things a client-credentials token does not
 have: an `organization` claim to check membership against, a `sub` to name in
 the MITx Online round-trip, and a human whose `is_manager` flag was curated in
-Django admin. There is no user in this flow. The org grant has to come from the
-*client's* registration, which is a different check, reached by a different
-code path, with different failure modes.
+Django admin. The warehouse carries that flag (§1); the token doesn't. There is
+no user in this flow. Organization access has to come from the *client's*
+registration, which is a different check, reached by a different code path,
+with different failure modes.
 
 ### The blast radius attaches to a different principal
 
@@ -139,9 +170,12 @@ permits learner-level disclosure all attach to the partner client, not to a
 logged-in org manager. Those are exactly the knobs the architecture already puts
 in each tenant's own `config.py` and `auth.py`.
 
-### It costs one package and one registry line
+### It costs one package and a little wiring
 
-`main.py`'s `TENANTS` list is the documented extension point. A new tenant gets
+`main.py`'s `TENANTS` list is the documented extension point. Beyond the
+package, a tenant needs its import and registry entry in `main.py`,
+`add_shared_error_handlers` in its `create_app`, and a readiness registration.
+A new tenant gets
 its own OpenAPI document at its own mount — which is precisely the artifact you
 want to hand to a partner, without the aggregate dashboard's endpoints in it.
 
@@ -156,7 +190,7 @@ now means the learner-grain schema can be granted to that role alone later.
 src/ol_analytics_api/tenants/b2b_learner_records/
   app.py       # create_app(); title/description say "identifiable learner records"
   config.py    # own StarRocks schema, own page caps, own audit settings
-  auth.py      # client-credentials principal, org-grant check, scope gating
+  auth.py      # client-credentials principal, organization access check, scope gating
   models.py    # Learner, Enrollment, CourseRun — no CohortPolicy
   routers/
     organizations.py
@@ -188,9 +222,13 @@ Three collections, all org-scoped, all read-only:
 
 Plus `updated_since` incremental sync on the two record collections, because a
 partner mirroring into their own LMS should not re-read the whole licence daily.
+Sync delivers changes and removals (§1 gaps 9 and 10), not activity, so partners
+still reload in full periodically.
 
 **Two delivery channels over one schema.** The REST API above, and a
-per-organization bulk export (S3/SFTP) written on each refresh, discoverable via
+per-organization bulk export written to S3 on each refresh by a batch job
+outside the API. Partners read it through a cross-account IAM role limited to
+their organization's prefix, over SFTP, or by a short-lived presigned URL from
 `/organizations/{id}/exports`. The export is a second encoding of the same
 records under the same field names, produced by the same query with the same
 consent enforcement — not a second data product with its own semantics. A
@@ -261,6 +299,8 @@ is worse on every axis that matters here:
   suppression a withdrawal is simply a changed record with `outcomes_shared:
   false` and nulled outcomes; a client that upserts normally drops the data it
   held, with no extra object type and no retention window to reason about.
+  Learners who leave the organization follow the same pattern: a changed record
+  with `is_current: false` (§1 gap 10).
 
 That third point is the one that would have been expensive to discover late.
 
@@ -284,9 +324,20 @@ That third point is the one that would have been expensive to discover late.
 
 ### Settled: aggregates are exempt
 
-The existing `b2b_dashboard` tenant's k-anonymized org-level views disclose no
-individual and continue to cover the whole cohort. No consent join, no change to
-`mv_b2b_*`.
+The existing `b2b_dashboard` tenant's k-anonymized org-level views continue to
+cover the whole cohort. No consent join, no change to `mv_b2b_*`.
+
+That is not the same as saying the aggregates disclose no individual. Take ten
+learners, nine sharing. The funnel says 6 certified; the records show 5
+certified among the nine who share, all named. The sixth certificate belongs to
+the one who declined, whose name is in the same response. Both counts clear the
+floor of 5, which protects small cohorts, not a small remainder.
+
+Different credentials reach the two tenants today: a logged-in manager for the
+aggregates, a contracted client for the records. Nothing stops one organization
+holding both, and the organization is who consent protects the learner from.
+This doesn't change the design. The organization can already tell who declined
+(below), and its use of learner data is governed by its contract.
 
 ### Settled: the organization can see who declined
 
@@ -307,6 +358,7 @@ Yes. Identity is not redacted for any client (§3).
 ### Settled: who authorizes a provider, through what workflow?
 
 The contract settles access. MIT issues one Keycloak client per contracted
-integration, with the organizations it may read carried as a claim. The
-partner handles per-user authorization in its own LMS. See
+integration, with the organizations it may read carried as a claim. Access
+covers every contract under those organizations. The partner handles per-user
+authorization in its own LMS. See
 [`b2b-learner-records-provider-authorization.md`](b2b-learner-records-provider-authorization.md).

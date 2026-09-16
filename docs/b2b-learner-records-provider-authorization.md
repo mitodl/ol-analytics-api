@@ -15,6 +15,12 @@ issues client credentials that encode those terms. The partner builds the integr
 its own LMS and handles per-user authorization on its side. MIT does not model
 the partner's users, and a credential reads everything its contract covers.
 
+Access is organization-wide. A client reads every learner under every contract
+of each organization it lists, including learners on contracts another
+provider serves. `contract_id` on the API is a filter the caller chooses, not a
+limit on the credential. The contract is with the organization, and it grants
+access to the organization's learners, not to one contract's cohort.
+
 ## How the terms are encoded
 
 One Keycloak client per contracted integration, defined in Pulumi
@@ -24,30 +30,38 @@ that creates the client is MIT's record of the access.
 
 | Contract term | On the client |
 | --- | --- |
-| Which organizations | A hardcoded claim (working name `learner_records_organizations`) listing the Keycloak organization UUIDs, via `keycloak.openid.HardcodedClaimProtocolMapper` |
+| Which organizations | A hardcoded claim (working name `learner_records_organizations`) listing the Keycloak organization UUIDs, via `keycloak.openid.HardcodedClaimProtocolMapper` with `jsonType.label` set to `JSON`, so the claim arrives as an array rather than a string |
 | Read access | Default client scope `learner-records:read`. There is no separate identity scope; see Consequences |
 | API audience | `keycloak.openid.AudienceProtocolMapper`, as the Superset client already uses |
 | Client-credentials only | `service_accounts_enabled=True`, standard flow and direct grants off |
 
 A provider working for two organizations under two contracts holds two clients.
-When a contract ends, removing its client revokes exactly that access, which
-keeps the property the design already required.
+When a contract ends, removing its client revokes that credential. Any other
+client listing the same organization keeps reading the same rows, so ending one
+provider's access means removing that provider's clients, not the
+organization's.
 
-Recommended (it costs one more claim): carry the contract end date as a claim
-too, and have the API refuse tokens once that date has passed. A forgotten
-cleanup PR then fails closed.
+**Open, for pdpinch: does access expire with the contract?** Today it doesn't.
+The per-request steps below check no end date, so a client whose cleanup PR is
+forgotten keeps issuing tokens. Two ways to enforce it:
+
+- Carry the contract end date as a claim, and refuse tokens past it.
+- Check the warehouse instead. `dim_contract` already has `contract_is_active`
+  and `contract_end_date`, and the API serves both on `/courses`.
 
 ## What the API does
 
 In `tenants/b2b_learner_records/auth.py`, per request:
 
-1. Read the organization claim and scopes from the validated token.
+1. Read the organization claim and scopes from the validated token. A missing
+   claim, or one that isn't an array of UUIDs, lists no organizations, as
+   `b2b_dashboard/auth.py` already treats a malformed organization claim.
 2. If the path's `organization_id` is not in the claim, return the existing
    403, identical to the response for an organization that does not exist.
 3. Require the `learner-records:read` scope. Identity fields are always
    populated.
 
-No call to mitxonline or any other service, and no grant store. The client
+No call to mitxonline or any other service, and no access store. The client
 definition is the only place access is recorded.
 
 ## Consequences
@@ -60,22 +74,26 @@ definition is the only place access is recorded.
 - **Revocation is a Pulumi change.** Tokens issued before the client is removed
   stay valid until they expire. The access-token lifespan for these clients
   bounds that window. It has not been checked for the `olapps` realm yet.
-- **Exports need to be covered by the same credential.** The draft says export
-  files are "readable with the credentials issued alongside the API client".
-  Standing storage credentials would be a second thing to revoke when a
-  contract ends. Recommended: `/exports` returns short-lived presigned HTTPS
-  URLs, so the API client is the only credential. Not yet applied to the
-  OpenAPI draft.
+- **Exports are written out of band and reached three ways.** A batch job
+  writes each organization's export to its own prefix in S3. A partner reads it
+  through a cross-account IAM role limited to that organization's prefix (no
+  `ListBucket` beyond it), over SFTP, or through `/exports`, which returns a
+  short-lived presigned HTTPS URL to the same file. The IAM role and SFTP
+  account are credentials separate from the API client, so ending a contract
+  means revoking those too. `/exports` needs only the API client.
 - **The partner owns end-user access.** Obligations on how the partner
   restricts learner records inside its LMS belong in the contract. Nothing on
   MIT's side enforces them.
+- **The contract is the organization's record of who reads its data.** The
+  organization signed the contract that names the provider, so it already
+  knows. No organization-facing view of clients is planned.
 
 ## Not chosen
 
-- **A grant record in mitxonline, checked at request time,** with
-  organization managers able to see and revoke grants. That adds a runtime
+- **An access record in mitxonline, checked at request time,** with
+  organization managers able to see and revoke access. That adds a runtime
   dependency and a UI, but the decision it would store is already made in the
-  contract.
+  contract, which is also where the organization sees it.
 - **Making the service account a member of the Keycloak organization,** so
   the existing organization-membership mapper lists it. mitxonline's org sync
   would import the service account as a learner, and it would then appear in
@@ -89,6 +107,26 @@ definition is the only place access is recorded.
 - Whether APISIX's `openid-connect` plugin passes the hardcoded claim and
   scopes through in `X-Userinfo` on a bearer-only route. The learner-records
   mount needs a bearer-only route, but today's routes use the redirect flow.
-  Check on QA before writing `auth.py`.
+  Check on QA.
+- That APISIX *overwrites* a caller-supplied `X-Userinfo` rather than passing
+  it through. `core/auth/userinfo.py` decodes whatever header arrives without
+  validating a token, and the organization check reads from it. Also confirm
+  the pod can't be reached except through the gateway route: `k8s/` defines no
+  NetworkPolicy. Check both on QA.
 - The access-token lifespan these clients will get, since it is the
   revocation window.
+
+## Follow-ups
+
+Not needed to write the tenant, but each needs an owner before partners
+multiply:
+
+- **Client lifecycle.** One client per contract covers creation only. Who
+  delivers the secret to the partner, who rotates it, and who removes it when
+  the contract ends are unassigned.
+- **Audit logging, before the first partner.** `auth.py` logs the client ID and
+  organization on every authorized request. It doesn't log how many records
+  were returned, and nothing yet says where those logs are kept or who reviews
+  them.
+- **Rate limits.** The contract documents a 429 but no limits, and hasn't
+  decided whether APISIX or the app enforces them.

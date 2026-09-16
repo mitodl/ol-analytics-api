@@ -23,18 +23,21 @@ existing tenant resolves a logged-in user's manager status, and there is no user
 in a machine-to-machine flow. Separate tenants cost one package and one registry
 entry, and give the partner its own API document.
 
-**Machine-to-machine auth, with per-client organization grants.** Each client is
-issued its own credentials and an explicit set of organizations it may read. A
-provider working for several organizations holds one grant per organization, so
-a contract ending revokes exactly one. Requests outside the grant are refused
-identically to requests for organizations that do not exist, so the interface
-cannot be used to enumerate MIT's customers.
+**Machine-to-machine auth, one client per contracted integration.** Each client
+is issued its own credentials and an explicit list of organizations it may
+read, covering every contract under each. A provider working under several
+contracts holds one client per contract, so a contract ending revokes exactly
+that client's access. Requests for an organization the client doesn't list are
+refused identically to requests for organizations that do not exist, so the
+interface cannot be used to enumerate MIT's customers.
 
 **Two delivery channels over one schema.** A paged REST API for dashboards and
-incremental sync, and a per-organization bulk export (S3/SFTP) on the refresh
-cadence for partners loading into their own systems. Same records, same field
-names, same consent enforcement — the export is a second encoding of the API's
-schema, not a second data product.
+incremental sync, and a per-organization bulk export on the refresh cadence for
+partners loading into their own systems. A batch job writes the export to S3,
+outside the API. Partners read it through cross-account IAM, over SFTP, or from
+a presigned URL that `/exports` returns. Same records, same field names, same
+consent enforcement — the export is a second encoding of the API's schema, not
+a second data product.
 
 **Consent gates outcomes, not identity.** Organizations already hold their
 learners' names and addresses; they assigned the seats. What a learner opts into
@@ -42,9 +45,11 @@ sharing is their *course status* — completion, progress, activity. So consent 
 enforced on the outcome fields, and identity is governed by the contract with
 the partner rather than by the learner's consent choice.
 
-**Aggregates are exempt.** The existing k-anonymized org-level views disclose no
-individual and continue to cover the whole cohort. No consent join, no change to
-the aggregate models.
+**Aggregates are exempt.** The existing k-anonymized org-level views continue to
+cover the whole cohort. No consent join, no change to the aggregate models. The
+floor protects small cohorts, not a small remainder: an organization holding
+both the aggregates and the records could subtract one from the other to learn
+a declining learner's outcome. See design §4.
 
 **Consent enforcement fails closed.** No recorded opt-in means no outcome data.
 Because suppression is per-field rather than per-record, the service can ship
@@ -61,10 +66,11 @@ timestamp, so the withdrawal never reaches the partner holding a copy.
 Three collections, all organization-scoped and read-only: **learners** (roster
 and rollup), **enrollments** (learner × course, the grain that answers "did they
 complete it"), and **courses** (the contracts and course runs the identifiers
-refer to), plus an **exports** manifest listing the bulk files. Incremental sync
-is driven by a refresh cursor; a consent withdrawal arrives on it as an ordinary
-changed record with outcomes nulled, so a client that upserts normally drops the
-data it held.
+refer to), plus an **exports** manifest returning presigned URLs to the bulk
+files. Incremental sync compares each record's change time with the previous
+sync's `as_of`. A consent withdrawal arrives as an ordinary changed record with
+outcomes nulled, and a learner who leaves the organization arrives with
+`is_current: false`, so a client that upserts normally drops the data it held.
 
 Out of scope for v1: program-level progress, per-assessment detail, any write
 operation, and non-MITx-Online platforms.
@@ -93,6 +99,7 @@ Every collection returns the same envelope, with `data` typed to its record:
   "organization_id": "8f14e45f-ceea-467a-9c1b-2f4b9c0a3d21",
   "organization_name": "Contoso Manufacturing",
   "membership_source": "both",
+  "is_current": true,
   "is_organization_manager": false,
   "first_enrolled_on": "2026-02-03T14:22:11Z",
   "last_enrolled_on": "2026-05-19T09:04:52Z",
@@ -169,7 +176,8 @@ Every collection returns the same envelope, with `data` typed to its record:
   "record_count": 163,
   "size_bytes": 214880,
   "checksum_sha256": "9f2c1b7ae4d05c8831fbb2e6a0d47c3915ee8b6042d1f7c9a3b508e2d6417f0a",
-  "uri": "s3://ol-b2b-exports/8f14e45f/2026-08-13T06-15-00Z/enrollments.jsonl.gz",
+  "uri": "https://ol-b2b-exports.s3.amazonaws.com/8f14e45f/2026-08-13T06-15-00Z/enrollments.jsonl.gz?X-Amz-Expires=900&X-Amz-Signature=…",
+  "uri_expires_on": "2026-08-13T09:30:00Z",
   "expires_on": "2026-09-12T06:15:00Z"
 }
 ```
@@ -204,18 +212,28 @@ not a configuration detail.
 [`b2b-learner-records-provider-authorization.md`](b2b-learner-records-provider-authorization.md).
 The contract settles access. MIT issues one Keycloak client per contracted
 integration, carrying its organizations as a claim. The partner handles
-per-user authorization in its own LMS.
+per-user authorization in its own LMS. The contract is also the organization's
+record of who can read its data: it signed the contract naming the provider, so
+no organization-facing view is planned.
 
-**4. Is consent per-organization or global?** A learner holding seats under two
-organizations should be able to share with one and not the other. A single
-global flag works mechanically but makes withdrawal all-or-nothing. An input to
-the consent design rather than a question this service can answer.
+**4. Is consent per-organization or global?** *Decided: per `(learner,
+organization)`* (design §4). A learner holding seats under two organizations can
+share with one and not the other. A global flag would make withdrawal
+all-or-nothing.
+
+**5. Does access expire with the contract?** *Open, for pdpinch.* Nothing
+checks a contract end date today, so a client nobody removes keeps working.
+Options: an end-date claim on the client, or a warehouse check against
+`dim_contract.contract_is_active`. See the
+[authorization decision](b2b-learner-records-provider-authorization.md).
 
 ## Dependencies
 
-Both are degrading rather than blocking — the service ships without either and
-fills in as they land. The learner-consent field, without which every record
-reads `outcomes_shared: false`; and a per-learner activity model, without which
-"last active" and the engagement counters are null. Onboarding the first
-partner also needs the per-contract Keycloak client template and a bearer-only
-gateway route.
+Degrading, not blocking — the service ships without these and fills in as they
+land: the learner-consent field, without which every record reads
+`outcomes_shared: false`; a per-learner activity model, without which "last
+active" and the engagement counters are null; and learner removal on
+`mv_b2b_learner`, without which `is_current` is always true.
+
+Blocking the first partner: the per-contract Keycloak client template and a
+bearer-only gateway route. No partner can authenticate without both.
