@@ -19,18 +19,25 @@ info:
       activity fields are populated only where the learner has opted in to
       sharing their course status. `outcomes_shared` says which. Identity and
       enrollment facts are not consent-gated — the organization assigned the
-      seat. Until the upstream consent field ships, a learner with no
-      recorded decision reads `outcomes_shared: false` where enforcement fails
-      closed (the default) and `outcomes_shared: true` where the deployment
-      fails open.
+      seat. Enforcement fails closed, so every record reads
+      `outcomes_shared: false` until the upstream consent field ships.
     * **The same schemas are delivered two ways.** This REST API, and a
-      per-organization bulk export (S3/SFTP) written on each refresh. The export
-      carries the same records under the same field names.
-    * **`as_of` is the data's freshness and the sync cursor.** Records come from
-      materialized views refreshed on a schedule. Pass a previous `as_of` as
-      `updated_since` for incremental sync; a consent withdrawal arrives as a
-      normal changed record with `outcomes_shared: false` and outcome fields
-      nulled, which the client upserts to drop the data it held.
+      per-organization bulk export written to S3 on each refresh. The export
+      carries the same records under the same field names. It is readable
+      through a cross-account IAM role, over SFTP, or from the presigned URL
+      `/exports` returns.
+    * **`as_of` is the data's freshness.** Records come from materialized views
+      refreshed on a schedule. For incremental sync, pass the previous sync's
+      `as_of` as `updated_since` together with `include_inactive=true`. A
+      consent withdrawal arrives as a changed record with
+      `outcomes_shared: false` and outcome fields nulled, a deactivated
+      enrollment with `enrollment_is_active: false`, and a learner who left the
+      organization with `is_current: false`. A client that upserts drops what
+      it held. Activity changes don't arrive on sync; reload in full
+      periodically.
+    * **Paging is stable within one refresh.** Every collection has a unique
+      order, but a refresh between two pages can shift rows across the offset.
+      If `as_of` changes between pages, restart from offset 0.
 
     Every property of the `Learner`, `Enrollment` and `CourseRun` record
     schemas carries `x-data-readiness`: `available` (backed today),
@@ -45,9 +52,9 @@ info:
     identifier: BSD-3-Clause
 
 servers:
-  - url: https://api.mitxonline.mit.edu/api/v1/learner-records
+  - url: https://analytics.ol.mit.edu/api/v1/learner-records
     description: Production (planned)
-  - url: https://api.qa.mitxonline.mit.edu/api/v1/learner-records
+  - url: https://analytics-qa.ol.mit.edu/api/v1/learner-records
     description: QA — partner integration testing (planned)
 
 security:
@@ -107,6 +114,7 @@ paths:
                         organization_id: 8f14e45f-ceea-467a-9c1b-2f4b9c0a3d21
                         organization_name: Contoso Manufacturing
                         membership_source: both
+                        is_current: true
                         is_organization_manager: false
                         first_enrolled_on: '2026-02-03T14:22:11Z'
                         last_enrolled_on: '2026-05-19T09:04:52Z'
@@ -124,6 +132,7 @@ paths:
                         organization_id: 8f14e45f-ceea-467a-9c1b-2f4b9c0a3d21
                         organization_name: Contoso Manufacturing
                         membership_source: both
+                        is_current: true
                         is_organization_manager: false
                         first_enrolled_on: '2026-03-11T10:02:44Z'
                         last_enrolled_on: '2026-03-11T10:02:44Z'
@@ -297,8 +306,12 @@ paths:
       operationId: listExports
       summary: Bulk export files available for this organization
       description: >-
-        Manifest of the S3/SFTP bulk exports, one set per collection per
-        refresh. Records inside carry the same schemas as this API, identity
+        Manifest of the bulk exports, one set per collection per refresh, each
+        with a short-lived presigned HTTPS URL. A batch job writes the files to
+        S3 outside this API; the same files are also readable through a
+        cross-account IAM role limited to the organization's prefix, or over
+        SFTP. This endpoint is the path that needs no credential beyond the API
+        client. Records inside carry the same schemas as this API, identity
         fields included. Ordered by `as_of` descending, then `collection` and
         `format`, which is unique.
       parameters:
@@ -333,7 +346,8 @@ paths:
                         record_count: 163
                         size_bytes: 214880
                         checksum_sha256: 9f2c1b7ae4d05c8831fbb2e6a0d47c3915ee8b6042d1f7c9a3b508e2d6417f0a
-                        uri: s3://ol-b2b-exports/8f14e45f/2026-08-13T06-15-00Z/enrollments.jsonl.gz
+                        uri: https://ol-b2b-exports.s3.amazonaws.com/8f14e45f/2026-08-13T06-15-00Z/enrollments.jsonl.gz?X-Amz-Expires=900&X-Amz-Signature=…
+                        uri_expires_on: '2026-08-13T09:30:00Z'
                         expires_on: '2026-09-12T06:15:00Z'
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -349,12 +363,12 @@ components:
       description: >-
         Keycloak client credentials, validated at the gateway. One client is
         issued per contracted integration and lists the organizations it may
-        read. Scopes
-        bound to a client are a contractual limit on that credential; they are
-        not the consent mechanism.
+        read, every contract under each included. Scopes bound to a client are
+        a contractual limit on that credential; they are not the consent
+        mechanism.
       flows:
         clientCredentials:
-          tokenUrl: https://sso.mit.edu/realms/olapps/protocol/openid-connect/token
+          tokenUrl: https://sso.ol.mit.edu/realms/olapps/protocol/openid-connect/token
           scopes:
             learner-records:read: Read records, identity fields included.
 
@@ -372,6 +386,13 @@ components:
       name: contract_id
       in: query
       required: false
+      description: >-
+        Narrows the result to one of the organization's contracts. A filter,
+        not an access boundary: a client reads every contract under the
+        organizations it lists. A contract not under the path's organization
+        matches nothing and returns an empty page, not a 403; the result is the
+        same whether the contract belongs to another organization or doesn't
+        exist.
       schema: { type: integer, format: int64 }
       example: 42
 
@@ -413,7 +434,14 @@ components:
       name: updated_since
       in: query
       required: false
-      description: Return only records changed at or after this instant. Pass the previous sync's `as_of`.
+      description: >-
+        Return only records changed at or after this instant. Pass the previous
+        sync's `as_of`. A record's change time is the latest of its enrollment,
+        grade, certificate, organization membership and (once it exists)
+        consent changes. Activity doesn't move it. Deactivated enrollments and
+        learners no longer in the organization are changes too, but
+        `include_inactive` still filters them, so pass
+        `include_inactive=true` when syncing.
       schema: { type: string, format: date-time }
       example: '2026-08-12T06:15:00Z'
 
@@ -421,7 +449,14 @@ components:
       name: include_inactive
       in: query
       required: false
-      description: Include deactivated enrollments (unenrolled, refunded, transferred).
+      description: >-
+        On `/enrollments`, includes deactivated enrollments (unenrolled,
+        refunded, transferred). On `/learners`: rollups count deactivated
+        enrollments too; learners whose only enrollments are deactivated are
+        included; learners with `is_current: false` are included; and a roster
+        member whose only enrollment is deactivated reads
+        `membership_source: both` rather than `roster`. Roster members with no
+        enrollments at all are included either way.
       schema: { type: boolean, default: false }
 
     Limit:
@@ -434,6 +469,10 @@ components:
       name: offset
       in: query
       required: false
+      description: >-
+        Stable only within one refresh. If the envelope's `as_of` differs from
+        the previous page's, restart from 0; otherwise rows can be skipped or
+        repeated.
       schema: { type: integer, minimum: 0, default: 0 }
 
   schemas:
@@ -476,6 +515,7 @@ components:
         - organization_id
         - organization_name
         - membership_source
+        - is_current
         - is_organization_manager
         - first_enrolled_on
         - last_enrolled_on
@@ -511,6 +551,16 @@ components:
           x-data-readiness: available
         membership_source:
           $ref: '#/components/schemas/MembershipSource'
+        is_current:
+          type: boolean
+          description: >-
+            False once the learner is no longer associated with the
+            organization: off the roster and holding no enrollment under its
+            contracts. The record stays so a syncing client learns of the
+            removal; it is returned only with `include_inactive=true`.
+            Identity is still populated. Erasure requests are handled
+            separately and not yet specified.
+          x-data-readiness: pending-model
         is_organization_manager:
           type: boolean
           description: Administers the organization in MITx Online.
@@ -543,7 +593,7 @@ components:
         last_active_on:
           type: [string, 'null']
           format: date
-          description: Most recent day with recorded course activity. A date, not a timestamp — activity is aggregated per day.
+          description: Most recent day with recorded course activity. A date, not a timestamp — activity is aggregated per day. Changes to it do not move `updated_since`; a full reload picks them up.
           x-data-readiness: pending-model
         courses_in_progress:
           type: [integer, 'null']
@@ -560,7 +610,12 @@ components:
         certificates_earned:
           type: [integer, 'null']
           minimum: 0
-          description: Includes program certificates, which have no course run and so are not in `courses_certified`.
+          description: >-
+            Includes program certificates, which have no course run and so are
+            not in `courses_certified`. This is the only program-level figure in
+            v1; program progress is otherwise out of scope, so nothing else in
+            the payload reconciles against it. With `contract_id`, program
+            certificates belong to no single contract and are excluded.
           x-data-readiness: derived
 
     Enrollment:
@@ -684,31 +739,35 @@ components:
           x-data-readiness: available
         certificate_is_revoked:
           type: [boolean, 'null']
-          description: Null where no certificate exists. A revoked certificate leaves `completion_status` at `passed`.
+          description: >-
+            Null where no certificate exists. A revoked certificate doesn't
+            count as certified: `completion_status` then follows the grade, so
+            it can read `passed`, `in_progress` or `not_started`.
           x-data-readiness: available
         last_active_on:
           type: [string, 'null']
           format: date
-          description: Most recent day with recorded activity in this course run.
+          description: Most recent day with recorded activity in this course run. Changes to it do not move `updated_since`; a full reload picks them up.
           x-data-readiness: pending-model
         days_active:
           type: [integer, 'null']
           minimum: 0
-          description: Distinct days with recorded activity in this course run.
+          description: Distinct days with recorded activity in this course run. Changes to it do not move `updated_since`; a full reload picks them up.
           x-data-readiness: pending-model
         videos_watched:
           type: [integer, 'null']
           minimum: 0
-          description: Distinct video blocks played.
+          description: Distinct video blocks played. Changes to it do not move `updated_since`; a full reload picks them up.
           x-data-readiness: pending-model
         problems_attempted:
           type: [integer, 'null']
           minimum: 0
-          description: Distinct problem blocks attempted.
+          description: Distinct problem blocks attempted. Changes to it do not move `updated_since`; a full reload picks them up.
           x-data-readiness: pending-model
         chatbot_interactions:
           type: [integer, 'null']
           minimum: 0
+          description: Changes to it do not move `updated_since`; a full reload picks them up.
           x-data-readiness: pending-model
 
     CourseRun:
@@ -760,7 +819,7 @@ components:
     ExportFile:
       type: object
       description: One bulk-export file. Contents use this API's record schemas.
-      required: [collection, as_of, format, record_count, size_bytes, checksum_sha256, uri, expires_on]
+      required: [collection, as_of, format, record_count, size_bytes, checksum_sha256, uri, uri_expires_on, expires_on]
       properties:
         collection:
           type: string
@@ -771,6 +830,9 @@ components:
           description: The refresh this file was written from.
         format:
           type: string
+          description: >-
+            In `csv`, null is an empty unquoted field and an empty string is
+            `""`. `jsonl` and `parquet` carry null natively.
           enum: [jsonl, csv, parquet]
         record_count:
           type: integer
@@ -784,11 +846,20 @@ components:
         uri:
           type: string
           format: uri
-          description: '`s3://` or `sftp://` location, readable with the credentials issued alongside the API client.'
+          description: >-
+            Presigned HTTPS URL for the file. Needs no credential beyond itself;
+            valid until `uri_expires_on`. List the manifest again for a fresh
+            URL.
+        uri_expires_on:
+          type: string
+          format: date-time
+          description: When `uri` stops working. The file itself remains until `expires_on`.
         expires_on:
           type: string
           format: date-time
-          description: After this, the file is deleted and must be re-fetched from a newer refresh.
+          description: >-
+            File retention. After this, the file is deleted and must be
+            re-fetched from a newer refresh.
 
     MembershipSource:
       type: string
@@ -810,35 +881,54 @@ components:
 
     Error:
       type: object
-      required: [detail]
+      required: [code, detail]
       properties:
-        detail: { type: string }
+        code:
+          type: string
+          description: >-
+            Stable, machine-readable reason. Branch on this, not on `detail`,
+            whose wording may change.
+          enum:
+            - invalid_parameter
+            - unauthorized
+            - missing_scope
+            - no_organization_access
+            - rate_limited
+            - unavailable
+        detail:
+          type: string
+          description: Human-readable explanation.
 
   responses:
 
     BadRequest:
-      description: Malformed parameter.
+      description: >-
+        Malformed parameter, including a non-UUID `organization_id` in the path.
+        Deliberately 400, not FastAPI's default 422: the service normalizes
+        validation errors to this body.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
-          example: { detail: 'limit must be between 1 and 1000' }
+          example: { code: invalid_parameter, detail: 'limit: Input should be less than or equal to 1000' }
 
     Unauthorized:
       description: Missing, malformed or expired token.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
-          example: { detail: 'Invalid or expired access token' }
+          example: { code: unauthorized, detail: 'Invalid or expired access token' }
 
     Forbidden:
       description: >-
-        Token valid but lacks a grant for this organization, or lacks the
-        required scope. Identical whether the organization is ungranted or does
-        not exist, so this cannot be used to enumerate organizations.
+        Token valid but lacks access to this organization
+        (`no_organization_access`) or lacks the required scope
+        (`missing_scope`). Identical whether the client lacks access or the
+        organization does not exist, so this cannot be used to enumerate
+        organizations.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
-          example: { detail: 'No grant for the requested organization' }
+          example: { code: no_organization_access, detail: 'No access to the requested organization' }
 
     TooManyRequests:
       description: Per-client rate limit exceeded.
@@ -848,7 +938,7 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
-          example: { detail: 'Rate limit exceeded' }
+          example: { code: rate_limited, detail: 'Rate limit exceeded' }
 
     ServiceUnavailable:
       description: Analytics store unreachable or saturated.
@@ -858,4 +948,4 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
-          example: { detail: 'Analytics store unavailable' }
+          example: { code: unavailable, detail: 'Analytics store unavailable' }
