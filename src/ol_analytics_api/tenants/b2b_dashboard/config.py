@@ -21,8 +21,12 @@ class B2BDashboardSettings(BaseSettings):
     # Validated as a safe SQL identifier since it's spliced into query
     # strings directly — StarRocks can't parameterize identifiers.
     starrocks_schema: str = "b2b_analytics"
+    # The learner-grain views the learner-progress endpoint reads. A separate
+    # StarRocks database from the k-anonymized aggregates above, so the two can
+    # be granted separately.
+    learner_records_schema: str = "b2b_learner_records"
 
-    @field_validator("starrocks_schema")
+    @field_validator("starrocks_schema", "learner_records_schema")
     @classmethod
     def _validate_starrocks_schema(cls, value: str) -> str:
         return validate_sql_identifier(value)
@@ -63,6 +67,13 @@ class B2BDashboardSettings(BaseSettings):
     # request can pull an unbounded result (see the DoS-surface task).
     default_page_size: int = 100
     max_page_size: int = 1000
+
+    # Whether a learner with no recorded consent decision shares their outcomes
+    # on the learner-progress endpoint. No consent field exists upstream yet, so
+    # today this decides every row. False fails closed, and is the default so a
+    # deployment that never sets it discloses nothing; deployments opt in
+    # through ol-infrastructure.
+    consent_fail_open: bool = False
 
 
 settings = B2BDashboardSettings()

@@ -65,12 +65,16 @@ src/ol_analytics_api/
   tenants/
     b2b_dashboard/
       app.py                   # FastAPI() sub-app instance, includes this tenant's routers
-      config.py                # this tenant's policy: schema, MITx Online URL, admin role, floor
+      config.py                # this tenant's policy: schemas, MITx Online URL, admin role, floor, consent_fail_open
       auth.py                  # this tenant's governance gates (require_org_manager, require_mit_admin)
       mitxonline_client.py     # service-authenticated org-manager check against MITx Online
       models.py                # SQLModel response schemas for this tenant's 6 MVs
+      learner_queries.py       # learner-progress SQL; no anonymization floor, consent-gated outcomes
+      learner_models.py        # LearnerProgress — no CohortPolicy
       routers/
         organizations.py       # relative paths — mount point supplies the /api/v1/analytics prefix
+        contracts.py
+        learners.py            # /organizations/{id}/contracts/{id}/learner-progress
         admin.py
     b2b_learner_records/
       app.py                   # sub-app; contract-shaped 400s for malformed parameters
