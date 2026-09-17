@@ -57,14 +57,14 @@ hooks = [{ id = "gitleaks", priority = 10 }]
 
 [[repos]]
 repo = "https://github.com/rhysd/actionlint"
-rev = "v1.7.7"
+rev = "v1.7.12"
 hooks = [{ id = "actionlint", priority = 10 }]
 
 # ── Python: ruff (priority 20 format → 30 lint) ───────────────────────────────
 
 [[repos]]
 repo = "https://github.com/astral-sh/ruff-pre-commit"
-rev = "v0.11.13"
+rev = "v0.16.8"
 
 [[repos.hooks]]
 id = "ruff-format"

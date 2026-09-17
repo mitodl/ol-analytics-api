@@ -22,6 +22,14 @@ funnel, monthly engagement trend, program funnel, content engagement depth,
 MIT-admin contract health — for the MIT Learn dashboard at
 `/dashboard/organization/[orgSlug]/analytics`.
 
+The second is `b2b_learner_records`: identifiable per-learner roster,
+enrollment and completion records for B2B site-license partners and the
+training providers they contract, over machine-to-machine client credentials.
+It has the opposite privacy posture, so it shares no auth, models or
+suppression code with `b2b_dashboard`. Design and contract:
+`docs/b2b-learner-records-design.md` and
+`docs/openapi/b2b-learner-records-v1.yaml`.
+
 ## Architecture
 
 ```
@@ -29,8 +37,10 @@ dbt (organization_administration_report, Iceberg)
   -> StarRocks materialized views (ol-data-platform, models/b2b_analytics/*.sql)
   -> this service:
        main.py (shared StarRocks pool, mounts tenant sub-apps)
-         -> tenants/b2b_dashboard  (mounted at /api/v1/analytics)
-         -> tenants/<next-tenant>  (mounted at its own prefix)
+         -> tenants/b2b_dashboard        (mounted at /api/v1/analytics)
+         -> tenants/b2b_learner_records  (mounted at /api/v1/learner-records;
+                                          reads models/b2b_learner_records/*.sql)
+         -> tenants/<next-tenant>        (mounted at its own prefix)
   -> each tenant's own consumer (MIT Learn dashboard, future partner/internal tools, ...)
 ```
 
@@ -55,13 +65,25 @@ src/ol_analytics_api/
   tenants/
     b2b_dashboard/
       app.py                   # FastAPI() sub-app instance, includes this tenant's routers
-      config.py                # this tenant's policy: schema, MITx Online URL, admin role, floor
+      config.py                # this tenant's policy: schemas, MITx Online URL, admin role, floor, consent_fail_open
       auth.py                  # this tenant's governance gates (require_org_manager, require_mit_admin)
       mitxonline_client.py     # service-authenticated org-manager check against MITx Online
       models.py                # SQLModel response schemas for this tenant's 6 MVs
+      learner_queries.py       # learner-progress SQL; no anonymization floor, consent-gated outcomes
+      learner_models.py        # LearnerProgress — no CohortPolicy
       routers/
         organizations.py       # relative paths — mount point supplies the /api/v1/analytics prefix
+        contracts.py
+        learners.py            # /organizations/{id}/contracts/{id}/learner-progress
         admin.py
+    b2b_learner_records/
+      app.py                   # sub-app; contract-shaped 400s for malformed parameters
+      config.py                # schema (b2b_learner_records), page caps, consent_fail_open
+      auth.py                  # client-credentials org grant + learner-records:read scope
+      queries.py               # SQL templates; consent enforcement (fails closed unless toggled)
+      models.py                # Learner, Enrollment — no CohortPolicy, outcome fields consent-gated
+      routers/
+        organizations.py       # /organizations/{id}/learners, /enrollments
 ```
 
 ### Adding a new tenant
@@ -103,6 +125,15 @@ to MITx Online (`tenants/b2b_dashboard/mitxonline_client.py`) and its
 MIT-admin check uses a Keycloak realm role
 (`tenants/b2b_dashboard/auth.py`) — see hq#10594 for the full design. A
 different tenant is free to use a different governance model entirely.
+
+`b2b_learner_records` has no user in the flow. Each contracted integration
+gets its own Keycloak client-credentials client, and the organization UUIDs
+its contract covers ride in a hardcoded `learner_records_organizations` claim
+(a JSON array). `tenants/b2b_learner_records/auth.py` requires the
+`learner-records:read` scope and the path's organization in that claim, and
+refuses identically whether the organization is ungranted or doesn't exist.
+There's no round-trip and no grant store; removing the client revokes the
+access. See `docs/b2b-learner-records-provider-authorization.md`.
 
 The org-manager round-trip authenticates with this service's **own** OAuth2
 client-credentials token and names the subject user explicitly
