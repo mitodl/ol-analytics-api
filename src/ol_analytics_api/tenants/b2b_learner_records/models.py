@@ -104,7 +104,7 @@ class CourseRun(BaseModel):
     contract_end_date: datetime.date | None = Field(
         description="Null where the contract records no end date."
     )
-    seat_limit: int | None = Field(description="Null means uncapped, not zero.")
+    seat_limit: int | None = Field(ge=0, description="Null means uncapped, not zero.")
     courserun_id: str = Field(
         description="Readable course-run identifier, e.g. `course-v1:MITxT+14.310x+2T2026`."
     )
