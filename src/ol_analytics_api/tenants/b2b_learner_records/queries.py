@@ -154,7 +154,7 @@ def _cursor_value(value: datetime.datetime) -> str:
     return value.replace(microsecond=0).isoformat()
 
 
-def _assemble(  # noqa: PLR0913
+def _assemble(  # noqa: PLR0913, PLR0917
     records: str,
     record_params: list[Any],
     columns: tuple[str, ...],
