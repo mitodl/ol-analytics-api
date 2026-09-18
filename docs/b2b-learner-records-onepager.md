@@ -232,8 +232,10 @@ Options: an end-date claim on the client, or a warehouse check against
 Degrading, not blocking — the service ships without these and fills in as they
 land: the learner-consent field, without which every record reads
 `outcomes_shared: false`; a per-learner activity model, without which "last
-active" and the engagement counters are null; and learner removal on
-`mv_b2b_learner`, without which `is_current` is always true.
+active" and the engagement counters are null (wired in tenant-side, gated on
+ol-data-platform#2693 merging and the MVs rebuilding with the new columns);
+and learner removal on `mv_b2b_learner`, without which `is_current` is always
+true.
 
 Blocking the first partner: the per-contract Keycloak client template and a
 bearer-only gateway route. No partner can authenticate without both.
