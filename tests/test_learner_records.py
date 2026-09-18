@@ -20,7 +20,7 @@ from ol_analytics_api.tenants import b2b_learner_records
 from ol_analytics_api.tenants.b2b_learner_records import queries
 from ol_analytics_api.tenants.b2b_learner_records.auth import NO_GRANT_DETAIL
 from ol_analytics_api.tenants.b2b_learner_records.config import settings
-from ol_analytics_api.tenants.b2b_learner_records.models import Enrollment, Learner
+from ol_analytics_api.tenants.b2b_learner_records.models import CourseRun, Enrollment, Learner
 
 BASE = "/api/v1/learner-records"
 ORG_ID = "8f14e45f-ceea-467a-9c1b-2f4b9c0a3d21"
@@ -99,7 +99,7 @@ def _enrollment_row(**overrides):
     }
 
 
-@pytest.mark.parametrize("name", ["Learner", "Enrollment"])
+@pytest.mark.parametrize("name", ["Learner", "Enrollment", "CourseRun"])
 def test_every_record_field_is_required_in_the_generated_schema(name):
     # The contract lists pending fields as required and nullable. A defaulted
     # field would generate as optional, and a client would treat it as absent.
@@ -464,3 +464,58 @@ async def test_as_of_is_read_before_the_records(app, monkeypatch):
     ]
     assert kinds.index("as_of") < kinds.index("page")
     assert kinds.index("as_of") < kinds.index("count")
+
+
+def _course_row(**overrides):
+    return {
+        "organization_id": ORG_ID,
+        "organization_name": "Contoso Manufacturing",
+        "contract_id": 42,
+        "contract_name": "Contoso 2026 Site Licence",
+        "contract_is_active": 1,
+        "contract_start_date": None,
+        "contract_end_date": datetime.date(2026, 12, 31),
+        "seat_limit": None,
+        "courserun_id": "course-v1:MITxT+14.310x+2T2026",
+        "courserun_title": "Data Analysis for Social Scientists",
+        "courserun_start_on": "2026-02-01T00:00:00.000",
+        "courserun_end_on": None,
+        **overrides,
+    }
+
+
+async def test_courses_read_the_contract_courserun_view(app, monkeypatch):
+    pool = _FakePool(rows=[_course_row()], total_count=1)
+    response = await _get(
+        app, f"/organizations/{ORG_ID}/courses", _partner_header(ORG_ID), pool, monkeypatch
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["outcomes_withheld_count"] == 0
+    [course] = body["data"]
+    assert set(course) == set(CourseRun.model_fields)
+    assert course["contract_is_active"] is True
+    assert course["contract_end_date"] == "2026-12-31"
+    assert course["seat_limit"] is None
+    assert course["courserun_start_on"] == "2026-02-01T00:00:00Z"
+    query, params = pool.page_call()
+    assert f"FROM b2b_learner_records.{queries.CONTRACT_COURSERUN_MV} WHERE" in query
+    assert "outcomes_shared" not in query
+    assert query.endswith("ORDER BY contract_id, courserun_id LIMIT %s OFFSET %s")
+    assert params == (ORG_ID, 100, 0)
+
+
+async def test_courses_contract_filter_is_bound(app, monkeypatch):
+    pool = _FakePool()
+    await _get(
+        app,
+        f"/organizations/{ORG_ID}/courses?contract_id=42",
+        _partner_header(ORG_ID),
+        pool,
+        monkeypatch,
+    )
+    query, params = pool.page_call()
+    assert "sso_organization_id = %s AND contract_id = %s" in query
+    assert params == (ORG_ID, 42, 100, 0)
+    assert pool.count_call()[1] == (ORG_ID, 42)
