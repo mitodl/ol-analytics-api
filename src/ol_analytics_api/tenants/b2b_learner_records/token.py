@@ -13,8 +13,14 @@ checks the signature itself and ignores X-Userinfo entirely.
 The token is a Keycloak client-credentials access token from the olapps
 realm, signed RS256 with a realm key published at the realm's JWKS endpoint.
 Verification is local: fetch the key set, cache it, check signature, issuer,
-audience and lifetime. No call to Keycloak is on the request path except the
-key fetch, which happens once per TTL or once per unseen key id.
+audience, token class and lifetime. No call to Keycloak is on the request
+path except the key fetch, which happens once per TTL or once per unseen key
+id.
+
+PyJWT ships PyJWKClient, which caches and refetches much like JWKSCache
+below. It fetches with urllib, which would block the event loop on every
+cache miss, so the cache here is a small async reimplementation rather than
+a wrapper around it.
 """
 
 from __future__ import annotations
@@ -27,13 +33,19 @@ import httpx
 import jwt
 import structlog
 from fastapi import HTTPException, Request, status
-from jwt import PyJWKSet
+from jwt import PyJWK, PyJWKSet
 
 from ol_analytics_api.tenants.b2b_learner_records.config import settings
 
 log = structlog.get_logger(__name__)
 
-ALGORITHMS = ["RS256"]
+ALGORITHMS = ("RS256",)
+
+# Keycloak's token class, in the payload. An ID token for this same client id
+# carries the realm's signature, this issuer and this audience, so without
+# this check it clears verification and is stopped only by carrying no
+# organization grant. That is one claim deep; this closes the class.
+ACCESS_TOKEN_TYPE = "Bearer"  # noqa: S105 - a claim value, not a credential
 
 # One refusal for every verification failure. The caller is a machine holding
 # a contract, not a person debugging a login, and naming which check failed
@@ -43,7 +55,17 @@ INVALID_TOKEN_DETAIL = "Invalid or missing bearer token"  # noqa: S105 - a refus
 # Floor on how often an unknown key id may trigger a refetch. Without it, a
 # stream of tokens carrying junk kids would pull the JWKS endpoint once per
 # request.
-_REFETCH_COOLDOWN_SECONDS = 60.0
+_KID_REFETCH_COOLDOWN_SECONDS = 60.0
+
+# How long to stop trying after a fetch fails. Without it, every request that
+# arrives with the cache cold or expired and Keycloak unreachable takes the
+# lock and pays the full timeout in turn, so callers queue up behind each
+# other for as long as the outage lasts.
+_FETCH_RETRY_COOLDOWN_SECONDS = 5.0
+
+
+class JWKSUnavailableError(Exception):
+    """The realm's key set could not be fetched or parsed."""
 
 
 def _unauthorized() -> HTTPException:
@@ -60,7 +82,8 @@ class JWKSCache:
     def __init__(self) -> None:
         self._keys: PyJWKSet | None = None
         self._fetched_at = 0.0
-        self._last_refetch_attempt = 0.0
+        self._retry_after = 0.0
+        self._kid_refetch_after = 0.0
         # Serializes fetches so N concurrent requests on a cold or expired
         # cache open one connection to Keycloak, not N.
         self._lock = asyncio.Lock()
@@ -68,7 +91,8 @@ class JWKSCache:
     def clear(self) -> None:
         self._keys = None
         self._fetched_at = 0.0
-        self._last_refetch_attempt = 0.0
+        self._retry_after = 0.0
+        self._kid_refetch_after = 0.0
 
     def _is_fresh(self) -> bool:
         return (
@@ -77,10 +101,22 @@ class JWKSCache:
         )
 
     async def _fetch(self) -> PyJWKSet:
-        async with httpx.AsyncClient(timeout=settings.jwks_timeout_seconds) as client:
-            response = await client.get(settings.jwks_url)
-        response.raise_for_status()
-        keys = PyJWKSet.from_dict(response.json())
+        """Pull the key set from the realm, or raise JWKSUnavailableError.
+
+        Everything the endpoint can go wrong with ends up as one exception:
+        a transport error, a non-2xx, a body that isn't JSON, and a body that
+        is JSON but holds no key this service can verify with (an empty set,
+        an error document, a bare list). Left uncaught, the last few surface
+        as a 500 from a dependency whose whole contract is to answer 401.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=settings.jwks_timeout_seconds) as client:
+                response = await client.get(settings.jwks_url)
+            response.raise_for_status()
+            keys = PyJWKSet.from_dict(response.json())
+        except (httpx.HTTPError, ValueError, TypeError, AttributeError, jwt.PyJWTError) as exc:
+            msg = f"Could not load the key set at {settings.jwks_url}: {exc}"
+            raise JWKSUnavailableError(msg) from exc
         self._keys = keys
         self._fetched_at = time.monotonic()
         return keys
@@ -88,14 +124,44 @@ class JWKSCache:
     async def _load(self, *, force: bool = False) -> PyJWKSet:
         if not force and self._is_fresh():
             return self._keys  # type: ignore[return-value]
+        fetched_at = self._fetched_at
         async with self._lock:
             # Whoever held the lock may have just fetched, in which case this
-            # caller rides on their result.
-            if not force and self._is_fresh():
+            # caller rides on their result -- including a forced load, where
+            # freshness isn't the question but "did someone already refetch
+            # while I waited" is.
+            if self._is_fresh() if not force else self._fetched_at != fetched_at:
                 return self._keys  # type: ignore[return-value]
-            return await self._fetch()
+            if time.monotonic() < self._retry_after:
+                return self._stale_or_raise(JWKSUnavailableError("In the fetch-failure cooldown"))
+            try:
+                return await self._fetch()
+            except JWKSUnavailableError as exc:
+                self._retry_after = time.monotonic() + _FETCH_RETRY_COOLDOWN_SECONDS
+                return self._stale_or_raise(exc)
 
-    async def signing_key(self, kid: str) -> jwt.PyJWK:
+    def _stale_or_raise(self, exc: JWKSUnavailableError) -> PyJWKSet:
+        """Fall back on the last key set we did fetch, if there is one.
+
+        Realm signing keys turn over on the order of months, so a key set
+        that is past its TTL is still almost certainly the right one. Serving
+        it through a Keycloak outage keeps partners working; refusing every
+        request because a refresh failed would be an outage this service
+        inflicted on itself.
+        """
+        if self._keys is None:
+            raise exc
+        log.warning("Serving the last known realm key set", error=str(exc))
+        return self._keys
+
+    @staticmethod
+    def _select(keys: PyJWKSet, kid: str) -> PyJWK | None:
+        try:
+            return keys[kid]
+        except KeyError:
+            return None
+
+    async def signing_key(self, kid: str) -> PyJWK | None:
         """The key with this id, refetching once if it isn't in the cache.
 
         Keycloak rotates realm keys without warning, and the first token
@@ -103,23 +169,25 @@ class JWKSCache:
         unknown id turns that into one extra request instead of a TTL's worth
         of refusals.
         """
-        keys = await self._load()
-        try:
-            return keys[kid]
-        except KeyError:
-            pass
+        key = self._select(await self._load(), kid)
+        if key is not None:
+            return key
 
-        now = time.monotonic()
-        if now - self._last_refetch_attempt < _REFETCH_COOLDOWN_SECONDS:
-            raise _unauthorized() from None
-        self._last_refetch_attempt = now
+        # No await between reading the cooldown and setting it below, so a
+        # burst of unknown kids can't all slip through the window. Keep it
+        # that way: an await in between reopens the amplifier this guards.
+        if time.monotonic() < self._kid_refetch_after:
+            return None
 
         log.info("Refetching JWKS for an unknown key id", kid=kid)
-        keys = await self._load(force=True)
-        try:
-            return keys[kid]
-        except KeyError as exc:
-            raise _unauthorized() from exc
+        key = self._select(await self._load(force=True), kid)
+        if key is None:
+            # Start the cooldown only once a freshly fetched key set really
+            # didn't have the kid. A refetch that failed is already held off
+            # by the fetch-failure cooldown, and shouldn't also lock out the
+            # kid that a later, working fetch would have found.
+            self._kid_refetch_after = time.monotonic() + _KID_REFETCH_COOLDOWN_SECONDS
+        return key
 
 
 jwks_cache = JWKSCache()
@@ -141,7 +209,7 @@ def bearer_token(request: Request) -> str:
         if scheme.lower() != "bearer" or not token.strip():
             raise _unauthorized()
         return token.strip()
-    token = request.headers.get("X-Access-Token", "")
+    token = request.headers.get("X-Access-Token", "").strip()
     if not token:
         raise _unauthorized()
     return token
@@ -162,25 +230,28 @@ async def verified_claims(request: Request) -> dict[str, Any]:
 
     try:
         key = await jwks_cache.signing_key(kid)
-    except HTTPException:
-        raise
-    except (httpx.HTTPError, ValueError, KeyError) as exc:
+    except JWKSUnavailableError as exc:
         # The key set is unreachable or unusable. That is this service's
         # problem, not the caller's, but it must not open the door: refuse.
-        log.warning("Could not load the realm JWKS", error=str(exc), jwks_url=settings.jwks_url)
+        log.warning("Could not load the realm JWKS", error=str(exc))
         raise _unauthorized() from exc
+    if key is None:
+        raise _unauthorized()
 
     try:
         claims: dict[str, Any] = jwt.decode(
             token,
             key=key,
-            algorithms=ALGORITHMS,
+            algorithms=list(ALGORITHMS),
             audience=settings.audience,
             issuer=settings.issuer,
             leeway=settings.token_leeway_seconds,
-            options={"require": ["exp", "iat", "iss", "aud"]},
+            options={"require": ["exp", "iat", "iss", "aud", "typ"]},
         )
     except jwt.PyJWTError as exc:
         log.info("Refused a bearer token", reason=type(exc).__name__)
         raise _unauthorized() from exc
+    if claims.get("typ") != ACCESS_TOKEN_TYPE:
+        log.info("Refused a token that is not an access token", typ=claims.get("typ"))
+        raise _unauthorized()
     return claims
