@@ -235,6 +235,26 @@ async def test_an_unknown_key_id_refetches_the_key_set(app, httpx_mock):
     assert len(httpx_mock.get_requests(url=JWKS_URL)) == 2
 
 
+async def test_a_rotation_that_lands_during_an_outage_recovers(app, httpx_mock, monkeypatch):
+    """Keycloak blips while a new key is being rotated in.
+
+    The forced refetch fails and falls back on the stale key set, so the new
+    kid still isn't there. That is not evidence the realm lacks the kid, so
+    it must not start the unknown-kid cooldown: doing so would keep refusing
+    the rotated key for a minute after Keycloak came back.
+    """
+    monkeypatch.setattr(token_module, "_FETCH_RETRY_COOLDOWN_SECONDS", 0.0)
+    httpx_mock.add_response(url=JWKS_URL, json=jwks(KID))
+    assert (await _get(app, bearer(mint(PARTNER_CLAIMS)))).status_code == 200
+
+    httpx_mock.add_response(url=JWKS_URL, status_code=503)
+    assert (await _get(app, bearer(mint(PARTNER_CLAIMS, kid=OTHER_KID)))).status_code == 401
+
+    httpx_mock.add_response(url=JWKS_URL, json=jwks(KID, OTHER_KID))
+    recovered = await _get(app, bearer(mint(PARTNER_CLAIMS, kid=OTHER_KID)))
+    assert recovered.status_code == 200
+
+
 async def test_a_junk_key_id_does_not_refetch_on_every_request(app, httpx_mock):
     """Otherwise a stream of forged tokens is a request amplifier pointed at
     Keycloak."""
