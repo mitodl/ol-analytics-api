@@ -144,6 +144,20 @@ refuses identically whether the organization is ungranted or doesn't exist.
 There's no round-trip and no grant store; removing the client revokes the
 access. See `docs/b2b-learner-records-provider-authorization.md`.
 
+That tenant does **not** read `X-Userinfo`. It verifies the bearer token
+itself (`tenants/b2b_learner_records/token.py`): RS256 against the realm's
+JWKS, checking issuer, audience, token class and lifetime, and it takes the
+claims it authorizes on from the verified payload. The gateway rebuilds
+`X-Userinfo` only for traffic that goes through the gateway, and the pod is
+reachable without doing so — the pod security group admits the whole pod
+subnet and the CNI runs with network policy disabled on both data clusters.
+Aggregate k-anonymized figures can live with that; records naming individual
+learners can't. `OL_ANALYTICS_API_B2B_LEARNER_RECORDS_ISSUER` and
+`..._AUDIENCE` come from Vault via the Pulumi stack, out of the same entry
+the gateway route reads, so the two can't check different realms. Both
+default to production's, and the app refuses to start if the issuer is left
+at that default in any other deployed environment.
+
 The org-manager round-trip authenticates with this service's **own** OAuth2
 client-credentials token and names the subject user explicitly
 (`?user_global_id=<keycloak sub>`), rather than forwarding the caller's
