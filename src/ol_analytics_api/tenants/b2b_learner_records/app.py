@@ -15,19 +15,24 @@ from fastapi.responses import JSONResponse
 
 from ol_analytics_api.core.errors import add_shared_error_handlers
 from ol_analytics_api.core.health import register_readiness_check
+from ol_analytics_api.tenants.b2b_learner_records.errors import (
+    ErrorCode,
+    add_error_handlers,
+    error_body,
+)
 from ol_analytics_api.tenants.b2b_learner_records.routers import organizations
 
 TENANT_NAME = "b2b_learner_records"
 
 
 async def _bad_request(_request: Request, exc: RequestValidationError) -> JSONResponse:
-    # The contract's error body is {"detail": "<message>"} with a 400, not
-    # FastAPI's 422 carrying a list of error objects.
+    # The contract's error body is {"code": ..., "detail": ...} with a 400,
+    # not FastAPI's 422 carrying a list of error objects.
     error = exc.errors()[0]
     location = ".".join(str(part) for part in error["loc"][1:])
     return JSONResponse(
         status_code=status.HTTP_400_BAD_REQUEST,
-        content={"detail": f"{location}: {error['msg']}"},
+        content=error_body(ErrorCode.INVALID_PARAMETER, f"{location}: {error['msg']}"),
     )
 
 
@@ -41,6 +46,9 @@ def create_app() -> FastAPI:
     )
     app.include_router(organizations.router)
     add_shared_error_handlers(app)
+    # After the shared handlers: this tenant overrides the 503 so it carries
+    # the code its contract documents.
+    add_error_handlers(app)
     app.add_exception_handler(RequestValidationError, _bad_request)  # type: ignore[arg-type]
     register_readiness_check(TENANT_NAME)
     return app
