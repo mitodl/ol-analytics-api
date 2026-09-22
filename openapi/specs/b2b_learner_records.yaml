@@ -1,0 +1,862 @@
+openapi: 3.1.0
+info:
+  title: B2B Learner Records
+  description: Machine-to-machine, read-only, organization-scoped learner progress
+    records for B2B site-license partners. Records identify individual learners.
+  version: 0.0.1
+paths:
+  /api/v1/learner-records/organizations/{organization_id}/learners:
+    get:
+      tags:
+      - learners
+      summary: Learner roster with progress rollups
+      operationId: listLearners
+      security:
+      - oauth2ClientCredentials:
+        - learner-records:read
+      parameters:
+      - name: organization_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Organization Id
+      - name: contract_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Contract Id
+      - name: learner_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: array
+            items:
+              type: string
+              format: uuid
+            maxItems: 100
+          - type: 'null'
+          description: Repeat for several.
+          title: Learner Id
+        description: Repeat for several.
+      - name: updated_since
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: Return only records changed at or after this instant.
+          title: Updated Since
+        description: Return only records changed at or after this instant.
+      - name: include_inactive
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Include deactivated enrollments (unenrolled, refunded, transferred).
+          default: false
+          title: Include Inactive
+        description: Include deactivated enrollments (unenrolled, refunded, transferred).
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 100
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LearnerRecordsResponse_Learner_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/learner-records/organizations/{organization_id}/enrollments:
+    get:
+      tags:
+      - enrollments
+      summary: Learner-by-course-run enrollment and completion records
+      operationId: listEnrollments
+      security:
+      - oauth2ClientCredentials:
+        - learner-records:read
+      parameters:
+      - name: organization_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Organization Id
+      - name: contract_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Contract Id
+      - name: courserun_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Courserun Id
+      - name: learner_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: array
+            items:
+              type: string
+              format: uuid
+            maxItems: 100
+          - type: 'null'
+          description: Repeat for several.
+          title: Learner Id
+        description: Repeat for several.
+      - name: completion_status
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: array
+            items:
+              $ref: '#/components/schemas/CompletionStatusFilter'
+          - type: 'null'
+          title: Completion Status
+      - name: updated_since
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: Return only records changed at or after this instant.
+          title: Updated Since
+        description: Return only records changed at or after this instant.
+      - name: include_inactive
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Include deactivated enrollments (unenrolled, refunded, transferred).
+          default: false
+          title: Include Inactive
+        description: Include deactivated enrollments (unenrolled, refunded, transferred).
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 100
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LearnerRecordsResponse_Enrollment_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/learner-records/organizations/{organization_id}/courses:
+    get:
+      tags:
+      - catalog
+      summary: Contracts and course runs covered by the organization's licence
+      operationId: listCourses
+      security:
+      - oauth2ClientCredentials:
+        - learner-records:read
+      parameters:
+      - name: organization_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Organization Id
+      - name: contract_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Contract Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 100
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LearnerRecordsResponse_CourseRun_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+components:
+  schemas:
+    CompletionStatus:
+      type: string
+      enum:
+      - not_started
+      - in_progress
+      - passed
+      - certified
+      title: CompletionStatus
+      description: '``passed`` without ``certified`` is normal — certificates are
+        issued on
+
+        a schedule after grading, and audit-mode enrollments never certify.'
+    CompletionStatusFilter:
+      type: string
+      enum:
+      - not_started
+      - in_progress
+      - passed
+      - certified
+      - unknown
+      title: CompletionStatusFilter
+    CourseRun:
+      properties:
+        organization_id:
+          type: string
+          format: uuid
+          title: Organization Id
+          description: The organization's Keycloak organization UUID.
+        organization_name:
+          type: string
+          title: Organization Name
+          description: Display name of the organization.
+        contract_id:
+          type: integer
+          format: int64
+          title: Contract Id
+          description: Numeric identifier of the B2B contract.
+        contract_name:
+          type: string
+          title: Contract Name
+          description: Name of the B2B contract.
+        contract_is_active:
+          type: boolean
+          title: Contract Is Active
+          description: Whether the contract is currently active.
+        contract_start_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Contract Start Date
+          description: Null where the contract records no start date.
+        contract_end_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Contract End Date
+          description: Null where the contract records no end date.
+        seat_limit:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Seat Limit
+          description: Null means uncapped, not zero.
+        courserun_id:
+          type: string
+          title: Courserun Id
+          description: Readable course-run identifier, e.g. `course-v1:MITxT+14.310x+2T2026`.
+        courserun_title:
+          type: string
+          title: Courserun Title
+          description: Mutable display title — key on courserun_id.
+        courserun_start_on:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Courserun Start On
+          description: Start date/time of the course run, or null if unscheduled.
+        courserun_end_on:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Courserun End On
+          description: Null for self-paced runs.
+      type: object
+      required:
+      - organization_id
+      - organization_name
+      - contract_id
+      - contract_name
+      - contract_is_active
+      - contract_start_date
+      - contract_end_date
+      - seat_limit
+      - courserun_id
+      - courserun_title
+      - courserun_start_on
+      - courserun_end_on
+      title: CourseRun
+      description: 'One course run covered by one of the organization''s contracts.
+        No personal data,
+
+        so no consent gate.'
+    Enrollment:
+      properties:
+        learner_id:
+          type: string
+          format: uuid
+          title: Learner Id
+          description: Stable opaque identifier, consistent across endpoints and stable
+            across email changes. Use as the join key.
+        email:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Email
+          description: Not a join key; may differ from the enrolling address.
+        full_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Full Name
+          description: Often null.
+        organization_id:
+          type: string
+          format: uuid
+          title: Organization Id
+          description: The organization's Keycloak organization UUID.
+        contract_id:
+          type: integer
+          format: int64
+          title: Contract Id
+          description: Numeric identifier of the B2B contract the enrollment is attributed
+            to.
+        contract_name:
+          type: string
+          title: Contract Name
+          description: Name of the B2B contract.
+        courserun_id:
+          type: string
+          title: Courserun Id
+          description: Readable course-run identifier, e.g. `course-v1:MITxT+14.310x+2T2026`.
+        courserun_title:
+          type: string
+          title: Courserun Title
+          description: Mutable display title — key on courserun_id.
+        courserun_start_on:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Courserun Start On
+          description: Start date/time of the course run, or null if unscheduled.
+        courserun_end_on:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Courserun End On
+          description: Null for self-paced runs.
+        enrolled_on:
+          type: string
+          format: date-time
+          title: Enrolled On
+          description: This run's enrollment, not an earlier run of the same course.
+            Not consent-gated.
+        enrollment_is_active:
+          type: boolean
+          title: Enrollment Is Active
+          description: Not consent-gated.
+        enrollment_mode:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Enrollment Mode
+          description: e.g. `verified`, `audit`. Determines whether the run is certificate-bearing.
+        enrollment_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Enrollment Status
+          description: Deactivation reason where one was recorded.
+        outcomes_shared:
+          type: boolean
+          title: Outcomes Shared
+          description: Whether the learner has opted in to sharing their course status.
+            False means every field below is null.
+        completion_status:
+          anyOf:
+          - $ref: '#/components/schemas/CompletionStatus'
+          - type: 'null'
+          description: 'Single derived answer per row. Null when outcomes are withheld.
+            Until activity data lands, not_started and in_progress come from the grade
+            alone: in_progress means a nonzero grade, so a learner active in the run
+            with no graded work yet reads not_started.'
+        is_passing:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Is Passing
+          description: Null where no grade has been computed.
+        grade:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Grade
+          description: Numeric grade between 0 and 1.
+        letter_grade:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Letter Grade
+          description: Frequently null — not every platform records one.
+        certificate_issued_on:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Certificate Issued On
+          description: Timestamp the certificate was issued, or null if none exists.
+        certificate_is_revoked:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Certificate Is Revoked
+          description: 'Null where no certificate exists. A revoked certificate doesn''t
+            count as certified: completion_status then follows the grade, so it can
+            read passed, in_progress or not_started.'
+        last_active_on:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Last Active On
+          description: 'Most recent day with recorded activity in this course run.
+            Not yet populated upstream: null for every record until activity data
+            lands, whatever outcomes_shared says.'
+        days_active:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Days Active
+          description: 'Distinct days with recorded activity in this course run. Not
+            yet populated upstream: null for every record until activity data lands,
+            whatever outcomes_shared says.'
+        videos_watched:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Videos Watched
+          description: 'Distinct video blocks played. Not yet populated upstream:
+            null for every record until activity data lands, whatever outcomes_shared
+            says.'
+        problems_attempted:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Problems Attempted
+          description: 'Distinct problem blocks attempted. Not yet populated upstream:
+            null for every record until activity data lands, whatever outcomes_shared
+            says.'
+        chatbot_interactions:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Chatbot Interactions
+          description: 'Chatbot interactions recorded for this course run. Not yet
+            populated upstream: null for every record until activity data lands, whatever
+            outcomes_shared says.'
+      type: object
+      required:
+      - learner_id
+      - email
+      - full_name
+      - organization_id
+      - contract_id
+      - contract_name
+      - courserun_id
+      - courserun_title
+      - courserun_start_on
+      - courserun_end_on
+      - enrolled_on
+      - enrollment_is_active
+      - enrollment_mode
+      - enrollment_status
+      - outcomes_shared
+      - completion_status
+      - is_passing
+      - grade
+      - letter_grade
+      - certificate_issued_on
+      - certificate_is_revoked
+      - last_active_on
+      - days_active
+      - videos_watched
+      - problems_attempted
+      - chatbot_interactions
+      title: Enrollment
+      description: One learner's enrollment in one course run under one contract.
+    HTTPValidationError:
+      properties:
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          type: array
+          title: Detail
+      type: object
+      title: HTTPValidationError
+    Learner:
+      properties:
+        learner_id:
+          type: string
+          format: uuid
+          title: Learner Id
+          description: Stable opaque identifier, consistent across endpoints and stable
+            across email changes. Use as the join key.
+        email:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Email
+          description: Not a join key; may differ from the enrolling address.
+        full_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Full Name
+          description: Often null.
+        organization_id:
+          type: string
+          format: uuid
+          title: Organization Id
+          description: The organization's Keycloak organization UUID.
+        organization_name:
+          type: string
+          title: Organization Name
+          description: Display name of the organization.
+        membership_source:
+          $ref: '#/components/schemas/MembershipSource'
+          description: How the learner is associated with the organization; see MembershipSource
+            for the individual values.
+        is_organization_manager:
+          type: boolean
+          title: Is Organization Manager
+          description: Administers the organization in MITx Online.
+        first_enrolled_on:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: First Enrolled On
+          description: Null for a roster member with no enrollments.
+        last_enrolled_on:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Enrolled On
+          description: Timestamp of the learner's most recent enrollment.
+        courses_enrolled:
+          type: integer
+          title: Courses Enrolled
+          description: Distinct course runs under the organization's contracts. Not
+            consent-gated.
+        outcomes_shared:
+          type: boolean
+          title: Outcomes Shared
+          description: Whether this learner has opted in to sharing their course status.
+            False means every field below is null.
+        outcomes_consent_on:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Outcomes Consent On
+          description: When consent was recorded. Null when outcomes_shared is false.
+        last_active_on:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Last Active On
+          description: 'Most recent day with recorded course activity. A date, not
+            a timestamp: activity is aggregated per day. Not yet populated upstream:
+            null for every record until activity data lands, whatever outcomes_shared
+            says.'
+        courses_in_progress:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Courses In Progress
+          description: 'Distinct course runs the learner has started but not yet passed
+            or certified. Not yet populated upstream: null for every record until
+            activity data lands, whatever outcomes_shared says.'
+        courses_passed:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Courses Passed
+          description: Distinct course runs where the learner has a passing grade.
+        courses_certified:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Courses Certified
+          description: Distinct course runs where the learner holds a non-revoked
+            certificate.
+        certificates_earned:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Certificates Earned
+          description: Includes program certificates, which have no course run and
+            so are not in courses_certified.
+      type: object
+      required:
+      - learner_id
+      - email
+      - full_name
+      - organization_id
+      - organization_name
+      - membership_source
+      - is_organization_manager
+      - first_enrolled_on
+      - last_enrolled_on
+      - courses_enrolled
+      - outcomes_shared
+      - outcomes_consent_on
+      - last_active_on
+      - courses_in_progress
+      - courses_passed
+      - courses_certified
+      - certificates_earned
+      title: Learner
+      description: One learner's association with the organization.
+    LearnerRecordsResponse_CourseRun_:
+      properties:
+        organization_id:
+          type: string
+          format: uuid
+          title: Organization Id
+          description: The organization's Keycloak organization UUID.
+        as_of:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: As Of
+          description: Last refresh of the backing data. Null before an organization's
+            first refresh.
+        total_count:
+          type: integer
+          title: Total Count
+          description: Matching records across all pages, not this page.
+        outcomes_withheld_count:
+          type: integer
+          title: Outcomes Withheld Count
+          description: 'Records in total_count carrying outcomes_shared: false. Always
+            0 on endpoints with no consent gate.'
+        data:
+          items:
+            $ref: '#/components/schemas/CourseRun'
+          type: array
+          title: Data
+          description: The requested page of records.
+      type: object
+      required:
+      - organization_id
+      - as_of
+      - total_count
+      - outcomes_withheld_count
+      - data
+      title: LearnerRecordsResponse[CourseRun]
+    LearnerRecordsResponse_Enrollment_:
+      properties:
+        organization_id:
+          type: string
+          format: uuid
+          title: Organization Id
+          description: The organization's Keycloak organization UUID.
+        as_of:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: As Of
+          description: Last refresh of the backing data. Null before an organization's
+            first refresh.
+        total_count:
+          type: integer
+          title: Total Count
+          description: Matching records across all pages, not this page.
+        outcomes_withheld_count:
+          type: integer
+          title: Outcomes Withheld Count
+          description: 'Records in total_count carrying outcomes_shared: false. Always
+            0 on endpoints with no consent gate.'
+        data:
+          items:
+            $ref: '#/components/schemas/Enrollment'
+          type: array
+          title: Data
+          description: The requested page of records.
+      type: object
+      required:
+      - organization_id
+      - as_of
+      - total_count
+      - outcomes_withheld_count
+      - data
+      title: LearnerRecordsResponse[Enrollment]
+    LearnerRecordsResponse_Learner_:
+      properties:
+        organization_id:
+          type: string
+          format: uuid
+          title: Organization Id
+          description: The organization's Keycloak organization UUID.
+        as_of:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: As Of
+          description: Last refresh of the backing data. Null before an organization's
+            first refresh.
+        total_count:
+          type: integer
+          title: Total Count
+          description: Matching records across all pages, not this page.
+        outcomes_withheld_count:
+          type: integer
+          title: Outcomes Withheld Count
+          description: 'Records in total_count carrying outcomes_shared: false. Always
+            0 on endpoints with no consent gate.'
+        data:
+          items:
+            $ref: '#/components/schemas/Learner'
+          type: array
+          title: Data
+          description: The requested page of records.
+      type: object
+      required:
+      - organization_id
+      - as_of
+      - total_count
+      - outcomes_withheld_count
+      - data
+      title: LearnerRecordsResponse[Learner]
+    MembershipSource:
+      type: string
+      enum:
+      - roster
+      - enrollment
+      - both
+      title: MembershipSource
+      description: '``roster`` = on the organization''s membership roster with no
+        enrollments
+
+        (an assigned, unstarted seat). ``enrollment`` = enrolled under a contract
+
+        but absent from the roster (usually a provisioning lag). ``both`` = the
+
+        expected state.'
+    ValidationError:
+      properties:
+        loc:
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+          type: array
+          title: Location
+        msg:
+          type: string
+          title: Message
+        type:
+          type: string
+          title: Error Type
+        input:
+          title: Input
+        ctx:
+          type: object
+          title: Context
+      type: object
+      required:
+      - loc
+      - msg
+      - type
+      title: ValidationError
+  securitySchemes:
+    oauth2ClientCredentials:
+      type: oauth2
+      flows:
+        clientCredentials:
+          scopes:
+            learner-records:read: Read records, identity fields included.
+          tokenUrl: https://sso.ol.mit.edu/realms/olapps/protocol/openid-connect/token

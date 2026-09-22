@@ -54,6 +54,7 @@ class CompletionStatusFilter(StrEnum):
     "/learner-progress",
     response_model=LearnerProgressResponse,
     name="learner_progress",
+    operation_id="learners_progress_retrieve",
     summary="Each learner's enrollment and completion in each course run under the contract",
 )
 async def learner_progress(  # noqa: PLR0913
