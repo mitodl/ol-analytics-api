@@ -38,7 +38,7 @@ _MV = "mv_b2b_mit_admin_contract_health"
 _ORDER_BY = ("organization_key", "contract_pk")
 
 
-@router.get("/contract-health")
+@router.get("/contract-health", operation_id="admin_contract_health_retrieve")
 async def contract_health(
     page: Annotated[Pagination, Depends(pagination)],
 ) -> AdminAnalyticsResponse[MitAdminContractHealth]:

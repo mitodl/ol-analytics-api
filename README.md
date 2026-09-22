@@ -98,8 +98,13 @@ state. Wire it up with one entry in `main.py`'s `TENANTS` list:
 
 ```python
 TENANTS: list[Tenant] = [
-    Tenant("/api/v1/analytics", b2b_dashboard.create_app, b2b_dashboard.lifespan),
-    Tenant("/api/v1/<new-tenant>", new_tenant.create_app),
+    Tenant(
+        b2b_dashboard.TENANT_NAME,
+        "/api/v1/analytics",
+        b2b_dashboard.create_app,
+        b2b_dashboard.lifespan,
+    ),
+    Tenant(new_tenant.TENANT_NAME, "/api/v1/<new-tenant>", new_tenant.create_app),
 ]
 ```
 
@@ -107,10 +112,14 @@ A `Tenant` takes a `create_app` *factory* (not a pre-built instance) so the
 root app constructs every sub-app after OpenTelemetry is configured — a
 tenant is instrumented regardless of import order. If the tenant owns
 resources that need startup/shutdown (e.g. an httpx client), it exposes them
-as an ordinary `lifespan` context manager and passes it as the third
+as an ordinary `lifespan` context manager and passes it as the fourth
 argument: a mounted sub-app's own `lifespan=` is never invoked by the ASGI
 server (only the root app's is), so the root lifespan enters each tenant's
 explicitly.
+
+The leading `name` is the tenant's own `TENANT_NAME`, which already names its
+readiness sub-path. It also names the tenant's published OpenAPI document
+(`openapi/specs/<name>.yaml`), so it ends up in a consumer-visible filename.
 
 Each tenant gets independent OpenAPI docs at `<mount-path>/docs`.
 
@@ -208,3 +217,49 @@ uv run pytest
 uv run ruff check .
 uv run mypy src
 ```
+
+## The published API contract
+
+Each tenant's OpenAPI document is committed under `openapi/specs/<tenant>.yaml`
+and regenerated with:
+
+```bash
+uv run bin/generate-openapi-spec
+```
+
+Run it whenever a response model, route or query parameter changes. CI fails
+otherwise — both as a test (`tests/test_openapi_spec.py`) and as a
+`--check` run of the generator itself.
+
+The spec is committed rather than served-and-forgotten because it is meant to
+become a cross-repo interface. The intended pipeline mirrors the one already
+running for `mitxonline` and `mit-learn`: a Concourse pipeline in
+`ol-infrastructure` (`ol_concourse/pipelines/libraries/api_clients_pipeline.py`)
+watching these files on a release branch, running `openapi-generator` over
+them, and publishing a TypeScript client the same way
+`@mitodl/mitxonline-api-axios` and `@mitodl/mit-learn-api-axios` are today.
+None of that is wired up yet — this repo has no entry in `PIPELINE_CONFIGS`
+and no `release` branch, and MIT Learn's dashboard still uses its hand-written
+client. Until it is, committing the spec still buys the same thing locally: a
+column that appears here without appearing in the diff is a column a
+consumer would find out about at runtime once the pipeline exists.
+
+Three details are worth knowing before editing a route:
+
+- **`operation_id` is named explicitly on every route.** It becomes the
+  generated client's method name, so FastAPI's path-derived default would both
+  produce an unreadable name and rename the method whenever the path moves.
+- **Published paths carry the tenant's mount prefix.** A mounted sub-app
+  describes its routes relative to its own root; `openapi.py` re-prefixes them
+  so a generated client configured with the service host requests the URLs the
+  service actually serves.
+- **A repeatable query parameter is a plain `list[X]`, never `list[X] | None`.**
+  The optional form renders as `anyOf: [array, null]`, which openapi-generator
+  cannot reduce; it emits a client that spreads the value with `Object.entries`
+  and sends `?0=a&1=b` instead of repeating the parameter name. Use
+  `Query(default_factory=list)` and treat the empty list as "no filter".
+
+Note that `docs/openapi/b2b-learner-records-v1.yaml` is a different artifact:
+a hand-written draft published so partners could review the record shape
+before it was built. `openapi/specs/b2b_learner_records.yaml` is generated
+from the running code and is the one a client is built from.

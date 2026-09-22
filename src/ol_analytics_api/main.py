@@ -98,8 +98,14 @@ class Tenant:
     idiom a tenant author already writes) makes the lifecycle contract
     structural: a tenant declares its lifespan in one place and hands it over,
     instead of remembering to wire a bespoke hook pair into a registry.
+
+    ``name`` is the tenant's stable slug — the tenant's own ``TENANT_NAME``,
+    which already names its readiness sub-path. It also names the tenant's
+    published OpenAPI document (openapi/specs/<name>.yaml), so it is part of a
+    consumer-visible filename and should not be renamed casually.
     """
 
+    name: str
     mount_path: str
     create_app: Callable[[], FastAPI]
     lifespan: Callable[[FastAPI], AbstractAsyncContextManager[None]] | None = None
@@ -107,8 +113,17 @@ class Tenant:
 
 # Add a new tenant by appending a Tenant() entry here.
 TENANTS: list[Tenant] = [
-    Tenant("/api/v1/analytics", b2b_dashboard.create_app, b2b_dashboard.lifespan),
-    Tenant("/api/v1/learner-records", b2b_learner_records.create_app),
+    Tenant(
+        b2b_dashboard.TENANT_NAME,
+        "/api/v1/analytics",
+        b2b_dashboard.create_app,
+        b2b_dashboard.lifespan,
+    ),
+    Tenant(
+        b2b_learner_records.TENANT_NAME,
+        "/api/v1/learner-records",
+        b2b_learner_records.create_app,
+    ),
 ]
 
 

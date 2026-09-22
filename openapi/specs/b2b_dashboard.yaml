@@ -1,0 +1,2130 @@
+openapi: 3.1.0
+info:
+  title: B2B Analytics Dashboard
+  description: B2B site-license analytics for org managers and MIT contract admins.
+    Aggregate endpoints apply a k-anonymity floor. The contract-scoped learner-progress
+    endpoint returns individual learners on the organization's own seats, with outcome
+    fields consent-gated.
+  version: 0.0.1
+paths:
+  /api/v1/analytics/organizations/{organization_id}/contract-utilization:
+    get:
+      tags:
+      - organizations
+      summary: Contract Utilization
+      operationId: organizations_contract_utilization_retrieve
+      parameters:
+      - name: organization_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Organization Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 100
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgAnalyticsResponse_ContractUtilization_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/analytics/organizations/{organization_id}/enrollment-funnel:
+    get:
+      tags:
+      - organizations
+      summary: Enrollment Funnel
+      operationId: organizations_enrollment_funnel_retrieve
+      parameters:
+      - name: organization_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Organization Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 100
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgAnalyticsResponse_EnrollmentCompletionFunnel_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/analytics/organizations/{organization_id}/engagement-trend:
+    get:
+      tags:
+      - organizations
+      summary: Engagement Trend
+      operationId: organizations_engagement_trend_retrieve
+      parameters:
+      - name: organization_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Organization Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 100
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgAnalyticsResponse_MonthlyEngagementTrend_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/analytics/organizations/{organization_id}/program-funnel:
+    get:
+      tags:
+      - organizations
+      summary: Program Funnel
+      operationId: organizations_program_funnel_retrieve
+      parameters:
+      - name: organization_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Organization Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 100
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgAnalyticsResponse_ProgramFunnel_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/analytics/organizations/{organization_id}/content-engagement:
+    get:
+      tags:
+      - organizations
+      summary: Content Engagement
+      operationId: organizations_content_engagement_retrieve
+      parameters:
+      - name: organization_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Organization Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 100
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgAnalyticsResponse_ContentEngagementDepth_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/analytics/organizations/{organization_id}/contracts/{contract_id}/contract-utilization:
+    get:
+      tags:
+      - contracts
+      summary: Contract Utilization
+      operationId: contracts_contract_utilization_retrieve
+      parameters:
+      - name: organization_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Organization Id
+      - name: contract_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Contract Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 100
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgAnalyticsResponse_ContractUtilization_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/analytics/organizations/{organization_id}/contracts/{contract_id}/enrollment-funnel:
+    get:
+      tags:
+      - contracts
+      summary: Enrollment Funnel
+      operationId: contracts_enrollment_funnel_retrieve
+      parameters:
+      - name: organization_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Organization Id
+      - name: contract_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Contract Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 100
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgAnalyticsResponse_EnrollmentCompletionFunnel_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/analytics/organizations/{organization_id}/contracts/{contract_id}/engagement-trend:
+    get:
+      tags:
+      - contracts
+      summary: Engagement Trend
+      operationId: contracts_engagement_trend_retrieve
+      parameters:
+      - name: organization_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Organization Id
+      - name: contract_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Contract Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 100
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgAnalyticsResponse_ContractMonthlyEngagementTrend_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/analytics/organizations/{organization_id}/contracts/{contract_id}/program-funnel:
+    get:
+      tags:
+      - contracts
+      summary: Program Funnel
+      operationId: contracts_program_funnel_retrieve
+      parameters:
+      - name: organization_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Organization Id
+      - name: contract_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Contract Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 100
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgAnalyticsResponse_ProgramFunnel_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/analytics/organizations/{organization_id}/contracts/{contract_id}/content-engagement:
+    get:
+      tags:
+      - contracts
+      summary: Content Engagement
+      operationId: contracts_content_engagement_retrieve
+      parameters:
+      - name: organization_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Organization Id
+      - name: contract_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Contract Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 100
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgAnalyticsResponse_ContractContentEngagementDepth_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/analytics/organizations/{organization_id}/contracts/{contract_id}/learner-progress:
+    get:
+      tags:
+      - learners
+      summary: Each learner's enrollment and completion in each course run under the
+        contract
+      operationId: learners_progress_retrieve
+      parameters:
+      - name: organization_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Organization Id
+      - name: contract_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Contract Id
+      - name: search
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 254
+          - type: 'null'
+          description: Case-insensitive match on email or name.
+          title: Search
+        description: Case-insensitive match on email or name.
+      - name: completion_status
+        in: query
+        required: false
+        schema:
+          type: array
+          items:
+            $ref: '#/components/schemas/CompletionStatusFilter'
+          description: Repeat for several. `unknown` selects rows with withheld outcomes.
+          title: Completion Status
+        description: Repeat for several. `unknown` selects rows with withheld outcomes.
+      - name: include_inactive
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Include deactivated enrollments (unenrolled, refunded).
+          default: false
+          title: Include Inactive
+        description: Include deactivated enrollments (unenrolled, refunded).
+      - name: sort
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/SortKey'
+          default: full_name
+      - name: descending
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Descending
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 100
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LearnerProgressResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/analytics/admin/contract-health:
+    get:
+      tags:
+      - admin
+      summary: Contract Health
+      operationId: admin_contract_health_retrieve
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 100
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminAnalyticsResponse_MitAdminContractHealth_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+components:
+  schemas:
+    AdminAnalyticsResponse_MitAdminContractHealth_:
+      properties:
+        as_of:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: As Of
+        total_count:
+          type: integer
+          title: Total Count
+        data:
+          items:
+            $ref: '#/components/schemas/MitAdminContractHealth'
+          type: array
+          title: Data
+      type: object
+      required:
+      - as_of
+      - total_count
+      - data
+      title: AdminAnalyticsResponse[MitAdminContractHealth]
+    CompletionStatus:
+      type: string
+      enum:
+      - not_started
+      - in_progress
+      - passed
+      - certified
+      title: CompletionStatus
+      description: '``passed`` without ``certified`` is normal: certificates are issued
+        on a
+
+        schedule after grading, and audit-mode enrollments never certify.'
+    CompletionStatusFilter:
+      type: string
+      enum:
+      - not_started
+      - in_progress
+      - passed
+      - certified
+      - unknown
+      title: CompletionStatusFilter
+    ContentEngagementDepth:
+      properties:
+        organization_key:
+          type: string
+          title: Organization Key
+          description: Internal identifier for the organization.
+        organization_name:
+          type: string
+          title: Organization Name
+          description: The organization's name.
+        courserun_readable_id:
+          type: string
+          title: Courserun Readable Id
+          description: The course run's ID, e.g. course-v1:MITxT+14.310x+2T2026.
+        courserun_title:
+          type: string
+          title: Courserun Title
+          description: The course's title.
+        total_enrolled_learners:
+          type: integer
+          title: Total Enrolled Learners
+          description: Learners who have ever enrolled in this course run. When too
+            few learners are in the group, the whole row is withheld to avoid identifying
+            them.
+        engaged_learners:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Engaged Learners
+          description: 'Enrolled learners who did anything in the course: watched
+            a video, attempted a problem, posted in a discussion, used the chatbot,
+            moved through course pages or earned a certificate. Withheld when too
+            few learners are in the group to report without identifying them.'
+        engagement_rate_pct:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Engagement Rate Pct
+          description: Percentage of enrolled learners who did anything in the course.
+            Withheld when the learner count it is based on is withheld.
+        total_videos_watched:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Total Videos Watched
+          description: Videos watched in this course run, counting every view. Withheld
+            when the learner count it is based on is withheld.
+        video_watchers:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Video Watchers
+          description: Learners who watched at least one video in this course run.
+            Withheld when too few learners are in the group to report without identifying
+            them.
+        avg_videos_per_engaged_learner:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Avg Videos Per Engaged Learner
+          description: Average videos watched per learner who did anything in the
+            course. Withheld when the learner count it is based on is withheld.
+        total_problems_attempted:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Total Problems Attempted
+          description: Problem attempts in this course run, counting every attempt.
+            Withheld when the learner count it is based on is withheld.
+        problem_attempters:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Problem Attempters
+          description: Learners who attempted at least one problem in this course
+            run. Withheld when too few learners are in the group to report without
+            identifying them.
+        avg_problems_per_engaged_learner:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Avg Problems Per Engaged Learner
+          description: Average problem attempts per learner who did anything in the
+            course. Withheld when the learner count it is based on is withheld.
+        total_chatbot_interactions:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Total Chatbot Interactions
+          description: Chatbot interactions in this course run. Withheld when the
+            learner count it is based on is withheld.
+        chatbot_users:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Chatbot Users
+          description: Learners who used the chatbot in this course run. Withheld
+            when too few learners are in the group to report without identifying them.
+        chatbot_adoption_pct:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Chatbot Adoption Pct
+          description: Percentage of enrolled learners who used the chatbot. Withheld
+            when the learner count it is based on is withheld.
+        certificates_earned:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Certificates Earned
+          description: Certificates earned in this course run. Withheld when too few
+            learners are in the group to report without identifying them.
+      type: object
+      required:
+      - organization_key
+      - organization_name
+      - courserun_readable_id
+      - courserun_title
+      - total_enrolled_learners
+      - engaged_learners
+      - engagement_rate_pct
+      - total_videos_watched
+      - video_watchers
+      - avg_videos_per_engaged_learner
+      - total_problems_attempted
+      - problem_attempters
+      - avg_problems_per_engaged_learner
+      - total_chatbot_interactions
+      - chatbot_users
+      - chatbot_adoption_pct
+      - certificates_earned
+      title: ContentEngagementDepth
+      description: 'mv_b2b_content_engagement_depth — grain: org x course_run (all-time).
+
+
+        The chatbot columns are exact: ``total_chatbot_interactions`` sums over,
+
+        and ``chatbot_adoption_pct`` divides by, ``chatbot_users`` — which this
+
+        view does emit, so both are correctly floored. ``engagement_rate_pct`` is
+
+        ``engaged_learners / total_enrolled_learners``, also correct.
+
+
+        The video and problem columns are floored through the cohorts the view now
+
+        publishes (ol-data-platform PR #2520): ``total_videos_watched`` is summed
+
+        over ``video_watchers`` and ``total_problems_attempted`` over
+
+        ``problem_attempters``, each a strict subset of ``engaged_learners``
+
+        because watching a video or attempting a problem is one of the activities
+
+        that sets ``active_count``. (Every cohort this view emits is such a
+
+        subset. That is a property of these particular cohorts, not a general
+
+        rule — see ``MonthlyEngagementTrend``, where ``enrolling_learners`` is
+
+        not a subset of its primary because enrolling does not set
+
+        ``active_count``.)
+
+
+        The ``avg_*_per_engaged_learner`` columns are derived from *two* cohorts,
+
+        which is why each names both. The denominator is ``engaged_learners`` —
+
+        that is what the dbt SQL divides by, so the naming is now accurate — but
+
+        the numerator is the activity SUM, contributed by only the narrower
+
+        cohort. Mapping the average to its denominator alone would leave the
+
+        numerator recoverable: an unsuppressed average multiplied by a published
+
+        ``engaged_learners`` yields the suppressed total exactly, and when the
+
+        contributing cohort is a single learner that total *is* that learner''s
+
+        value. Naming both cohorts nulls the average whenever either is sub-floor.
+
+
+        ``certificates_earned`` is the one column still floored as a count of
+
+        itself: it is ``sum(certificate_count)``, an event count, and this view
+
+        emits no certified-learner cohort to attribute it to (unlike
+
+        ``MonthlyEngagementTrend``, which has ``certified_learners``). Flooring an
+
+        event count is weaker than flooring a cohort — several certificates can
+
+        come from one learner — but strictly better than not flooring it. Emitting
+
+        the cohort from dbt would close this the same way #2520 closed the others.'
+    ContractContentEngagementDepth:
+      properties:
+        organization_key:
+          type: string
+          title: Organization Key
+          description: Internal identifier for the organization.
+        organization_name:
+          type: string
+          title: Organization Name
+          description: The organization's name.
+        courserun_readable_id:
+          type: string
+          title: Courserun Readable Id
+          description: The course run's ID, e.g. course-v1:MITxT+14.310x+2T2026.
+        courserun_title:
+          type: string
+          title: Courserun Title
+          description: The course's title.
+        total_enrolled_learners:
+          type: integer
+          title: Total Enrolled Learners
+          description: Learners who have ever enrolled in this course run. When too
+            few learners are in the group, the whole row is withheld to avoid identifying
+            them.
+        engaged_learners:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Engaged Learners
+          description: 'Enrolled learners who did anything in the course: watched
+            a video, attempted a problem, posted in a discussion, used the chatbot,
+            moved through course pages or earned a certificate. Withheld when too
+            few learners are in the group to report without identifying them.'
+        engagement_rate_pct:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Engagement Rate Pct
+          description: Percentage of enrolled learners who did anything in the course.
+            Withheld when the learner count it is based on is withheld.
+        total_videos_watched:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Total Videos Watched
+          description: Videos watched in this course run, counting every view. Withheld
+            when the learner count it is based on is withheld.
+        video_watchers:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Video Watchers
+          description: Learners who watched at least one video in this course run.
+            Withheld when too few learners are in the group to report without identifying
+            them.
+        avg_videos_per_engaged_learner:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Avg Videos Per Engaged Learner
+          description: Average videos watched per learner who did anything in the
+            course. Withheld when the learner count it is based on is withheld.
+        total_problems_attempted:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Total Problems Attempted
+          description: Problem attempts in this course run, counting every attempt.
+            Withheld when the learner count it is based on is withheld.
+        problem_attempters:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Problem Attempters
+          description: Learners who attempted at least one problem in this course
+            run. Withheld when too few learners are in the group to report without
+            identifying them.
+        avg_problems_per_engaged_learner:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Avg Problems Per Engaged Learner
+          description: Average problem attempts per learner who did anything in the
+            course. Withheld when the learner count it is based on is withheld.
+        total_chatbot_interactions:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Total Chatbot Interactions
+          description: Chatbot interactions in this course run. Withheld when the
+            learner count it is based on is withheld.
+        chatbot_users:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Chatbot Users
+          description: Learners who used the chatbot in this course run. Withheld
+            when too few learners are in the group to report without identifying them.
+        chatbot_adoption_pct:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Chatbot Adoption Pct
+          description: Percentage of enrolled learners who used the chatbot. Withheld
+            when the learner count it is based on is withheld.
+        certificates_earned:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Certificates Earned
+          description: Certificates earned in this course run. Withheld when too few
+            learners are in the group to report without identifying them.
+        contract_pk:
+          type: string
+          title: Contract Pk
+          description: Internal identifier for the contract.
+        contract_id:
+          type: integer
+          title: Contract Id
+          description: The contract's ID in MITx Online.
+        b2b_contract_name:
+          type: string
+          title: B2B Contract Name
+          description: The contract's name.
+      type: object
+      required:
+      - organization_key
+      - organization_name
+      - courserun_readable_id
+      - courserun_title
+      - total_enrolled_learners
+      - engaged_learners
+      - engagement_rate_pct
+      - total_videos_watched
+      - video_watchers
+      - avg_videos_per_engaged_learner
+      - total_problems_attempted
+      - problem_attempters
+      - avg_problems_per_engaged_learner
+      - total_chatbot_interactions
+      - chatbot_users
+      - chatbot_adoption_pct
+      - certificates_earned
+      - contract_pk
+      - contract_id
+      - b2b_contract_name
+      title: ContractContentEngagementDepth
+      description: 'mv_b2b_contract_content_engagement_depth — grain: org x contract
+        x run.
+
+
+        The contract-scoped sibling of ``ContentEngagementDepth``, inherited for
+
+        the same reason as ``ContractMonthlyEngagementTrend``.
+
+
+        Unlike the trend view, these rows ARE a strict partition of the org-level
+
+        view: a course run belongs to exactly one contract, so naming the contract
+
+        labels a row rather than splitting it, and every count here equals its
+
+        org-level counterpart for the same course run. That equality is exactly
+
+        what makes a suppressed contract recoverable by subtraction once an org
+
+        holds more than one — the k-anonymity floor here is per-row and does not
+
+        defend against differencing across the two grains.'
+    ContractMonthlyEngagementTrend:
+      properties:
+        organization_key:
+          type: string
+          title: Organization Key
+          description: Internal identifier for the organization.
+        organization_name:
+          type: string
+          title: Organization Name
+          description: The organization's name.
+        activity_year_and_month:
+          type: string
+          title: Activity Year And Month
+          description: The month, e.g. 2026-08.
+        monthly_active_learners:
+          type: integer
+          title: Monthly Active Learners
+          description: 'Learners who did anything in a course this month: watched
+            a video, attempted a problem, posted in a discussion, used the chatbot,
+            moved through course pages or earned a certificate. Enrolling alone doesn''t
+            count. If too few learners were active, the whole month is withheld to
+            avoid identifying them.'
+        new_enrollments:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: New Enrollments
+          description: Course enrollments made this month. A learner who enrolled
+            in six courses counts six times. Withheld when the learner count it is
+            based on is withheld.
+        enrolling_learners:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Enrolling Learners
+          description: Learners who enrolled in at least one course this month. Withheld
+            when too few learners are in the group to report without identifying them.
+        certificates_earned:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Certificates Earned
+          description: Certificates earned this month. A learner who earned two counts
+            twice. Withheld when the learner count it is based on is withheld.
+        certified_learners:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Certified Learners
+          description: Learners who earned at least one certificate this month. Withheld
+            when too few learners are in the group to report without identifying them.
+        total_videos_watched:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Total Videos Watched
+          description: Videos watched this month, counting every view. Withheld when
+            the learner count it is based on is withheld.
+        video_watchers:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Video Watchers
+          description: Learners who watched at least one video this month. Withheld
+            when too few learners are in the group to report without identifying them.
+        total_problems_attempted:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Total Problems Attempted
+          description: Problem attempts this month, counting every attempt. Withheld
+            when the learner count it is based on is withheld.
+        problem_attempters:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Problem Attempters
+          description: Learners who attempted at least one problem this month. Withheld
+            when too few learners are in the group to report without identifying them.
+        total_chatbot_interactions:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Total Chatbot Interactions
+          description: Chatbot interactions this month. Withheld when the learner
+            count it is based on is withheld.
+        chatbot_users:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Chatbot Users
+          description: Learners who used the chatbot this month. Withheld when too
+            few learners are in the group to report without identifying them.
+        contract_pk:
+          type: string
+          title: Contract Pk
+          description: Internal identifier for the contract.
+        contract_id:
+          type: integer
+          title: Contract Id
+          description: The contract's ID in MITx Online.
+        b2b_contract_name:
+          type: string
+          title: B2B Contract Name
+          description: The contract's name.
+      type: object
+      required:
+      - organization_key
+      - organization_name
+      - activity_year_and_month
+      - monthly_active_learners
+      - new_enrollments
+      - enrolling_learners
+      - certificates_earned
+      - certified_learners
+      - total_videos_watched
+      - video_watchers
+      - total_problems_attempted
+      - problem_attempters
+      - total_chatbot_interactions
+      - chatbot_users
+      - contract_pk
+      - contract_id
+      - b2b_contract_name
+      title: ContractMonthlyEngagementTrend
+      description: 'mv_b2b_contract_monthly_engagement_trend — grain: org x contract
+        x month.
+
+
+        The contract-scoped sibling of ``MonthlyEngagementTrend``, backing the
+
+        endpoints nested under a contract. Subclassed rather than redeclared so the
+
+        two can''t drift: the column set and the ``cohort_policy`` — which is what
+
+        the anonymization floor reads — are inherited verbatim, and only contract
+
+        identity is added. The dbt models are siblings in the same way.
+
+
+        The contract columns are not cohorts and take no part in the policy.
+
+
+        A learner active under two of an org''s contracts appears in both rows, so
+
+        these rows do not partition the org-level view''s learner counts; summing
+
+        ``monthly_active_learners`` across contracts can exceed the org''s own
+
+        figure. Activity totals, being sums of events, do add up.'
+    ContractUtilization:
+      properties:
+        organization_key:
+          type: string
+          title: Organization Key
+          description: Internal identifier for the organization.
+        organization_name:
+          type: string
+          title: Organization Name
+          description: The organization's name.
+        contract_pk:
+          type: string
+          title: Contract Pk
+          description: Internal identifier for the contract.
+        contract_id:
+          type: integer
+          title: Contract Id
+          description: The contract's ID in MITx Online.
+        b2b_contract_name:
+          type: string
+          title: B2B Contract Name
+          description: The contract's name.
+        b2b_contract_is_active:
+          type: boolean
+          title: B2B Contract Is Active
+          description: Whether the contract is currently active.
+        b2b_contract_start_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: B2B Contract Start Date
+          description: When the contract starts. Empty if no start date is set.
+        b2b_contract_end_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: B2B Contract End Date
+          description: When the contract ends. Empty if it has no end date.
+        seat_limit:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Seat Limit
+          description: How many seats the contract includes. Empty or zero means unlimited.
+        b2b_contract_membership_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: B2B Contract Membership Type
+          description: The contract's membership type. Empty if not set.
+        seats_consumed:
+          type: integer
+          title: Seats Consumed
+          description: Learners enrolled in at least one course under the contract.
+            When too few learners are in the group, the whole row is withheld to avoid
+            identifying them.
+        active_learners:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Active Learners
+          description: Learners on the contract whose enrollment is still active.
+            Withheld when too few learners are in the group to report without identifying
+            them.
+        learners_certified:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Learners Certified
+          description: Learners on the contract who earned a certificate that hasn't
+            been revoked. Withheld when too few learners are in the group to report
+            without identifying them.
+        seat_utilization_pct:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Seat Utilization Pct
+          description: Percentage of the contract's seats in use. Empty when the contract
+            has unlimited seats.
+        completion_rate_pct:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Completion Rate Pct
+          description: Percentage of enrolled learners who earned a certificate. Withheld
+            when the learner count it is based on is withheld.
+      type: object
+      required:
+      - organization_key
+      - organization_name
+      - contract_pk
+      - contract_id
+      - b2b_contract_name
+      - b2b_contract_is_active
+      - b2b_contract_start_date
+      - b2b_contract_end_date
+      - seat_limit
+      - b2b_contract_membership_type
+      - seats_consumed
+      - active_learners
+      - learners_certified
+      - seat_utilization_pct
+      - completion_rate_pct
+      title: ContractUtilization
+      description: 'mv_b2b_contract_utilization — grain: org x contract.
+
+
+        ``seats_consumed`` is the primary cohort. ``active_learners`` and
+
+        ``learners_certified`` are secondary counts, nulled when nonzero but below
+
+        the floor. ``completion_rate_pct`` is ``learners_certified`` over
+
+        ``seats_consumed`` and is nulled with it. ``seat_utilization_pct`` is
+
+        ``seats_consumed`` over ``seat_limit``, null when the limit is zero or null
+
+        (the view divides by ``nullif(seat_limit, 0)``).'
+    EnrollmentCompletionFunnel:
+      properties:
+        organization_key:
+          type: string
+          title: Organization Key
+          description: Internal identifier for the organization.
+        organization_name:
+          type: string
+          title: Organization Name
+          description: The organization's name.
+        contract_pk:
+          type: string
+          title: Contract Pk
+          description: Internal identifier for the contract.
+        contract_id:
+          type: integer
+          title: Contract Id
+          description: The contract's ID in MITx Online.
+        b2b_contract_name:
+          type: string
+          title: B2B Contract Name
+          description: The contract's name.
+        courserun_pk:
+          type: string
+          title: Courserun Pk
+          description: Internal identifier for the course run.
+        courserun_readable_id:
+          type: string
+          title: Courserun Readable Id
+          description: The course run's ID, e.g. course-v1:MITxT+14.310x+2T2026.
+        courserun_title:
+          type: string
+          title: Courserun Title
+          description: The course's title.
+        enrolled_learners:
+          type: integer
+          title: Enrolled Learners
+          description: Learners enrolled in this course run. When too few learners
+            are in the group, the whole row is withheld to avoid identifying them.
+        active_learners:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Active Learners
+          description: Enrolled learners whose enrollment is still active. Withheld
+            when too few learners are in the group to report without identifying them.
+        passing_learners:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Passing Learners
+          description: Enrolled learners with a passing grade. Withheld when too few
+            learners are in the group to report without identifying them.
+        certified_learners:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Certified Learners
+          description: Enrolled learners who earned a certificate that hasn't been
+            revoked. Withheld when too few learners are in the group to report without
+            identifying them.
+        active_rate_pct:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Active Rate Pct
+          description: Percentage of enrolled learners whose enrollment is still active.
+            Withheld when the learner count it is based on is withheld.
+        completion_rate_pct:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Completion Rate Pct
+          description: Percentage of enrolled learners who earned a certificate. Withheld
+            when the learner count it is based on is withheld.
+      type: object
+      required:
+      - organization_key
+      - organization_name
+      - contract_pk
+      - contract_id
+      - b2b_contract_name
+      - courserun_pk
+      - courserun_readable_id
+      - courserun_title
+      - enrolled_learners
+      - active_learners
+      - passing_learners
+      - certified_learners
+      - active_rate_pct
+      - completion_rate_pct
+      title: EnrollmentCompletionFunnel
+      description: 'mv_b2b_enrollment_completion_funnel — grain: org x contract x
+        course_run.
+
+
+        ``enrolled_learners`` is the primary cohort. ``active_rate_pct`` and
+
+        ``completion_rate_pct`` are ``active_learners`` and ``certified_learners``
+
+        over ``enrolled_learners``, each nulled with its numerator.'
+    HTTPValidationError:
+      properties:
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          type: array
+          title: Detail
+      type: object
+      title: HTTPValidationError
+    LearnerProgress:
+      properties:
+        learner_id:
+          type: string
+          title: Learner Id
+          description: The learner's account ID. It stays the same if their email
+            address changes.
+        email:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Email
+          description: The learner's email address. It may differ from the one they
+            enrolled with.
+        full_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Full Name
+          description: The learner's name, if they've provided one.
+        courserun_readable_id:
+          type: string
+          title: Courserun Readable Id
+          description: The course run's ID, e.g. course-v1:MITxT+14.310x+2T2026.
+        courserun_title:
+          type: string
+          title: Courserun Title
+          description: The course's title.
+        courserun_start_on:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Courserun Start On
+          description: When the course run starts. Empty if no start date is set.
+        courserun_end_on:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Courserun End On
+          description: When the course run ends. Empty for self-paced courses.
+        enrolled_on:
+          type: string
+          format: date-time
+          title: Enrolled On
+          description: When the learner enrolled in this course run.
+        enrollment_is_active:
+          type: boolean
+          title: Enrollment Is Active
+          description: Whether the learner is still enrolled. False if the enrollment
+            was deactivated, for example after unenrolling.
+        enrollment_mode:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Enrollment Mode
+          description: The enrollment track, for example verified or audit. Audit
+            enrollments don't earn certificates.
+        outcomes_shared:
+          type: boolean
+          title: Outcomes Shared
+          description: Whether the learner has agreed to share their progress. If
+            not, their status, grades, certificate and activity are hidden.
+        completion_status:
+          anyOf:
+          - $ref: '#/components/schemas/CompletionStatus'
+          - type: 'null'
+          description: 'Where the learner is in the course: not started, in progress,
+            passed or certified. Hidden if the learner hasn''t agreed to share their
+            progress.'
+        is_passing:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Is Passing
+          description: Whether the learner currently has a passing grade. Empty if
+            no grade has been calculated yet. Hidden if the learner hasn't agreed
+            to share their progress.
+        grade:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Grade
+          description: The learner's current grade, from 0 to 1. Hidden if the learner
+            hasn't agreed to share their progress.
+        letter_grade:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Letter Grade
+          description: The learner's letter grade, when the course assigns one. Hidden
+            if the learner hasn't agreed to share their progress.
+        certificate_issued_on:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Certificate Issued On
+          description: When the learner's certificate was issued. Empty if they don't
+            have one. Hidden if the learner hasn't agreed to share their progress.
+        certificate_is_revoked:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Certificate Is Revoked
+          description: Whether the learner's certificate was revoked. A revoked certificate
+            doesn't count toward completion. Empty if they don't have one. Hidden
+            if the learner hasn't agreed to share their progress.
+        last_active_on:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Last Active On
+          description: The last day the learner did anything in the course. Not available
+            yet, so always empty for now.
+      type: object
+      required:
+      - learner_id
+      - email
+      - full_name
+      - courserun_readable_id
+      - courserun_title
+      - courserun_start_on
+      - courserun_end_on
+      - enrolled_on
+      - enrollment_is_active
+      - enrollment_mode
+      - outcomes_shared
+      - completion_status
+      - is_passing
+      - grade
+      - letter_grade
+      - certificate_issued_on
+      - certificate_is_revoked
+      - last_active_on
+      title: LearnerProgress
+      description: One learner's enrollment in one course run under the contract.
+    LearnerProgressResponse:
+      properties:
+        organization_id:
+          type: string
+          title: Organization Id
+          description: The organization's ID.
+        as_of:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: As Of
+          description: When the data was last updated. Empty before the first update.
+        total_count:
+          type: integer
+          title: Total Count
+          description: Matching enrollments across all pages, not just this one.
+        outcomes_withheld_count:
+          type: integer
+          title: Outcomes Withheld Count
+          description: How many of those enrollments have progress hidden because
+            the learner hasn't agreed to share it.
+        data:
+          items:
+            $ref: '#/components/schemas/LearnerProgress'
+          type: array
+          title: Data
+          description: This page of enrollments.
+      type: object
+      required:
+      - organization_id
+      - as_of
+      - total_count
+      - outcomes_withheld_count
+      - data
+      title: LearnerProgressResponse
+      description: 'The org envelope (``organization_id``, ``as_of``, ``total_count``,
+
+        ``data``) plus ``outcomes_withheld_count``, so a client can show how many
+
+        rows carry withheld outcomes without paging through all of them.'
+    MitAdminContractHealth:
+      properties:
+        organization_key:
+          type: string
+          title: Organization Key
+          description: Internal identifier for the organization.
+        organization_name:
+          type: string
+          title: Organization Name
+          description: The organization's name.
+        contract_pk:
+          type: string
+          title: Contract Pk
+          description: Internal identifier for the contract.
+        contract_id:
+          type: integer
+          title: Contract Id
+          description: The contract's ID in MITx Online.
+        b2b_contract_name:
+          type: string
+          title: B2B Contract Name
+          description: The contract's name.
+        b2b_contract_is_active:
+          type: boolean
+          title: B2B Contract Is Active
+          description: Whether the contract is currently active.
+        b2b_contract_start_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: B2B Contract Start Date
+          description: When the contract starts. Empty if no start date is set.
+        b2b_contract_end_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: B2B Contract End Date
+          description: When the contract ends. Empty if it has no end date.
+        seat_limit:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Seat Limit
+          description: How many seats the contract includes. Empty or zero means unlimited.
+        b2b_contract_membership_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: B2B Contract Membership Type
+          description: The contract's membership type. Empty if not set.
+        seats_consumed:
+          type: integer
+          title: Seats Consumed
+          description: Learners enrolled in at least one course under the contract.
+            When too few learners are in the group, the whole row is withheld to avoid
+            identifying them.
+        active_learners:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Active Learners
+          description: Learners on the contract whose enrollment is still active.
+            Withheld when too few learners are in the group to report without identifying
+            them.
+        certified_learners:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Certified Learners
+          description: Learners on the contract who earned a certificate that hasn't
+            been revoked. Withheld when too few learners are in the group to report
+            without identifying them.
+        seat_utilization_pct:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Seat Utilization Pct
+          description: Percentage of the contract's seats in use. Empty when the contract
+            has unlimited seats.
+        completion_rate_pct:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Completion Rate Pct
+          description: Percentage of enrolled learners who earned a certificate. Withheld
+            when the learner count it is based on is withheld.
+        health_status:
+          type: string
+          title: Health Status
+          description: 'Overall contract health: inactive (the contract isn''t active),
+            high_utilization (90% or more of seats in use), at_risk (under 25% of
+            seats in use and the contract ends within 90 days), healthy (50% or more
+            of seats in use), or early_stage (anything else).'
+      type: object
+      required:
+      - organization_key
+      - organization_name
+      - contract_pk
+      - contract_id
+      - b2b_contract_name
+      - b2b_contract_is_active
+      - b2b_contract_start_date
+      - b2b_contract_end_date
+      - seat_limit
+      - b2b_contract_membership_type
+      - seats_consumed
+      - active_learners
+      - certified_learners
+      - seat_utilization_pct
+      - completion_rate_pct
+      - health_status
+      title: MitAdminContractHealth
+      description: 'mv_b2b_mit_admin_contract_health — grain: org x contract (MIT
+        admin only).
+
+
+        Floored like ``ContractUtilization``. ``health_status`` is computed in the
+
+        view from ``b2b_contract_is_active``, ``seat_utilization_pct`` and
+
+        ``b2b_contract_end_date``.'
+    MonthlyEngagementTrend:
+      properties:
+        organization_key:
+          type: string
+          title: Organization Key
+          description: Internal identifier for the organization.
+        organization_name:
+          type: string
+          title: Organization Name
+          description: The organization's name.
+        activity_year_and_month:
+          type: string
+          title: Activity Year And Month
+          description: The month, e.g. 2026-08.
+        monthly_active_learners:
+          type: integer
+          title: Monthly Active Learners
+          description: 'Learners who did anything in a course this month: watched
+            a video, attempted a problem, posted in a discussion, used the chatbot,
+            moved through course pages or earned a certificate. Enrolling alone doesn''t
+            count. If too few learners were active, the whole month is withheld to
+            avoid identifying them.'
+        new_enrollments:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: New Enrollments
+          description: Course enrollments made this month. A learner who enrolled
+            in six courses counts six times. Withheld when the learner count it is
+            based on is withheld.
+        enrolling_learners:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Enrolling Learners
+          description: Learners who enrolled in at least one course this month. Withheld
+            when too few learners are in the group to report without identifying them.
+        certificates_earned:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Certificates Earned
+          description: Certificates earned this month. A learner who earned two counts
+            twice. Withheld when the learner count it is based on is withheld.
+        certified_learners:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Certified Learners
+          description: Learners who earned at least one certificate this month. Withheld
+            when too few learners are in the group to report without identifying them.
+        total_videos_watched:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Total Videos Watched
+          description: Videos watched this month, counting every view. Withheld when
+            the learner count it is based on is withheld.
+        video_watchers:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Video Watchers
+          description: Learners who watched at least one video this month. Withheld
+            when too few learners are in the group to report without identifying them.
+        total_problems_attempted:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Total Problems Attempted
+          description: Problem attempts this month, counting every attempt. Withheld
+            when the learner count it is based on is withheld.
+        problem_attempters:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Problem Attempters
+          description: Learners who attempted at least one problem this month. Withheld
+            when too few learners are in the group to report without identifying them.
+        total_chatbot_interactions:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Total Chatbot Interactions
+          description: Chatbot interactions this month. Withheld when the learner
+            count it is based on is withheld.
+        chatbot_users:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Chatbot Users
+          description: Learners who used the chatbot this month. Withheld when too
+            few learners are in the group to report without identifying them.
+      type: object
+      required:
+      - organization_key
+      - organization_name
+      - activity_year_and_month
+      - monthly_active_learners
+      - new_enrollments
+      - enrolling_learners
+      - certificates_earned
+      - certified_learners
+      - total_videos_watched
+      - video_watchers
+      - total_problems_attempted
+      - problem_attempters
+      - total_chatbot_interactions
+      - chatbot_users
+      title: MonthlyEngagementTrend
+      description: "mv_b2b_monthly_engagement_trend — grain: org x year_month.\n\n\
+        Every aggregate here is floored through the cohort that contributes to it,\n\
+        which the view publishes alongside it (ol-data-platform PR #2520).\n\nNone\
+        \ of them is attributable to ``monthly_active_learners``. Each is a\nplain\
+        \ SUM over the source report, so only the learners who did that\nspecific\
+        \ thing contribute — and clearing the primary floor says nothing\nabout whether\
+        \ that narrower cohort cleared it. A month with 40 active\nlearners can carry\
+        \ a chatbot total contributed by exactly one of them,\nwhich is why each total\
+        \ is ``derived`` from its own cohort rather than\nfrom the primary.\n\nHow\
+        \ each cohort relates to the primary differs, and neither case makes\nmapping\
+        \ to the primary safe:\n\n- ``certified_learners``, ``video_watchers``, ``problem_attempters``\
+        \ and\n  ``chatbot_users`` are strict *subsets*. ``active_count`` is 1 when\
+        \ any\n  of navigation, discussion, videos, problems, chatbot or certificate\n\
+        \  activity is nonzero (organization_administration_report.sql), so each\n\
+        \  of those actions sets it.\n- ``enrolling_learners`` is *not* a subset.\
+        \ ``enrolled_count`` is absent\n  from that expression, so enrolling alone\
+        \ never sets ``active_count``\n  and a learner who only enrolled is counted\
+        \ here but not in the primary.\n  The row gate is unaffected — a month whose\
+        \ primary is sub-floor is\n  dropped whole, which over-suppresses a large\
+        \ enrollment cohort rather\n  than disclosing one — but the subset reasoning\
+        \ does not apply, and\n  ``new_enrollments`` is floored through ``enrolling_learners``\
+        \ on its\n  own terms.\n\n``new_enrollments`` and ``certificates_earned``\
+        \ are SUMs of\nper-learner-per-course-run markers, so they count *events*,\
+        \ not learners:\none learner enrolling in six runs reads as ``new_enrollments\
+        \ == 6`` and\nwould clear a floor of 5 on its own. Flooring them directly\
+        \ is therefore\nthe wrong instrument — they are ``derived`` from ``enrolling_learners``\n\
+        and ``certified_learners``, the distinct-learner counts they are actually\n\
+        attributable to, which do carry the floor."
+    OrgAnalyticsResponse_ContentEngagementDepth_:
+      properties:
+        organization_id:
+          type: string
+          title: Organization Id
+        as_of:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: As Of
+        total_count:
+          type: integer
+          title: Total Count
+        data:
+          items:
+            $ref: '#/components/schemas/ContentEngagementDepth'
+          type: array
+          title: Data
+      type: object
+      required:
+      - organization_id
+      - as_of
+      - total_count
+      - data
+      title: OrgAnalyticsResponse[ContentEngagementDepth]
+    OrgAnalyticsResponse_ContractContentEngagementDepth_:
+      properties:
+        organization_id:
+          type: string
+          title: Organization Id
+        as_of:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: As Of
+        total_count:
+          type: integer
+          title: Total Count
+        data:
+          items:
+            $ref: '#/components/schemas/ContractContentEngagementDepth'
+          type: array
+          title: Data
+      type: object
+      required:
+      - organization_id
+      - as_of
+      - total_count
+      - data
+      title: OrgAnalyticsResponse[ContractContentEngagementDepth]
+    OrgAnalyticsResponse_ContractMonthlyEngagementTrend_:
+      properties:
+        organization_id:
+          type: string
+          title: Organization Id
+        as_of:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: As Of
+        total_count:
+          type: integer
+          title: Total Count
+        data:
+          items:
+            $ref: '#/components/schemas/ContractMonthlyEngagementTrend'
+          type: array
+          title: Data
+      type: object
+      required:
+      - organization_id
+      - as_of
+      - total_count
+      - data
+      title: OrgAnalyticsResponse[ContractMonthlyEngagementTrend]
+    OrgAnalyticsResponse_ContractUtilization_:
+      properties:
+        organization_id:
+          type: string
+          title: Organization Id
+        as_of:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: As Of
+        total_count:
+          type: integer
+          title: Total Count
+        data:
+          items:
+            $ref: '#/components/schemas/ContractUtilization'
+          type: array
+          title: Data
+      type: object
+      required:
+      - organization_id
+      - as_of
+      - total_count
+      - data
+      title: OrgAnalyticsResponse[ContractUtilization]
+    OrgAnalyticsResponse_EnrollmentCompletionFunnel_:
+      properties:
+        organization_id:
+          type: string
+          title: Organization Id
+        as_of:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: As Of
+        total_count:
+          type: integer
+          title: Total Count
+        data:
+          items:
+            $ref: '#/components/schemas/EnrollmentCompletionFunnel'
+          type: array
+          title: Data
+      type: object
+      required:
+      - organization_id
+      - as_of
+      - total_count
+      - data
+      title: OrgAnalyticsResponse[EnrollmentCompletionFunnel]
+    OrgAnalyticsResponse_MonthlyEngagementTrend_:
+      properties:
+        organization_id:
+          type: string
+          title: Organization Id
+        as_of:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: As Of
+        total_count:
+          type: integer
+          title: Total Count
+        data:
+          items:
+            $ref: '#/components/schemas/MonthlyEngagementTrend'
+          type: array
+          title: Data
+      type: object
+      required:
+      - organization_id
+      - as_of
+      - total_count
+      - data
+      title: OrgAnalyticsResponse[MonthlyEngagementTrend]
+    OrgAnalyticsResponse_ProgramFunnel_:
+      properties:
+        organization_id:
+          type: string
+          title: Organization Id
+        as_of:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: As Of
+        total_count:
+          type: integer
+          title: Total Count
+        data:
+          items:
+            $ref: '#/components/schemas/ProgramFunnel'
+          type: array
+          title: Data
+      type: object
+      required:
+      - organization_id
+      - as_of
+      - total_count
+      - data
+      title: OrgAnalyticsResponse[ProgramFunnel]
+    ProgramFunnel:
+      properties:
+        organization_key:
+          type: string
+          title: Organization Key
+          description: Internal identifier for the organization.
+        organization_name:
+          type: string
+          title: Organization Name
+          description: The organization's name.
+        contract_pk:
+          type: string
+          title: Contract Pk
+          description: Internal identifier for the contract.
+        contract_id:
+          type: integer
+          title: Contract Id
+          description: The contract's ID in MITx Online.
+        b2b_contract_name:
+          type: string
+          title: B2B Contract Name
+          description: The contract's name.
+        program_pk:
+          type: string
+          title: Program Pk
+          description: Internal identifier for the program.
+        program_title:
+          type: string
+          title: Program Title
+          description: The program's title.
+        total_courses:
+          type: integer
+          title: Total Courses
+          description: Courses in the program that the contract covers.
+        enrolled_in_contract_courses:
+          type: integer
+          title: Enrolled In Contract Courses
+          description: Learners enrolled in at least one of the program's courses
+            under the contract. When too few learners are in the group, the whole
+            row is withheld to avoid identifying them.
+        enrolled_via_program:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Enrolled Via Program
+          description: Of those learners, how many enrolled in the program itself
+            rather than directly in one of its courses. Withheld when too few learners
+            are in the group to report without identifying them.
+        program_course_completers:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Program Course Completers
+          description: Learners who earned a certificate in at least one of the program's
+            courses under the contract. This isn't the same as completing the whole
+            program. Withheld when too few learners are in the group to report without
+            identifying them.
+      type: object
+      required:
+      - organization_key
+      - organization_name
+      - contract_pk
+      - contract_id
+      - b2b_contract_name
+      - program_pk
+      - program_title
+      - total_courses
+      - enrolled_in_contract_courses
+      - enrolled_via_program
+      - program_course_completers
+      title: ProgramFunnel
+      description: 'mv_b2b_program_funnel — grain: org x contract x program.
+
+
+        ``total_courses`` counts courses, not learners, so it is not a cohort.
+
+
+        ``program_course_completers`` approximates program completion: it counts a
+
+        non-revoked certificate in any contract-covered course of the program, not
+
+        a program-level certificate, pending a program-certificate fact table.'
+    SortKey:
+      type: string
+      enum:
+      - full_name
+      - email
+      - enrolled_on
+      - courserun_readable_id
+      title: SortKey
+    ValidationError:
+      properties:
+        loc:
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+          type: array
+          title: Location
+        msg:
+          type: string
+          title: Message
+        type:
+          type: string
+          title: Error Type
+        input:
+          title: Input
+        ctx:
+          type: object
+          title: Context
+      type: object
+      required:
+      - loc
+      - msg
+      - type
+      title: ValidationError
