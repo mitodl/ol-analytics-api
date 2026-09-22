@@ -32,10 +32,11 @@ from typing import Any
 import httpx
 import jwt
 import structlog
-from fastapi import HTTPException, Request, status
+from fastapi import Request, status
 from jwt import PyJWK, PyJWKSet
 
 from ol_analytics_api.tenants.b2b_learner_records.config import settings
+from ol_analytics_api.tenants.b2b_learner_records.errors import ApiError, ErrorCode
 
 log = structlog.get_logger(__name__)
 
@@ -68,9 +69,10 @@ class JWKSUnavailableError(Exception):
     """The realm's key set could not be fetched or parsed."""
 
 
-def _unauthorized() -> HTTPException:
-    return HTTPException(
+def _unauthorized() -> ApiError:
+    return ApiError(
         status_code=status.HTTP_401_UNAUTHORIZED,
+        code=ErrorCode.UNAUTHORIZED,
         detail=INVALID_TOKEN_DETAIL,
         headers={"WWW-Authenticate": "Bearer"},
     )
