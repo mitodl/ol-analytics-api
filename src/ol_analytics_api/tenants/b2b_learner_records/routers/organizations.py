@@ -53,8 +53,12 @@ def page(
 
 PageParams = Annotated[Page, Depends(page)]
 LearnerIds = Annotated[
-    list[uuid.UUID] | None,
-    Query(max_length=settings.max_learner_ids, description="Repeat for several."),
+    list[uuid.UUID],
+    Query(
+        max_length=settings.max_learner_ids,
+        description="Repeat for several.",
+        default_factory=list,
+    ),
 ]
 UpdatedSince = Annotated[
     datetime.datetime | None,
@@ -103,7 +107,7 @@ async def list_learners(  # noqa: PLR0913
     organization_id: uuid.UUID,
     page: PageParams,
     contract_id: int | None = None,
-    learner_id: LearnerIds = None,
+    learner_id: LearnerIds,
     updated_since: UpdatedSince = None,
     include_inactive: IncludeInactive = False,
 ) -> LearnerRecordsResponse[BaseModel]:
@@ -132,8 +136,8 @@ async def list_enrollments(  # noqa: PLR0913
     page: PageParams,
     contract_id: int | None = None,
     courserun_id: str | None = None,
-    learner_id: LearnerIds = None,
-    completion_status: Annotated[list[CompletionStatusFilter] | None, Query()] = None,
+    learner_id: LearnerIds,
+    completion_status: Annotated[list[CompletionStatusFilter], Query(default_factory=list)],
     updated_since: UpdatedSince = None,
     include_inactive: IncludeInactive = False,
 ) -> LearnerRecordsResponse[BaseModel]:

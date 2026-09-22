@@ -34,13 +34,11 @@ paths:
         in: query
         required: false
         schema:
-          anyOf:
-          - type: array
-            items:
-              type: string
-              format: uuid
-            maxItems: 100
-          - type: 'null'
+          type: array
+          items:
+            type: string
+            format: uuid
+          maxItems: 100
           description: Repeat for several.
           title: Learner Id
         description: Repeat for several.
@@ -131,13 +129,11 @@ paths:
         in: query
         required: false
         schema:
-          anyOf:
-          - type: array
-            items:
-              type: string
-              format: uuid
-            maxItems: 100
-          - type: 'null'
+          type: array
+          items:
+            type: string
+            format: uuid
+          maxItems: 100
           description: Repeat for several.
           title: Learner Id
         description: Repeat for several.
@@ -145,11 +141,9 @@ paths:
         in: query
         required: false
         schema:
-          anyOf:
-          - type: array
-            items:
-              $ref: '#/components/schemas/CompletionStatusFilter'
-          - type: 'null'
+          type: array
+          items:
+            $ref: '#/components/schemas/CompletionStatusFilter'
           title: Completion Status
       - name: updated_since
         in: query

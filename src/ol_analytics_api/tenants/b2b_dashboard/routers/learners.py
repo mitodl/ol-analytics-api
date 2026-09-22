@@ -67,9 +67,12 @@ async def learner_progress(  # noqa: PLR0913
         Query(min_length=1, max_length=254, description="Case-insensitive match on email or name."),
     ] = None,
     completion_status: Annotated[
-        list[CompletionStatusFilter] | None,
-        Query(description="Repeat for several. `unknown` selects rows with withheld outcomes."),
-    ] = None,
+        list[CompletionStatusFilter],
+        Query(
+            description="Repeat for several. `unknown` selects rows with withheld outcomes.",
+            default_factory=list,
+        ),
+    ],
     include_inactive: Annotated[
         bool, Query(description="Include deactivated enrollments (unenrolled, refunded).")
     ] = False,

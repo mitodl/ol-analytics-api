@@ -503,11 +503,9 @@ paths:
         in: query
         required: false
         schema:
-          anyOf:
-          - type: array
-            items:
-              $ref: '#/components/schemas/CompletionStatusFilter'
-          - type: 'null'
+          type: array
+          items:
+            $ref: '#/components/schemas/CompletionStatusFilter'
           description: Repeat for several. `unknown` selects rows with withheld outcomes.
           title: Completion Status
         description: Repeat for several. `unknown` selects rows with withheld outcomes.
