@@ -11,6 +11,7 @@ import datetime
 import pathlib
 
 import pytest
+import yaml
 from httpx import ASGITransport, AsyncClient
 
 from ol_analytics_api.core.db.client import PoolAcquireTimeoutError
@@ -30,6 +31,9 @@ OTHER_ORG_ID = "22222222-2222-2222-2222-222222222222"
 LEARNER_ID = "3e1a9c74-5b2d-4f88-9a01-7c6de2b4f019"
 OTHER_LEARNER_ID = "c04e8a17-3d62-4b95-a7e8-51fb2c8d9042"
 _AS_OF = datetime.datetime(2026, 8, 13, 6, 15)  # noqa: DTZ001 - StarRocks returns naive UTC
+_CONTRACT_PATH = (
+    pathlib.Path(__file__).resolve().parents[1] / "docs/openapi/b2b-learner-records-v1.yaml"
+)
 
 # Every request here carries a token, so every test may fetch the realm JWKS.
 pytestmark = pytest.mark.usefixtures("realm_keys")
@@ -709,6 +713,15 @@ async def test_courses_filters_are_bound_in_order(app, monkeypatch):
         0,
     )
     assert pool.count_call()[1] == params[:-2]
+
+
+def test_the_error_code_enum_matches_the_published_contract():
+    """ErrorCode exists to mirror the contract's enum. Read it from the
+    contract rather than trusting the copy, so the two can't drift."""
+    spec = yaml.safe_load(_CONTRACT_PATH.read_text())
+    documented = spec["components"]["schemas"]["Error"]["properties"]["code"]["enum"]
+    assert set(ErrorCode) == set(documented)
+    assert spec["components"]["schemas"]["Error"]["required"] == ["code", "detail"]
 
 
 async def test_every_error_carries_the_code_its_contract_documents(app, monkeypatch):
