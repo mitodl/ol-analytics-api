@@ -190,19 +190,20 @@ async def test_consent_fail_open_discloses_outcomes(app, monkeypatch):
 
 
 async def test_completion_status_counts_reported_from_the_count_query(app):
+    status_counts = {"not_started": 2, "in_progress": 3, "passed": 1, "certified": 4}
+    withheld = 1
     pool = _FakePool(
-        total_count=10,
-        withheld=1,
-        status_counts={"not_started": 2, "in_progress": 3, "passed": 1, "certified": 4},
+        # The buckets plus outcomes_withheld_count sum to total_count (11), the
+        # invariant the endpoint promises; keep this fixture consistent with it.
+        total_count=sum(status_counts.values()) + withheld,
+        withheld=withheld,
+        status_counts=status_counts,
     )
     response = await _get(app, pool)
 
-    assert response.json()["completion_status_counts"] == {
-        "not_started": 2,
-        "in_progress": 3,
-        "passed": 1,
-        "certified": 4,
-    }
+    body = response.json()
+    assert body["completion_status_counts"] == status_counts
+    assert sum(status_counts.values()) + body["outcomes_withheld_count"] == body["total_count"]
 
 
 async def test_completion_status_counts_share_the_response_filters(app):

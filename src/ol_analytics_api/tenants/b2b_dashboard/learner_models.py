@@ -153,12 +153,34 @@ class LearnerProgress(BaseModel):
 
 class CompletionStatusCounts(BaseModel):
     """Matches ``LearnerProgressResponse.total_count``'s own filters, not the
-    contract as a whole, so it narrows along with the table it summarizes."""
+    contract as a whole, so it narrows along with the table it summarizes.
 
-    not_started: int = Field(description="Matching enrollments that haven't been started yet.")
-    in_progress: int = Field(description="Matching enrollments with a nonzero grade so far.")
-    passed: int = Field(description="Matching enrollments with a currently passing grade.")
-    certified: int = Field(description="Matching enrollments with an unrevoked certificate.")
+    Each field counts a disjoint slice of the matching enrollments: every
+    enrollment falls into exactly one, in the order below (certificate beats
+    grade beats no grade), so summing the four plus ``outcomes_withheld_count``
+    always equals ``total_count``. An unrevoked certificate always wins even
+    when the same enrollment also carries a passing or in-progress grade,
+    which is why each field's own description calls out what it excludes.
+    """
+
+    certified: int = Field(
+        description="Matching enrollments with an unrevoked certificate, whatever their grade."
+    )
+    passed: int = Field(
+        description=(
+            "Matching enrollments with a currently passing grade, other than those already "
+            "counted as certified above."
+        )
+    )
+    in_progress: int = Field(
+        description=(
+            "Matching enrollments with a nonzero grade so far that isn't yet passing, other "
+            "than those already counted as certified or passed above."
+        )
+    )
+    not_started: int = Field(
+        description="Matching enrollments with no certificate and no grade recorded yet."
+    )
 
 
 class LearnerProgressResponse(BaseModel):
