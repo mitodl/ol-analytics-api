@@ -13,12 +13,14 @@ import pathlib
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from ol_analytics_api.core.db.client import PoolAcquireTimeoutError
 from ol_analytics_api.core.db.refresh_metadata import _clear_cache
 from ol_analytics_api.main import create_app
 from ol_analytics_api.tenants import b2b_learner_records
 from ol_analytics_api.tenants.b2b_learner_records import queries
 from ol_analytics_api.tenants.b2b_learner_records.auth import NO_GRANT_DETAIL
 from ol_analytics_api.tenants.b2b_learner_records.config import settings
+from ol_analytics_api.tenants.b2b_learner_records.errors import ErrorCode
 from ol_analytics_api.tenants.b2b_learner_records.models import CourseRun, Enrollment, Learner
 from tests.conftest import bearer, mint
 
@@ -175,7 +177,7 @@ async def test_user_token_without_the_grant_claim_is_refused(app, monkeypatch):
         app, f"/organizations/{ORG_ID}/learners", token, pool, monkeypatch=monkeypatch
     )
     assert response.status_code == 403
-    assert response.json() == {"detail": NO_GRANT_DETAIL}
+    assert response.json() == {"code": "no_organization_access", "detail": NO_GRANT_DETAIL}
     assert pool.calls == []
 
 
@@ -191,7 +193,11 @@ async def test_ungranted_and_nonexistent_organizations_are_indistinguishable(app
         monkeypatch=monkeypatch,
     )
     assert ungranted.status_code == missing.status_code == 403
-    assert ungranted.json() == missing.json() == {"detail": NO_GRANT_DETAIL}
+    assert (
+        ungranted.json()
+        == missing.json()
+        == {"code": "no_organization_access", "detail": NO_GRANT_DETAIL}
+    )
 
 
 async def test_missing_scope_is_refused(app, monkeypatch):
@@ -202,6 +208,7 @@ async def test_missing_scope_is_refused(app, monkeypatch):
         monkeypatch=monkeypatch,
     )
     assert response.status_code == 403
+    assert response.json()["code"] == "missing_scope"
 
 
 @pytest.mark.parametrize("claim", [ORG_ID, f"{ORG_ID},{OTHER_ORG_ID}", {"id": ORG_ID}, None, [42]])
@@ -324,7 +331,7 @@ def test_models_keep_activity_when_shared():
 async def test_enrollments_project_the_activity_columns(app, monkeypatch):
     pool = _FakePool()
     await _get(
-        app, f"/organizations/{ORG_ID}/enrollments", _partner_header(ORG_ID), pool, monkeypatch
+        app, f"/organizations/{ORG_ID}/enrollments", _partner_token(ORG_ID), pool, monkeypatch
     )
     query, _ = pool.page_call()
     assert "videos_played AS videos_watched" in query
@@ -335,7 +342,7 @@ async def test_enrollments_project_the_activity_columns(app, monkeypatch):
 
 async def test_default_learners_project_the_activity_columns(app, monkeypatch):
     pool = _FakePool()
-    await _get(app, f"/organizations/{ORG_ID}/learners", _partner_header(ORG_ID), pool, monkeypatch)
+    await _get(app, f"/organizations/{ORG_ID}/learners", _partner_token(ORG_ID), pool, monkeypatch)
     query, _ = pool.page_call()
     assert "NULL AS last_active_on" not in query
     assert "NULL AS courses_in_progress" not in query
@@ -347,7 +354,7 @@ async def test_recomputed_learners_count_in_progress_with_the_enrollment_status(
     await _get(
         app,
         f"/organizations/{ORG_ID}/learners?contract_id=42",
-        _partner_header(ORG_ID),
+        _partner_token(ORG_ID),
         pool,
         monkeypatch,
     )
@@ -369,7 +376,7 @@ async def test_include_inactive_learners_count_activity_on_every_enrollment(app,
     await _get(
         app,
         f"/organizations/{ORG_ID}/learners?include_inactive=true",
-        _partner_header(ORG_ID),
+        _partner_token(ORG_ID),
         pool,
         monkeypatch,
     )
@@ -442,7 +449,7 @@ async def test_include_inactive_learners_keep_every_roster_member(app, monkeypat
 )
 async def test_blank_names_read_as_null(app, monkeypatch, path):
     pool = _FakePool()
-    await _get(app, f"/organizations/{ORG_ID}/{path}", _partner_header(ORG_ID), pool, monkeypatch)
+    await _get(app, f"/organizations/{ORG_ID}/{path}", _partner_token(ORG_ID), pool, monkeypatch)
     query, _ = pool.page_call()
     assert "NULLIF(TRIM(full_name), '')" in query
 
@@ -500,7 +507,7 @@ async def test_updated_before_bounds_the_window_exclusively(app, monkeypatch):
         app,
         f"/organizations/{ORG_ID}/enrollments"
         "?updated_since=2026-08-12T00:00:00Z&updated_before=2026-08-13T00:00:00Z",
-        _partner_header(ORG_ID),
+        _partner_token(ORG_ID),
         pool,
         monkeypatch,
     )
@@ -522,7 +529,7 @@ async def test_omitted_list_filters_add_no_predicate(app, monkeypatch):
     response = await _get(
         app,
         f"/organizations/{ORG_ID}/enrollments",
-        _partner_header(ORG_ID),
+        _partner_token(ORG_ID),
         pool,
         monkeypatch,
     )
@@ -550,7 +557,9 @@ async def test_malformed_parameters_are_400_with_a_string_detail(app, monkeypatc
         monkeypatch=monkeypatch,
     )
     assert response.status_code == 400
-    assert isinstance(response.json()["detail"], str)
+    body = response.json()
+    assert isinstance(body["detail"], str)
+    assert body["code"] == "invalid_parameter"
 
 
 def test_cursor_value_is_a_prefix_of_stored_values_in_the_same_second():
@@ -681,7 +690,7 @@ async def test_courses_filters_are_bound_in_order(app, monkeypatch):
         f"/organizations/{ORG_ID}/courses"
         "?contract_is_active=true&courserun_id=course-v1:MITxT%2B14.310x%2B2T2026"
         "&courserun_starts_after=2026-01-01T00:00:00Z&courserun_starts_before=2026-04-01T00:00:00Z",
-        _partner_header(ORG_ID),
+        _partner_token(ORG_ID),
         pool,
         monkeypatch,
     )
@@ -700,3 +709,39 @@ async def test_courses_filters_are_bound_in_order(app, monkeypatch):
         0,
     )
     assert pool.count_call()[1] == params[:-2]
+
+
+async def test_every_error_carries_the_code_its_contract_documents(app, monkeypatch):
+    """The Error schema requires `code` and tells clients to branch on it
+    rather than on `detail`, whose wording may change. A body without one
+    fails validation in a client generated from the spec."""
+
+    async def saturated(*_args, **_kwargs):
+        msg = "pool saturated"
+        raise PoolAcquireTimeoutError(msg)
+
+    cases = [
+        (f"/organizations/{ORG_ID}/enrollments?limit=0", _partner_token(ORG_ID), 400),
+        (f"/organizations/{ORG_ID}/learners", None, 401),
+        (
+            f"/organizations/{ORG_ID}/learners",
+            _partner_token(ORG_ID, scope="learner-records:write"),
+            403,
+        ),
+        (f"/organizations/{OTHER_ORG_ID}/learners", _partner_token(ORG_ID), 403),
+    ]
+    for path, token, expected in cases:
+        response = await _get(app, path, token, monkeypatch=monkeypatch)
+        assert response.status_code == expected, path
+        assert set(response.json()) == {"code", "detail"}, path
+        assert response.json()["code"] in set(ErrorCode), path
+
+    monkeypatch.setattr("ol_analytics_api.core.db.client.starrocks_pool.fetch_all", saturated)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        unavailable = await client.get(
+            f"{BASE}/organizations/{ORG_ID}/learners",
+            headers=bearer(_partner_token(ORG_ID)),
+        )
+    assert unavailable.status_code == 503
+    assert unavailable.json()["code"] == "unavailable"
+    assert unavailable.headers["Retry-After"] == "1"
