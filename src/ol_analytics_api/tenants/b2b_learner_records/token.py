@@ -180,12 +180,16 @@ class JWKSCache:
             return None
 
         log.info("Refetching JWKS for an unknown key id", kid=kid)
+        fetched_at = self._fetched_at
         key = self._select(await self._load(force=True), kid)
-        if key is None:
+        if key is None and self._fetched_at != fetched_at:
             # Start the cooldown only once a freshly fetched key set really
-            # didn't have the kid. A refetch that failed is already held off
-            # by the fetch-failure cooldown, and shouldn't also lock out the
-            # kid that a later, working fetch would have found.
+            # didn't have the kid, which is what an advanced _fetched_at says.
+            # A refetch that failed hands back the stale set instead of
+            # raising, so without that test a Keycloak blip during a key
+            # rotation would start the cooldown on evidence nobody gathered,
+            # and keep refusing the new kid for a minute after Keycloak came
+            # back. A failed fetch is already held off by _retry_after.
             self._kid_refetch_after = time.monotonic() + _KID_REFETCH_COOLDOWN_SECONDS
         return key
 
