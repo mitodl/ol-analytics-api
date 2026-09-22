@@ -13,12 +13,14 @@ import pathlib
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from ol_analytics_api.core.db.client import PoolAcquireTimeoutError
 from ol_analytics_api.core.db.refresh_metadata import _clear_cache
 from ol_analytics_api.main import create_app
 from ol_analytics_api.tenants import b2b_learner_records
 from ol_analytics_api.tenants.b2b_learner_records import queries
 from ol_analytics_api.tenants.b2b_learner_records.auth import NO_GRANT_DETAIL
 from ol_analytics_api.tenants.b2b_learner_records.config import settings
+from ol_analytics_api.tenants.b2b_learner_records.errors import ErrorCode
 from ol_analytics_api.tenants.b2b_learner_records.models import CourseRun, Enrollment, Learner
 from tests.conftest import bearer, mint
 
@@ -175,7 +177,7 @@ async def test_user_token_without_the_grant_claim_is_refused(app, monkeypatch):
         app, f"/organizations/{ORG_ID}/learners", token, pool, monkeypatch=monkeypatch
     )
     assert response.status_code == 403
-    assert response.json() == {"detail": NO_GRANT_DETAIL}
+    assert response.json() == {"code": "no_organization_access", "detail": NO_GRANT_DETAIL}
     assert pool.calls == []
 
 
@@ -191,7 +193,11 @@ async def test_ungranted_and_nonexistent_organizations_are_indistinguishable(app
         monkeypatch=monkeypatch,
     )
     assert ungranted.status_code == missing.status_code == 403
-    assert ungranted.json() == missing.json() == {"detail": NO_GRANT_DETAIL}
+    assert (
+        ungranted.json()
+        == missing.json()
+        == {"code": "no_organization_access", "detail": NO_GRANT_DETAIL}
+    )
 
 
 async def test_missing_scope_is_refused(app, monkeypatch):
@@ -202,6 +208,7 @@ async def test_missing_scope_is_refused(app, monkeypatch):
         monkeypatch=monkeypatch,
     )
     assert response.status_code == 403
+    assert response.json()["code"] == "missing_scope"
 
 
 @pytest.mark.parametrize("claim", [ORG_ID, f"{ORG_ID},{OTHER_ORG_ID}", {"id": ORG_ID}, None, [42]])
@@ -442,7 +449,9 @@ async def test_malformed_parameters_are_400_with_a_string_detail(app, monkeypatc
         monkeypatch=monkeypatch,
     )
     assert response.status_code == 400
-    assert isinstance(response.json()["detail"], str)
+    body = response.json()
+    assert isinstance(body["detail"], str)
+    assert body["code"] == "invalid_parameter"
 
 
 def test_cursor_value_is_a_prefix_of_stored_values_in_the_same_second():
@@ -545,3 +554,39 @@ async def test_courses_contract_filter_is_bound(app, monkeypatch):
     assert "sso_organization_id = %s AND contract_id = %s" in query
     assert params == (ORG_ID, 42, 100, 0)
     assert pool.count_call()[1] == (ORG_ID, 42)
+
+
+async def test_every_error_carries_the_code_its_contract_documents(app, monkeypatch):
+    """The Error schema requires `code` and tells clients to branch on it
+    rather than on `detail`, whose wording may change. A body without one
+    fails validation in a client generated from the spec."""
+
+    async def saturated(*_args, **_kwargs):
+        msg = "pool saturated"
+        raise PoolAcquireTimeoutError(msg)
+
+    cases = [
+        (f"/organizations/{ORG_ID}/enrollments?limit=0", _partner_token(ORG_ID), 400),
+        (f"/organizations/{ORG_ID}/learners", None, 401),
+        (
+            f"/organizations/{ORG_ID}/learners",
+            _partner_token(ORG_ID, scope="learner-records:write"),
+            403,
+        ),
+        (f"/organizations/{OTHER_ORG_ID}/learners", _partner_token(ORG_ID), 403),
+    ]
+    for path, token, expected in cases:
+        response = await _get(app, path, token, monkeypatch=monkeypatch)
+        assert response.status_code == expected, path
+        assert set(response.json()) == {"code", "detail"}, path
+        assert response.json()["code"] in set(ErrorCode), path
+
+    monkeypatch.setattr("ol_analytics_api.core.db.client.starrocks_pool.fetch_all", saturated)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        unavailable = await client.get(
+            f"{BASE}/organizations/{ORG_ID}/learners",
+            headers=bearer(_partner_token(ORG_ID)),
+        )
+    assert unavailable.status_code == 503
+    assert unavailable.json()["code"] == "unavailable"
+    assert unavailable.headers["Retry-After"] == "1"

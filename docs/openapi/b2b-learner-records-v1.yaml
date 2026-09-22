@@ -932,7 +932,7 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
-          example: { code: no_organization_access, detail: 'No access to the requested organization' }
+          example: { code: no_organization_access, detail: 'No grant for the requested organization' }
 
     TooManyRequests:
       description: Per-client rate limit exceeded.

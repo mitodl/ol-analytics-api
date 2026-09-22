@@ -90,7 +90,7 @@ async def test_a_forged_x_userinfo_alone_is_refused(app, realm_keys):  # noqa: A
     skips APISIX and asserts its own claims."""
     response = await _get(app, _userinfo(PARTNER_CLAIMS))
     assert response.status_code == 401
-    assert response.json() == {"detail": INVALID_TOKEN_DETAIL}
+    assert response.json() == {"code": "unauthorized", "detail": INVALID_TOKEN_DETAIL}
 
 
 async def test_a_forged_x_userinfo_cannot_widen_a_valid_token(app, realm_keys):  # noqa: ARG001
@@ -114,7 +114,7 @@ async def test_a_forged_x_userinfo_cannot_widen_a_valid_token(app, realm_keys): 
 async def test_malformed_credentials_are_refused(app, realm_keys, headers, case):  # noqa: ARG001
     response = await _get(app, headers)
     assert response.status_code == 401, case
-    assert response.json() == {"detail": INVALID_TOKEN_DETAIL}, case
+    assert response.json() == {"code": "unauthorized", "detail": INVALID_TOKEN_DETAIL}, case
 
 
 async def test_a_token_signed_by_another_key_is_refused(app, realm_keys):  # noqa: ARG001
@@ -271,7 +271,7 @@ async def test_an_unreachable_key_set_refuses_rather_than_opening_up(app, httpx_
     httpx_mock.add_response(url=JWKS_URL, status_code=503, is_reusable=True)
     response = await _get(app, bearer(mint(PARTNER_CLAIMS)))
     assert response.status_code == 401
-    assert response.json() == {"detail": INVALID_TOKEN_DETAIL}
+    assert response.json() == {"code": "unauthorized", "detail": INVALID_TOKEN_DETAIL}
 
 
 async def test_a_cold_fetch_failure_is_held_off_before_retrying(app, httpx_mock):
@@ -346,7 +346,7 @@ async def test_an_id_token_for_the_same_client_is_refused(app, realm_keys):  # n
     apart from an access token."""
     response = await _get(app, bearer(mint({**PARTNER_CLAIMS, "typ": "ID"})))
     assert response.status_code == 401
-    assert response.json() == {"detail": INVALID_TOKEN_DETAIL}
+    assert response.json() == {"code": "unauthorized", "detail": INVALID_TOKEN_DETAIL}
 
 
 async def test_a_token_with_no_token_class_is_refused(app, realm_keys):  # noqa: ARG001
@@ -429,7 +429,7 @@ async def test_an_unusable_key_set_refuses_rather_than_erroring(app, httpx_mock,
     httpx_mock.add_response(url=JWKS_URL, json=body, is_reusable=True)
     response = await _get(app, bearer(mint(PARTNER_CLAIMS)))
     assert response.status_code == 401, case
-    assert response.json() == {"detail": INVALID_TOKEN_DETAIL}, case
+    assert response.json() == {"code": "unauthorized", "detail": INVALID_TOKEN_DETAIL}, case
 
 
 def test_settings_derive_the_sso_urls_from_the_issuer():

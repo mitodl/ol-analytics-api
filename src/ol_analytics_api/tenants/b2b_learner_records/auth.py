@@ -20,11 +20,12 @@ import uuid
 from typing import Annotated, Any
 
 import structlog
-from fastapi import Depends, HTTPException, Security, status
+from fastapi import Depends, Security, status
 from fastapi.openapi.models import OAuthFlowClientCredentials, OAuthFlows
 from fastapi.security import OAuth2
 
 from ol_analytics_api.tenants.b2b_learner_records.config import settings
+from ol_analytics_api.tenants.b2b_learner_records.errors import ApiError, ErrorCode
 from ol_analytics_api.tenants.b2b_learner_records.token import verified_claims
 
 ORGANIZATIONS_CLAIM = "learner_records_organizations"
@@ -74,12 +75,17 @@ def require_organization_grant(
 ) -> None:
     scopes = claims.get("scope")
     if not isinstance(scopes, str) or READ_SCOPE not in scopes.split():
-        raise HTTPException(
+        raise ApiError(
             status_code=status.HTTP_403_FORBIDDEN,
+            code=ErrorCode.MISSING_SCOPE,
             detail=f"Token lacks the {READ_SCOPE} scope",
         )
     if organization_id not in _granted_organizations(claims):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=NO_GRANT_DETAIL)
+        raise ApiError(
+            status_code=status.HTTP_403_FORBIDDEN,
+            code=ErrorCode.NO_ORGANIZATION_ACCESS,
+            detail=NO_GRANT_DETAIL,
+        )
     # Every granted read discloses identifiable learner records, so record which
     # client read which organization. The access log has the path but not the client.
     log.info(
