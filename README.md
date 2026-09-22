@@ -235,7 +235,7 @@ client. Until it is, committing the spec still buys the same thing locally: a
 column that appears here without appearing in the diff is a column a
 consumer would find out about at runtime once the pipeline exists.
 
-Two details are worth knowing before editing a route:
+Three details are worth knowing before editing a route:
 
 - **`operation_id` is named explicitly on every route.** It becomes the
   generated client's method name, so FastAPI's path-derived default would both
@@ -244,3 +244,13 @@ Two details are worth knowing before editing a route:
   describes its routes relative to its own root; `openapi.py` re-prefixes them
   so a generated client configured with the service host requests the URLs the
   service actually serves.
+- **A repeatable query parameter is a plain `list[X]`, never `list[X] | None`.**
+  The optional form renders as `anyOf: [array, null]`, which openapi-generator
+  cannot reduce; it emits a client that spreads the value with `Object.entries`
+  and sends `?0=a&1=b` instead of repeating the parameter name. Use
+  `Query(default_factory=list)` and treat the empty list as "no filter".
+
+Note that `docs/openapi/b2b-learner-records-v1.yaml` is a different artifact:
+a hand-written draft published so partners could review the record shape
+before it was built. `openapi/specs/b2b_learner_records.yaml` is generated
+from the running code and is the one a client is built from.
