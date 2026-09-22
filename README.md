@@ -98,8 +98,13 @@ state. Wire it up with one entry in `main.py`'s `TENANTS` list:
 
 ```python
 TENANTS: list[Tenant] = [
-    Tenant("/api/v1/analytics", b2b_dashboard.create_app, b2b_dashboard.lifespan),
-    Tenant("/api/v1/<new-tenant>", new_tenant.create_app),
+    Tenant(
+        b2b_dashboard.TENANT_NAME,
+        "/api/v1/analytics",
+        b2b_dashboard.create_app,
+        b2b_dashboard.lifespan,
+    ),
+    Tenant(new_tenant.TENANT_NAME, "/api/v1/<new-tenant>", new_tenant.create_app),
 ]
 ```
 
@@ -107,10 +112,14 @@ A `Tenant` takes a `create_app` *factory* (not a pre-built instance) so the
 root app constructs every sub-app after OpenTelemetry is configured — a
 tenant is instrumented regardless of import order. If the tenant owns
 resources that need startup/shutdown (e.g. an httpx client), it exposes them
-as an ordinary `lifespan` context manager and passes it as the third
+as an ordinary `lifespan` context manager and passes it as the fourth
 argument: a mounted sub-app's own `lifespan=` is never invoked by the ASGI
 server (only the root app's is), so the root lifespan enters each tenant's
 explicitly.
+
+The leading `name` is the tenant's own `TENANT_NAME`, which already names its
+readiness sub-path. It also names the tenant's published OpenAPI document
+(`openapi/specs/<name>.yaml`), so it ends up in a consumer-visible filename.
 
 Each tenant gets independent OpenAPI docs at `<mount-path>/docs`.
 
