@@ -107,14 +107,40 @@ definition is the only place access is recorded.
 - Whether APISIX's `openid-connect` plugin passes the hardcoded claim and
   scopes through in `X-Userinfo` on a bearer-only route. The learner-records
   mount needs a bearer-only route, but today's routes use the redirect flow.
-  Check on QA.
-- That APISIX *overwrites* a caller-supplied `X-Userinfo` rather than passing
-  it through. `core/auth/userinfo.py` decodes whatever header arrives without
-  validating a token, and the organization check reads from it. Also confirm
-  the pod can't be reached except through the gateway route: `k8s/` defines no
-  NetworkPolicy. Check both on QA.
+  Check on QA. This no longer gates the tenant (see below), but the claim
+  still has to arrive in the token.
 - The access-token lifespan these clients will get, since it is the
   revocation window.
+
+## The app verifies the token; the gateway is not the trust boundary
+
+Settled 2026-09-18, after Copilot raised it on
+[ol-infrastructure#5939](https://github.com/mitodl/ol-infrastructure/pull/5939).
+
+The question above was whether APISIX overwrites a caller-supplied
+`X-Userinfo`. It does, at the start of its `rewrite` phase. That is beside the
+point, because a caller does not have to go through APISIX. The pod security
+group admits the whole pod subnet, and `aws-eks-nodeagent` runs with
+`--enable-network-policy=false` on both data clusters, so the NetworkPolicies
+that exist are no-ops. Any compromised in-cluster workload can post a forged
+`X-Userinfo` naming `learner-records:read` and any organization UUID, straight
+to the pod.
+
+For k-anonymized aggregates that is a risk worth arguing about. For records
+that name individual learners it is not, so this tenant verifies the bearer
+token itself (`tenants/b2b_learner_records/token.py`): RS256 against the
+realm's JWKS, checking issuer, audience and lifetime, and taking `scope`,
+`learner_records_organizations` and `azp` from the verified payload.
+`X-Userinfo` is not read at all. The gateway route stays as it is; it is now
+defence in depth rather than the only check.
+
+Rejected: locking down the pod security group, and enabling CNI network
+policy cluster-wide. Both are larger changes that protect one tenant by
+changing how every workload on the cluster is reached.
+
+`b2b_dashboard` still authorizes from `X-Userinfo`. Its exposure is aggregate
+and k-anonymized and it has a browser session flow, so it is a separate
+decision, not a follow-up to this one.
 
 ## Follow-ups
 
