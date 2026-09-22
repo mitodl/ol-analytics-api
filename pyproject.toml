@@ -87,6 +87,7 @@ dev = [
     "cyclopts>=4.22.5",
     "pyyaml>=6.0.3",
     "types-pyyaml>=6.0.12.20260724",
+    "cryptography>=44",
 ]
 
 [build-system]

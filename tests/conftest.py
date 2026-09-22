@@ -12,7 +12,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from ol_analytics_api.tenants.b2b_learner_records.config import settings
-from ol_analytics_api.tenants.b2b_learner_records.token import jwks_cache
+from ol_analytics_api.tenants.b2b_learner_records.token import ACCESS_TOKEN_TYPE, jwks_cache
 
 ISSUER = "https://sso.test.example/realms/olapps"
 JWKS_URL = f"{ISSUER}/protocol/openid-connect/certs"
@@ -62,6 +62,9 @@ def mint(
     payload = {
         "iss": issuer,
         "aud": audience,
+        # Keycloak's token class. An ID token carries "ID" here, which is the
+        # difference the tenant checks, so it belongs in the default shape.
+        "typ": ACCESS_TOKEN_TYPE,
         "iat": int(now),
         "exp": int(now + lifetime_seconds),
         **(claims or {}),
