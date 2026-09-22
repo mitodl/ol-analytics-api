@@ -99,3 +99,21 @@ def test_operation_ids_are_explicit():
                 assert route.operation_id is not None, (
                     f"{tenant.name} route {route.path} has no explicit operation_id"
                 )
+
+
+def test_array_query_params_are_not_nullable(specs):
+    """A `list[X] | None` parameter publishes `anyOf: [{type: array}, null]`.
+    openapi-generator's typescript-axios cannot reduce that, so it treats the
+    parameter as an arbitrary object and spreads it with `Object.entries`,
+    emitting `?0=a&1=b` instead of repeating the parameter name, and failing
+    `tsc --strict`. Declare repeatable filters as plain arrays with
+    `Query(default_factory=list)` instead."""
+    offenders = [
+        f"{tenant_name} {path} {parameter['name']}"
+        for tenant_name, spec in specs.items()
+        for path, path_item in spec["paths"].items()
+        for operation in path_item.values()
+        for parameter in operation.get("parameters", [])
+        if any(option.get("type") == "array" for option in parameter["schema"].get("anyOf", []))
+    ]
+    assert not offenders

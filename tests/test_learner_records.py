@@ -399,6 +399,29 @@ async def test_enrollment_filters_are_bound_in_order(app, monkeypatch):
     assert pool.count_call()[1] == params[:-2]
 
 
+async def test_omitted_list_filters_add_no_predicate(app, monkeypatch):
+    """`learner_id` and `completion_status` are plain arrays defaulting to [],
+    not `list | None`: the optional form publishes `anyOf: [array, null]`, which
+    openapi-generator cannot reduce to a usable client type. An empty array is
+    not expressible in a query string (a generated client omits the parameter,
+    and `?learner_id=` is an empty *string*, rejected as a bad UUID), so the
+    default is only ever reached by omitting the parameter. This pins that
+    reaching it adds no predicate."""
+    pool = _FakePool(rows=[_enrollment_row()], total_count=1, withheld=1)
+    response = await _get(
+        app,
+        f"/organizations/{ORG_ID}/enrollments",
+        _partner_header(ORG_ID),
+        pool,
+        monkeypatch,
+    )
+    assert response.status_code == 200
+    query, params = pool.page_call()
+    assert "learner_id IN" not in query
+    assert "completion_status IN" not in query
+    assert params == (ORG_ID, 100, 0)
+
+
 @pytest.mark.parametrize(
     "query",
     [
