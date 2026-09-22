@@ -361,11 +361,12 @@ components:
     oauth2ClientCredentials:
       type: oauth2
       description: >-
-        Keycloak client credentials, validated at the gateway. One client is
-        issued per contracted integration and lists the organizations it may
-        read, every contract under each included. Scopes bound to a client are
-        a contractual limit on that credential; they are not the consent
-        mechanism.
+        Keycloak client credentials. The token's signature, issuer, audience
+        and lifetime are verified by the service itself, not only at the
+        gateway. One client is issued per contracted integration and lists the
+        organizations it may read, every contract under each included. Scopes
+        bound to a client are a contractual limit on that credential; they are
+        not the consent mechanism.
       flows:
         clientCredentials:
           tokenUrl: https://sso.ol.mit.edu/realms/olapps/protocol/openid-connect/token
@@ -912,11 +913,14 @@ components:
           example: { code: invalid_parameter, detail: 'limit: Input should be less than or equal to 1000' }
 
     Unauthorized:
-      description: Missing, malformed or expired token.
+      description: >-
+        No token, or one that failed verification: bad signature, unknown
+        signing key, wrong issuer or audience, or outside its validity window.
+        The body does not say which, so it cannot be used to probe.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
-          example: { code: unauthorized, detail: 'Invalid or expired access token' }
+          example: { code: unauthorized, detail: 'Invalid or missing bearer token' }
 
     Forbidden:
       description: >-
