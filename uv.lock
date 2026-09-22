@@ -1060,6 +1060,7 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "asgi-lifespan" },
+    { name = "cryptography" },
     { name = "cyclopts" },
     { name = "mypy" },
     { name = "prek" },
@@ -1100,6 +1101,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "asgi-lifespan", specifier = ">=2.1.0" },
+    { name = "cryptography", specifier = ">=44" },
     { name = "cyclopts", specifier = ">=4.22.5" },
     { name = "mypy", specifier = ">=1.13" },
     { name = "prek", specifier = "==0.5.3" },
