@@ -25,7 +25,9 @@ developer detail lives here instead:
 - ``last_active_on`` is NULL for every row until activity data lands, whatever
   ``outcomes_shared`` says.
 - ``outcomes_withheld_count`` counts the rows in ``total_count`` whose
-  ``outcomes_shared`` is false.
+  ``outcomes_shared`` is false. ``completion_status_counts`` buckets the rest
+  by status; the two together add up to ``total_count``, since
+  ``CompletionStatus`` is exhaustive and its branches don't overlap.
 """
 
 from __future__ import annotations
@@ -149,6 +151,16 @@ class LearnerProgress(BaseModel):
         return self
 
 
+class CompletionStatusCounts(BaseModel):
+    """Matches ``LearnerProgressResponse.total_count``'s own filters, not the
+    contract as a whole, so it narrows along with the table it summarizes."""
+
+    not_started: int = Field(description="Matching enrollments that haven't been started yet.")
+    in_progress: int = Field(description="Matching enrollments with a nonzero grade so far.")
+    passed: int = Field(description="Matching enrollments with a currently passing grade.")
+    certified: int = Field(description="Matching enrollments with an unrevoked certificate.")
+
+
 class LearnerProgressResponse(BaseModel):
     """The org envelope (``organization_id``, ``as_of``, ``total_count``,
     ``data``) plus ``outcomes_withheld_count``, so a client can show how many
@@ -165,6 +177,12 @@ class LearnerProgressResponse(BaseModel):
         description=(
             "How many of those enrollments have progress hidden because the learner hasn't "
             "agreed to share it."
+        )
+    )
+    completion_status_counts: CompletionStatusCounts = Field(
+        description=(
+            "How many of those enrollments are in each stage of completion. Enrollments with "
+            "hidden progress aren't counted in any stage."
         )
     )
     data: list[LearnerProgress] = Field(description="This page of enrollments.")
