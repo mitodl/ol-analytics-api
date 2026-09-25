@@ -916,7 +916,10 @@ components:
       description: >-
         No token, or one that failed verification: bad signature, unknown
         signing key, wrong issuer or audience, or outside its validity window.
-        The body does not say which, so it cannot be used to probe.
+        The body does not say which, so it cannot be used to probe. The one
+        exception is a genuine token whose contract has ended (through the end
+        of the contract end date, Anywhere on Earth), which says so and names
+        the date.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import UTC, date, datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -48,10 +49,25 @@ ALGORITHMS = ("RS256",)
 # organization grant. That is one claim deep; this closes the class.
 ACCESS_TOKEN_TYPE = "Bearer"  # noqa: S105 - a claim value, not a credential
 
+# Hardcoded on the client from its contract when MIT provisions it
+# (ol-infrastructure substructure/keycloak/learner_records.py), as an ISO date
+# string. Absent on a client provisioned without an end date, which is then
+# open-ended.
+CONTRACT_END_DATE_CLAIM = "learner_records_contract_end_date"
+
+# The claim is a bare date and the contract behind it names no timezone.
+# Holding access through the end of that date Anywhere on Earth (UTC-12) means
+# no partner is cut off before its end date by its own clock. The cost is up
+# to a day of access past the date for everyone east of UTC-12, which is
+# small next to what this guards against: a client nobody deleted.
+CONTRACT_END_TIMEZONE = timezone(timedelta(hours=-12), "AoE")
+
 # One refusal for every verification failure. The caller is a machine holding
 # a contract, not a person debugging a login, and naming which check failed
 # tells an attacker probing with forged tokens which part they got right.
 INVALID_TOKEN_DETAIL = "Invalid or missing bearer token"  # noqa: S105 - a refusal message
+
+CONTRACT_ENDED_DETAIL = "The contract this credential was issued under ended"
 
 # Floor on how often an unknown key id may trigger a refetch. Without it, a
 # stream of tokens carrying junk kids would pull the JWKS endpoint once per
@@ -63,6 +79,29 @@ _KID_REFETCH_COOLDOWN_SECONDS = 60.0
 # lock and pays the full timeout in turn, so callers queue up behind each
 # other for as long as the outage lasts.
 _FETCH_RETRY_COOLDOWN_SECONDS = 5.0
+
+
+def contract_access_ends(claims: dict[str, Any]) -> datetime | None:
+    """The instant the token's contract stops granting access, or None.
+
+    Raises ValueError on a claim that is present but not a YYYY-MM-DD string.
+    Reading a malformed end date as "no end date" would fail open.
+    """
+    if CONTRACT_END_DATE_CLAIM not in claims:
+        return None
+    value = claims[CONTRACT_END_DATE_CLAIM]
+    if not isinstance(value, str):
+        msg = f"{CONTRACT_END_DATE_CLAIM} is not a string: {value!r}"
+        raise ValueError(msg)  # noqa: TRY004 - a malformed claim, not a caller's type error
+    end_date = date.fromisoformat(value)
+    # fromisoformat also takes 20270630 and 2027-W26-3. The mapper writes
+    # date.isoformat(), so anything else was not written by it.
+    if end_date.isoformat() != value:
+        msg = f"{CONTRACT_END_DATE_CLAIM} is not YYYY-MM-DD: {value!r}"
+        raise ValueError(msg)
+    return datetime.combine(
+        end_date + timedelta(days=1), datetime.min.time(), CONTRACT_END_TIMEZONE
+    )
 
 
 class JWKSUnavailableError(Exception):
@@ -260,4 +299,31 @@ async def verified_claims(request: Request) -> dict[str, Any]:
     if claims.get("typ") != ACCESS_TOKEN_TYPE:
         log.info("Refused a token that is not an access token", typ=claims.get("typ"))
         raise _unauthorized()
+
+    client_id = claims.get("azp") or claims.get("client_id")
+    try:
+        access_ends = contract_access_ends(claims)
+    except ValueError as exc:
+        log.warning(
+            "Refused a token with a malformed contract end date",
+            client_id=client_id,
+            error=str(exc),
+        )
+        raise _unauthorized() from exc
+    if access_ends is not None and datetime.now(UTC) >= access_ends:
+        end_date = claims[CONTRACT_END_DATE_CLAIM]
+        # Warning, not info: the backstop firing means the client outlived its
+        # contract and nobody removed it.
+        log.warning(
+            "learner_records_contract_ended", client_id=client_id, contract_end_date=end_date
+        )
+        # A detail of its own, unlike the refusals above. Only a token with a
+        # valid signature gets this far, so it tells a forger nothing, and it
+        # tells a partner whose sync just broke why.
+        raise ApiError(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            code=ErrorCode.UNAUTHORIZED,
+            detail=f"{CONTRACT_ENDED_DETAIL} on {end_date}",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     return claims
