@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import UTC, date, datetime, timedelta, timezone
+from datetime import time as clock_time
 from typing import Any
 
 import httpx
@@ -81,8 +82,8 @@ _KID_REFETCH_COOLDOWN_SECONDS = 60.0
 _FETCH_RETRY_COOLDOWN_SECONDS = 5.0
 
 
-def contract_access_ends(claims: dict[str, Any]) -> datetime | None:
-    """The instant the token's contract stops granting access, or None.
+def contract_access_through(claims: dict[str, Any]) -> datetime | None:
+    """The last instant the token's contract grants access, or None.
 
     Raises ValueError on a claim that is present but not a YYYY-MM-DD string.
     Reading a malformed end date as "no end date" would fail open.
@@ -99,20 +100,24 @@ def contract_access_ends(claims: dict[str, Any]) -> datetime | None:
     if end_date.isoformat() != value:
         msg = f"{CONTRACT_END_DATE_CLAIM} is not YYYY-MM-DD: {value!r}"
         raise ValueError(msg)
-    return datetime.combine(
-        end_date + timedelta(days=1), datetime.min.time(), CONTRACT_END_TIMEZONE
-    )
+    # The end of the day rather than the start of the next, which would
+    # overflow on 9999-12-31, the obvious sentinel for "no real end".
+    return datetime.combine(end_date, clock_time.max, CONTRACT_END_TIMEZONE)
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
 
 
 class JWKSUnavailableError(Exception):
     """The realm's key set could not be fetched or parsed."""
 
 
-def _unauthorized() -> ApiError:
+def _unauthorized(detail: str = INVALID_TOKEN_DETAIL) -> ApiError:
     return ApiError(
         status_code=status.HTTP_401_UNAUTHORIZED,
         code=ErrorCode.UNAUTHORIZED,
-        detail=INVALID_TOKEN_DETAIL,
+        detail=detail,
         headers={"WWW-Authenticate": "Bearer"},
     )
 
@@ -302,7 +307,7 @@ async def verified_claims(request: Request) -> dict[str, Any]:
 
     client_id = claims.get("azp") or claims.get("client_id")
     try:
-        access_ends = contract_access_ends(claims)
+        access_through = contract_access_through(claims)
     except ValueError as exc:
         log.warning(
             "Refused a token with a malformed contract end date",
@@ -310,7 +315,7 @@ async def verified_claims(request: Request) -> dict[str, Any]:
             error=str(exc),
         )
         raise _unauthorized() from exc
-    if access_ends is not None and datetime.now(UTC) >= access_ends:
+    if access_through is not None and _now() > access_through:
         end_date = claims[CONTRACT_END_DATE_CLAIM]
         # Warning, not info: the backstop firing means the client outlived its
         # contract and nobody removed it.
@@ -320,10 +325,6 @@ async def verified_claims(request: Request) -> dict[str, Any]:
         # A detail of its own, unlike the refusals above. Only a token with a
         # valid signature gets this far, so it tells a forger nothing, and it
         # tells a partner whose sync just broke why.
-        raise ApiError(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            code=ErrorCode.UNAUTHORIZED,
-            detail=f"{CONTRACT_ENDED_DETAIL} on {end_date}",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        detail = f"{CONTRACT_ENDED_DETAIL} on {end_date}"
+        raise _unauthorized(detail)
     return claims

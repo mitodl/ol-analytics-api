@@ -16,6 +16,7 @@ from datetime import UTC, date, datetime, timedelta
 import httpx
 import jwt
 import pytest
+import structlog.testing
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from httpx import ASGITransport, AsyncClient
@@ -34,7 +35,7 @@ from ol_analytics_api.tenants.b2b_learner_records.token import (
     CONTRACT_END_DATE_CLAIM,
     CONTRACT_ENDED_DETAIL,
     INVALID_TOKEN_DETAIL,
-    contract_access_ends,
+    contract_access_through,
     jwks_cache,
 )
 from tests.conftest import (
@@ -512,20 +513,35 @@ async def test_a_malformed_contract_end_is_refused(app, realm_keys, value):  # n
 
 
 @pytest.mark.parametrize(
-    ("now", "ended"),
+    ("now", "accepted"),
     [
-        (datetime(2027, 6, 30, 23, 59, 59, tzinfo=UTC), False),
-        (datetime(2027, 7, 1, 11, 59, 59, tzinfo=UTC), False),
-        (datetime(2027, 7, 1, 12, 0, 0, tzinfo=UTC), True),
+        (datetime(2027, 6, 30, 23, 59, 59, tzinfo=UTC), True),
+        (datetime(2027, 7, 1, 11, 59, 59, tzinfo=UTC), True),
+        (datetime(2027, 7, 1, 12, 0, 0, tzinfo=UTC), False),
     ],
 )
-def test_access_runs_to_the_end_of_the_date_anywhere_on_earth(now, ended):
-    ends = contract_access_ends({CONTRACT_END_DATE_CLAIM: "2027-06-30"})
-    assert ends is not None
-    assert (now >= ends) is ended
+async def test_access_runs_to_the_end_of_the_date_anywhere_on_earth(
+    app,
+    realm_keys,  # noqa: ARG001
+    monkeypatch,
+    now,
+    accepted,
+):
+    monkeypatch.setattr(token_module, "_now", lambda: now)
+    response = await _get(app, bearer(mint(_with_contract_end("2027-06-30"))))
+    assert response.status_code == (200 if accepted else 401)
 
 
-def test_the_end_date_matches_what_the_pulumi_mapper_writes():
-    assert contract_access_ends(
-        {CONTRACT_END_DATE_CLAIM: date(2027, 6, 30).isoformat()}
-    ) == datetime(2027, 7, 1, 12, tzinfo=UTC)
+def test_the_last_day_representable_is_an_end_date_not_an_error():
+    through = contract_access_through({CONTRACT_END_DATE_CLAIM: date.max.isoformat()})
+    assert through is not None
+    assert datetime.now(UTC) < through
+
+
+async def test_the_access_log_carries_the_contract_end_date(app, realm_keys):  # noqa: ARG001
+    ends = (datetime.now(UTC).date() + timedelta(days=2)).isoformat()
+    with structlog.testing.capture_logs() as logs:
+        response = await _get(app, bearer(mint(_with_contract_end(ends))))
+    assert response.status_code == 200
+    access = [entry for entry in logs if entry["event"] == "learner_records_access"]
+    assert [entry["contract_end_date"] for entry in access] == [ends]
