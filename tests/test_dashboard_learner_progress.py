@@ -20,6 +20,7 @@ from ol_analytics_api.main import create_app
 from ol_analytics_api.tenants.b2b_dashboard import learner_queries
 from ol_analytics_api.tenants.b2b_dashboard.config import settings
 from ol_analytics_api.tenants.b2b_dashboard.learner_models import (
+    CompletionStatusCounts,
     LearnerProgress,
     LearnerProgressResponse,
 )
@@ -63,9 +64,19 @@ class _FakePool:
     """Answers the as_of probe, the contract gate, the count query and the page
     query, recording every call."""
 
-    def __init__(self, rows=(), total_count=0, withheld=0, *, contract_exists=True):
+    def __init__(
+        self, rows=(), total_count=0, withheld=0, status_counts=None, *, contract_exists=True
+    ):
         self.rows = list(rows)
-        self.counts = {"total_count": total_count, "outcomes_withheld_count": withheld}
+        self.counts = {
+            "total_count": total_count,
+            "outcomes_withheld_count": withheld,
+            "not_started": 0,
+            "in_progress": 0,
+            "passed": 0,
+            "certified": 0,
+            **(status_counts or {}),
+        }
         self.contract_exists = contract_exists
         self.calls = []
 
@@ -122,6 +133,12 @@ async def test_envelope_withholds_outcomes_and_counts_them(app):
     assert body["as_of"] == "2026-09-15T06:00:00Z"
     assert body["total_count"] == 12
     assert body["outcomes_withheld_count"] == 12
+    assert body["completion_status_counts"] == {
+        "not_started": 0,
+        "in_progress": 0,
+        "passed": 0,
+        "certified": 0,
+    }
     [row] = body["data"]
     assert row["enrolled_on"] == "2026-02-03T14:22:11Z"
     assert row["email"] == "rgarcia@contoso.example"
@@ -170,6 +187,44 @@ async def test_consent_fail_open_discloses_outcomes(app, monkeypatch):
     assert (row["completion_status"], row["grade"]) == ("passed", 0.8)
     assert "TRUE AS outcomes_shared" in pool.page_call()[0]
     assert "SUM(CASE WHEN TRUE THEN 0 ELSE 1 END)" in pool.count_call()[0]
+
+
+async def test_completion_status_counts_reported_from_the_count_query(app):
+    status_counts = {"not_started": 2, "in_progress": 3, "passed": 1, "certified": 4}
+    withheld = 1
+    pool = _FakePool(
+        # The buckets plus outcomes_withheld_count sum to total_count (11), the
+        # invariant the endpoint promises; keep this fixture consistent with it.
+        total_count=sum(status_counts.values()) + withheld,
+        withheld=withheld,
+        status_counts=status_counts,
+    )
+    response = await _get(app, pool)
+
+    body = response.json()
+    assert body["completion_status_counts"] == status_counts
+    assert sum(status_counts.values()) + body["outcomes_withheld_count"] == body["total_count"]
+
+
+async def test_completion_status_counts_share_the_response_filters(app):
+    pool = _FakePool()
+    await _get(app, pool, params={"completion_status": ["passed"]})
+    count_query, _ = pool.count_call()
+    # Buckets come off the same WHERE clause as total_count, so they narrow
+    # along with the rest of the envelope rather than staying contract-wide.
+    assert count_query.count("WHERE") == 2
+    for status in ("not_started", "in_progress", "passed", "certified"):
+        assert (
+            f"SUM(CASE WHEN FALSE AND completion_status = '{status}' THEN 1 ELSE 0 END)"
+            f" AS {status}" in count_query
+        )
+
+
+def test_completion_status_buckets_are_mutually_exclusive_and_exhaustive():
+    # Each row's completion_status is exactly one CASE branch
+    # (learner_queries._COMPLETION_STATUS), so the four buckets never overlap
+    # and, with outcomes_withheld_count, always sum to total_count.
+    assert learner_queries._STATUSES == ("not_started", "in_progress", "passed", "certified")  # noqa: SLF001
 
 
 async def test_search_is_bound_with_wildcards_escaped(app):
@@ -229,12 +284,18 @@ def test_every_outcome_column_is_consent_gated_in_the_query():
         assert f"CASE WHEN FALSE THEN {name} END AS {name}" in query.page
 
 
-@pytest.mark.parametrize("model", [LearnerProgress, LearnerProgressResponse])
+@pytest.mark.parametrize(
+    "model", [LearnerProgress, LearnerProgressResponse, CompletionStatusCounts]
+)
 def test_every_field_has_a_manager_facing_description(model):
     # The dashboard can show these as help text to a manager, who never sees
     # field names, so every field needs one and none may lean on another field's
     # name.
-    field_names = set(LearnerProgress.model_fields) | set(LearnerProgressResponse.model_fields)
+    field_names = (
+        set(LearnerProgress.model_fields)
+        | set(LearnerProgressResponse.model_fields)
+        | set(CompletionStatusCounts.model_fields)
+    )
     for name, field in model.model_fields.items():
         assert field.description, f"{name} has no description"
         named = set(re.findall(r"\b[a-z]+(?:_[a-z]+)+\b", field.description)) & field_names

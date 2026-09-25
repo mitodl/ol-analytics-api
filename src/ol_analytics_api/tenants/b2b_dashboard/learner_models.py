@@ -25,7 +25,9 @@ developer detail lives here instead:
 - ``last_active_on`` is NULL for every row until activity data lands, whatever
   ``outcomes_shared`` says.
 - ``outcomes_withheld_count`` counts the rows in ``total_count`` whose
-  ``outcomes_shared`` is false.
+  ``outcomes_shared`` is false. ``completion_status_counts`` buckets the rest
+  by status; the two together add up to ``total_count``, since
+  ``CompletionStatus`` is exhaustive and its branches don't overlap.
 """
 
 from __future__ import annotations
@@ -149,6 +151,44 @@ class LearnerProgress(BaseModel):
         return self
 
 
+class CompletionStatusCounts(BaseModel):
+    """Matches ``LearnerProgressResponse.total_count``'s own filters, not the
+    contract as a whole, so it narrows along with the table it summarizes.
+
+    Each field counts a disjoint slice of the matching enrollments: every
+    enrollment falls into exactly one, in the order below (certificate beats
+    grade beats no grade), so summing the four plus ``outcomes_withheld_count``
+    always equals ``total_count``. An unrevoked certificate always wins even
+    when the same enrollment also carries a passing or in-progress grade,
+    which is why each field's own description calls out what it excludes.
+
+    These counts are never suppressed for small cohorts, unlike the
+    ``cohort_policy``-gated aggregates elsewhere in b2b_analytics (e.g.
+    ``ContractUtilization``, ``EnrollmentCompletionFunnel``): this endpoint's
+    ``data`` already exposes the individual matching rows, so there's nothing
+    left to hide by suppressing the summary.
+    """
+
+    certified: int = Field(
+        description="Matching enrollments with an unrevoked certificate, whatever their grade."
+    )
+    passed: int = Field(
+        description=(
+            "Matching enrollments with a currently passing grade, other than those already "
+            "counted as certified above."
+        )
+    )
+    in_progress: int = Field(
+        description=(
+            "Matching enrollments with a nonzero grade so far that isn't yet passing, other "
+            "than those already counted as certified or passed above."
+        )
+    )
+    not_started: int = Field(
+        description="Matching enrollments with no certificate and no grade recorded yet."
+    )
+
+
 class LearnerProgressResponse(BaseModel):
     """The org envelope (``organization_id``, ``as_of``, ``total_count``,
     ``data``) plus ``outcomes_withheld_count``, so a client can show how many
@@ -165,6 +205,12 @@ class LearnerProgressResponse(BaseModel):
         description=(
             "How many of those enrollments have progress hidden because the learner hasn't "
             "agreed to share it."
+        )
+    )
+    completion_status_counts: CompletionStatusCounts = Field(
+        description=(
+            "How many of those enrollments are in each stage of completion. Enrollments with "
+            "hidden progress aren't counted in any stage."
         )
     )
     data: list[LearnerProgress] = Field(description="This page of enrollments.")
