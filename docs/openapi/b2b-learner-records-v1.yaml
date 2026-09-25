@@ -597,8 +597,9 @@ components:
           description: >-
             Most recent day with tracked course activity (video play, problem
             check, navigation, discussion or chatbot submit) across the
-            enrollments the request covers. The course platform's local day,
-            not a UTC day. Null with no activity.
+            enrollments the request covers: active ones only, unless
+            `include_inactive=true`. The course platform's local day, not a
+            UTC day. Null with no activity.
           x-data-readiness: available
         courses_in_progress:
           type: [integer, 'null']
@@ -606,7 +607,7 @@ components:
           description: >-
             Distinct course runs whose `completion_status` is `in_progress`:
             not passed or certified, with a nonzero grade or any tracked
-            activity.
+            activity. Active enrollments only, unless `include_inactive=true`.
           x-data-readiness: derived
         courses_passed:
           type: [integer, 'null']

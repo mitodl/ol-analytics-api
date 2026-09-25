@@ -636,11 +636,12 @@ components:
             format: date
           - type: 'null'
           title: Last Active On
-          description: Most recent day with tracked course activity (video play, problem
-            check, navigation, discussion or chatbot submit) across the enrollments
-            the request covers. A date in the course platform's local day, not a UTC
-            day. Null with no activity. Changes to it do not move updated_since; a
-            full reload picks them up.
+          description: 'Most recent day with tracked course activity (video play,
+            problem check, navigation, discussion or chatbot submit) across the enrollments
+            the request covers: active ones only, unless include_inactive is set.
+            A date in the course platform''s local day, not a UTC day. Null with no
+            activity. Changes to it do not move updated_since; a full reload picks
+            them up.'
         courses_in_progress:
           anyOf:
           - type: integer
@@ -648,7 +649,8 @@ components:
           title: Courses In Progress
           description: 'Distinct course runs whose completion_status is in_progress:
             not passed or certified, with a nonzero grade or any tracked activity.
-            Changes to it do not move updated_since; a full reload picks them up.'
+            Active enrollments only, unless include_inactive is set. Changes to it
+            do not move updated_since; a full reload picks them up.'
         courses_passed:
           anyOf:
           - type: integer

@@ -156,15 +156,16 @@ class Learner(BaseModel):
         description=(
             "Most recent day with tracked course activity (video play, problem check, "
             "navigation, discussion or chatbot submit) across the enrollments the request "
-            "covers. A date in the course platform's local day, not a UTC day. Null with no "
-            f"activity. {_ACTIVITY_NOT_SYNCED}"
+            "covers: active ones only, unless include_inactive is set. A date in the course "
+            "platform's local day, not a UTC day. Null with no activity. "
+            f"{_ACTIVITY_NOT_SYNCED}"
         )
     )
     courses_in_progress: int | None = Field(
         description=(
             "Distinct course runs whose completion_status is in_progress: not passed or "
-            "certified, with a nonzero grade or any tracked activity. "
-            f"{_ACTIVITY_NOT_SYNCED}"
+            "certified, with a nonzero grade or any tracked activity. Active enrollments "
+            f"only, unless include_inactive is set. {_ACTIVITY_NOT_SYNCED}"
         )
     )
     courses_passed: int | None = Field(

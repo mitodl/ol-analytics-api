@@ -252,7 +252,8 @@ def learners(schema: str, filters: RecordFilters) -> RecordQuery:
 
     ``mv_b2b_learner`` precomputes it across all the organization's contracts,
     which serves the default request. ``courses_enrolled``, the enrolled_on
-    dates and ``both`` membership count active enrollments. Completions and the
+    dates, ``both`` membership, ``last_active_on`` and ``courses_in_progress``
+    count active enrollments. Completions and the
     cursor count every enrollment, so a learner whose seats were all reclaimed
     keeps a row with ``courses_enrolled = 0`` and the completions already sent.
     A ``contract_id`` or ``include_inactive`` request recomputes the rollup from
@@ -296,17 +297,22 @@ def _recomputed_learners(schema: str, filters: RecordFilters) -> tuple[str, list
         scope.append("contract_id = %s")
         params.append(filters.contract_id)
 
-    # The same definitions as mv_b2b_learner (ol-data-platform#2669). Only
-    # courses_enrolled and the enrolled_on dates look at enrollment_is_active, and
-    # only without include_inactive. Completions and the cursor span every
-    # enrollment, so a filtered request can't report fewer completions than the
-    # default one, and deactivation moves the cursor forward.
+    # The same definitions as mv_b2b_learner (ol-data-platform#2669, #2693).
+    # courses_enrolled, the enrolled_on dates, last_active_on and
+    # courses_in_progress look at enrollment_is_active, and only without
+    # include_inactive: they describe current engagement. Completions and the
+    # cursor span every enrollment, so a filtered request can't report fewer
+    # completions than the default one, and deactivation moves the cursor forward.
+    in_progress = f"{_COMPLETION_STATUS} = 'in_progress'"
     if filters.include_inactive:
         enrolled_run = "courserun_pk"
         enrolled_on = "enrollment_created_on"
+        active_on = "last_active_on"
     else:
         enrolled_run = "CASE WHEN enrollment_is_active = TRUE THEN courserun_pk END"
         enrolled_on = "CASE WHEN enrollment_is_active = TRUE THEN enrollment_created_on END"
+        active_on = "CASE WHEN enrollment_is_active = TRUE THEN last_active_on END"
+        in_progress = f"enrollment_is_active = TRUE AND {in_progress}"
 
     if filters.contract_id is not None:
         # Learners with any enrollment in the contract, active or not, as the
@@ -336,9 +342,8 @@ def _recomputed_learners(schema: str, filters: RecordFilters) -> tuple[str, list
         " COUNT(DISTINCT CASE WHEN is_passing = TRUE THEN courserun_pk END) AS courses_passed,"
         " COUNT(DISTINCT CASE WHEN certificate_is_revoked = FALSE THEN courserun_pk END)"
         " AS courses_certified,"
-        " MAX(last_active_on) AS last_active_on,"
-        f" COUNT(DISTINCT CASE WHEN {_COMPLETION_STATUS} = 'in_progress'"
-        " THEN courserun_pk END) AS courses_in_progress,"
+        f" MAX({active_on}) AS last_active_on,"
+        f" COUNT(DISTINCT CASE WHEN {in_progress} THEN courserun_pk END) AS courses_in_progress,"
         " MAX(record_updated_on) AS record_updated_on"
         f" FROM {schema}.{ENROLLMENT_MV} WHERE {' AND '.join(scope)} GROUP BY user_pk"
     )
@@ -346,6 +351,10 @@ def _recomputed_learners(schema: str, filters: RecordFilters) -> tuple[str, list
     # least one enrollment counted by courses_enrolled, as in the view, so a
     # roster member whose only enrollment is inactive reads as `roster` by default
     # and as `both` under include_inactive.
+    # last_active_on comes from e alone. mv_b2b_learner rolls it up from the same
+    # enrollments as mv_b2b_learner_enrollment, active ones only, so under
+    # include_inactive e's value covers l's, and a learner with no enrollment is
+    # null in both. Under contract_id, l's value spans other contracts.
     records = (
         "SELECT COALESCE(l.user_pk, e.user_pk) AS user_pk,"  # noqa: S608
         " COALESCE(l.user_global_id, e.user_global_id) AS learner_id,"

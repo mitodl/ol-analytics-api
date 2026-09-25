@@ -349,12 +349,33 @@ async def test_recomputed_learners_count_in_progress_with_the_enrollment_status(
         monkeypatch,
     )
     query, _ = pool.page_call()
+    # Activity counts active enrollments only, as mv_b2b_learner does.
+    assert (
+        "MAX(CASE WHEN enrollment_is_active = TRUE THEN last_active_on END) AS last_active_on"
+    ) in query
+    assert (
+        "COUNT(DISTINCT CASE WHEN enrollment_is_active = TRUE"
+        f" AND {queries._COMPLETION_STATUS} = 'in_progress'"  # noqa: SLF001
+        " THEN courserun_pk END) AS courses_in_progress"
+    ) in query
+    assert "COALESCE(e.courses_in_progress, 0) AS courses_in_progress" in query
+
+
+async def test_include_inactive_learners_count_activity_on_every_enrollment(app, monkeypatch):
+    pool = _FakePool()
+    await _get(
+        app,
+        f"/organizations/{ORG_ID}/learners?include_inactive=true",
+        _partner_header(ORG_ID),
+        pool,
+        monkeypatch,
+    )
+    query, _ = pool.page_call()
     assert "MAX(last_active_on) AS last_active_on" in query
     assert (
         f"COUNT(DISTINCT CASE WHEN {queries._COMPLETION_STATUS} = 'in_progress'"  # noqa: SLF001
         " THEN courserun_pk END) AS courses_in_progress"
     ) in query
-    assert "COALESCE(e.courses_in_progress, 0) AS courses_in_progress" in query
 
 
 async def test_default_learners_read_the_precomputed_rollup(app, monkeypatch):
