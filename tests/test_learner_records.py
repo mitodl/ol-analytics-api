@@ -352,6 +352,17 @@ async def test_include_inactive_learners_keep_every_roster_member(app, monkeypat
     assert params == (ORG_ID, ORG_ID, 100, 0)
 
 
+@pytest.mark.parametrize(
+    "path",
+    ["enrollments", "learners", "learners?contract_id=42", "learners?include_inactive=true"],
+)
+async def test_blank_names_read_as_null(app, monkeypatch, path):
+    pool = _FakePool()
+    await _get(app, f"/organizations/{ORG_ID}/{path}", _partner_header(ORG_ID), pool, monkeypatch)
+    query, _ = pool.page_call()
+    assert "NULLIF(TRIM(full_name), '')" in query
+
+
 async def test_recomputed_learners_report_the_staler_view(app, monkeypatch):
     older = datetime.datetime(2026, 8, 12, 6, 0)  # noqa: DTZ001
     pool = _FakePool(as_of_by_mv={queries.ENROLLMENT_MV: older})

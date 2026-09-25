@@ -197,6 +197,12 @@ async def test_sort_puts_nulls_last_with_a_unique_tie_break(app):
     )
 
 
+async def test_blank_names_read_as_null_so_they_sort_last(app):
+    pool = _FakePool()
+    await _get(app, pool)
+    assert "NULLIF(TRIM(full_name), '') AS full_name," in pool.page_call()[0]
+
+
 async def test_unknown_sort_key_is_rejected(app):
     response = await _get(app, _FakePool(), params={"sort": "grade"})
     assert response.status_code == 422
