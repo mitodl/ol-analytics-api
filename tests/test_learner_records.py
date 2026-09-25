@@ -548,6 +548,25 @@ def test_cursor_value_is_a_prefix_of_stored_values_in_the_same_second():
         assert stored >= bound
 
 
+def test_round_up_cursor_value_never_excludes_a_row_before_the_requested_instant():
+    # A row stored earlier in the same second as a fractional exclusive bound
+    # must still satisfy `< bound`. Flooring 06:15:00.500 to "...:00" would put
+    # a row stored at "...:00.250" (which precedes .500) on the wrong side of
+    # `<`, silently dropping it rather than re-sending it in the next window.
+    bound = queries._cursor_value(  # noqa: SLF001
+        datetime.datetime(2026, 8, 12, 6, 15, 0, 500000, tzinfo=datetime.UTC), round_up=True
+    )
+    assert bound == "2026-08-12T06:15:01"
+    assert bound > "2026-08-12T06:15:00.250000"
+
+
+def test_round_up_cursor_value_is_unchanged_on_a_whole_second():
+    bound = queries._cursor_value(  # noqa: SLF001
+        datetime.datetime(2026, 8, 12, 6, 15, 0, tzinfo=datetime.UTC), round_up=True
+    )
+    assert bound == "2026-08-12T06:15:00"
+
+
 def test_tenant_never_imports_the_anonymization_module():
     """The two tenants' privacy postures should be legible from their imports."""
     package = pathlib.Path(b2b_learner_records.__file__).parent

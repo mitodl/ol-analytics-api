@@ -141,19 +141,32 @@ def _placeholders(count: int) -> str:
     return ", ".join(["%s"] * count)
 
 
-def _cursor_value(value: datetime.datetime) -> str:
+def _cursor_value(value: datetime.datetime, *, round_up: bool = False) -> str:
     """Render a datetime for comparison against an MV timestamp column.
 
     The MVs store every MITx Online timestamp as a zone-less UTC ISO-8601
-    string, so the comparison is lexicographic. Truncating to whole seconds
-    makes the bound a prefix of any stored value in the same second, whatever
-    its fractional precision, so a record at the boundary is matched rather
-    than skipped — this matters most for ``updated_since``/``updated_before``,
-    where skipping a boundary record would drop it from every sync window.
+    string, so the comparison is lexicographic and only whole-second precision
+    survives. For an inclusive lower bound (the default, ``round_up=False``),
+    truncating down makes the bound a prefix of any stored value in the same
+    second, so a record at the boundary is matched by ``>=`` rather than
+    skipped — the record may be re-sent by the next window too, which a
+    sync client tolerates, but it is never dropped.
+
+    ``round_up=True`` is the same trade for an exclusive upper bound: rounding
+    a fractional instant *down* would turn ``< bound`` into ``< floor(bound)``,
+    which excludes every record in that second, including ones genuinely
+    before the requested instant — a silent drop, not a re-send. Rounding up
+    to the next whole second instead means ``<`` matches everything through
+    that second, so the same record may be re-sent by the window that starts
+    there (its ``since`` floors to the same second), never lost between them.
     """
     if value.tzinfo is not None:
         value = value.astimezone(datetime.UTC).replace(tzinfo=None)
-    return value.replace(microsecond=0).isoformat()
+    if round_up and value.microsecond:
+        value = value.replace(microsecond=0) + datetime.timedelta(seconds=1)
+    else:
+        value = value.replace(microsecond=0)
+    return value.isoformat()
 
 
 def _assemble(  # noqa: PLR0913, PLR0917
@@ -190,9 +203,12 @@ def _assemble(  # noqa: PLR0913, PLR0917
 def _window_predicates(
     column: str, since: datetime.datetime | None, before: datetime.datetime | None
 ) -> tuple[list[str], list[Any]]:
-    """``[since, before)``: paired, this is a partition a backfill can hand to
-    one worker without overlapping its neighbors. ``column`` is always one of
-    this module's own fixed identifiers, never caller input.
+    """``[since, before)``: paired with a later window whose ``since`` is this
+    ``before``, a backfill can hand each window to one worker and know no row
+    is dropped between them. Both bounds round toward re-sending a row rather
+    than skipping it, so a row at a sub-second boundary can land in both
+    windows, never in neither. ``column`` is always one of this module's own
+    fixed identifiers, never caller input.
     """
     predicates: list[str] = []
     params: list[Any] = []
@@ -201,7 +217,7 @@ def _window_predicates(
         params.append(_cursor_value(since))
     if before is not None:
         predicates.append(f"{column} < %s")
-        params.append(_cursor_value(before))
+        params.append(_cursor_value(before, round_up=True))
     return predicates, params
 
 
