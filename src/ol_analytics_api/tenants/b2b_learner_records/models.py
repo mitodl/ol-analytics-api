@@ -9,9 +9,9 @@ outcome fields unless ``outcomes_shared`` is true. The queries already project
 NULL for them (see queries._outcomes_shared). This is a second check, so a
 query change that projects a raw outcome column still can't disclose it.
 
-Fields the warehouse doesn't carry yet (consent date, activity) are projected
-as NULL and ship null until upstream models land. They have no default, so
-the generated schema lists them as required and nullable, as the contract does.
+The consent date isn't in the warehouse yet, so it is projected as NULL and
+ships null until the upstream model lands. It has no default, so the generated
+schema lists it as required and nullable, as the contract does.
 """
 
 from __future__ import annotations
@@ -34,13 +34,10 @@ def _assume_utc(value: datetime.datetime) -> datetime.datetime:
 
 UtcDatetime = Annotated[datetime.datetime, AfterValidator(_assume_utc)]
 
-# Activity is a separate gap from consent. These fields are hardcoded NULL in
-# the queries until the activity fact is wired into the MVs, so they stay null
-# even for a record whose outcomes are shared.
-_ACTIVITY_PENDING = (
-    "Not yet populated upstream: null for every record until activity data lands, "
-    "whatever outcomes_shared says."
-)
+# record_updated_on carries no activity: a day's activity first appears at a
+# refresh after that day began, so a cursor derived from it would already sort
+# below the updated_since a partner passes and the change would never be sent.
+_ACTIVITY_NOT_SYNCED = "Changes to it do not move updated_since; a full reload picks them up."
 
 
 def _withhold_outcomes[RecordT: BaseModel](record: RecordT, fields: tuple[str, ...]) -> RecordT:
@@ -157,14 +154,18 @@ class Learner(BaseModel):
     )
     last_active_on: datetime.date | None = Field(
         description=(
-            "Most recent day with recorded course activity. A date, not a timestamp: "
-            f"activity is aggregated per day. {_ACTIVITY_PENDING}"
+            "Most recent day with tracked course activity (video play, problem check, "
+            "navigation, discussion or chatbot submit) across the enrollments the request "
+            "covers: active ones only, unless include_inactive is set. A date in the course "
+            "platform's local day, not a UTC day. Null with no activity. "
+            f"{_ACTIVITY_NOT_SYNCED}"
         )
     )
     courses_in_progress: int | None = Field(
         description=(
-            "Distinct course runs the learner has started but not yet passed or certified. "
-            f"{_ACTIVITY_PENDING}"
+            "Distinct course runs whose completion_status is in_progress: not passed or "
+            "certified, with a nonzero grade or any tracked activity. Active enrollments "
+            f"only, unless include_inactive is set. {_ACTIVITY_NOT_SYNCED}"
         )
     )
     courses_passed: int | None = Field(
@@ -238,10 +239,9 @@ class Enrollment(BaseModel):
     )
     completion_status: CompletionStatus | None = Field(
         description=(
-            "Single derived answer per row. Null when outcomes are withheld. Until activity "
-            "data lands, not_started and in_progress come from the grade alone: in_progress "
-            "means a nonzero grade, so a learner active in the run with no graded work yet "
-            "reads not_started."
+            "Single derived answer per row. Null when outcomes are withheld. in_progress "
+            "means not passed or certified, with a nonzero grade or any tracked activity in "
+            "the run; not_started means neither."
         )
     )
     is_passing: bool | None = Field(description="Null where no grade has been computed.")
@@ -261,20 +261,32 @@ class Enrollment(BaseModel):
     )
     last_active_on: datetime.date | None = Field(
         description=(
-            f"Most recent day with recorded activity in this course run. {_ACTIVITY_PENDING}"
+            "Most recent day with tracked activity in this course run. A date in the course "
+            f"platform's local day, not a UTC day. Null with no activity. {_ACTIVITY_NOT_SYNCED}"
         )
     )
     days_active: int | None = Field(
-        description=f"Distinct days with recorded activity in this course run. {_ACTIVITY_PENDING}"
+        description=(
+            f"Distinct days with tracked activity in this course run. {_ACTIVITY_NOT_SYNCED}"
+        )
     )
     videos_watched: int | None = Field(
-        description=f"Distinct video blocks played. {_ACTIVITY_PENDING}"
+        description=(
+            "Video blocks played, counted once per day: a block played on two days counts "
+            f"twice. {_ACTIVITY_NOT_SYNCED}"
+        )
     )
     problems_attempted: int | None = Field(
-        description=f"Distinct problem blocks attempted. {_ACTIVITY_PENDING}"
+        description=(
+            "Problem blocks checked, counted once per day: a block attempted on two days "
+            f"counts twice. Viewing an answer is not an attempt. {_ACTIVITY_NOT_SYNCED}"
+        )
     )
     chatbot_interactions: int | None = Field(
-        description=f"Chatbot interactions recorded for this course run. {_ACTIVITY_PENDING}"
+        description=(
+            "Chatbot submits in this course run, counting each (session, block) once per day. "
+            f"{_ACTIVITY_NOT_SYNCED}"
+        )
     )
 
     @model_validator(mode="after")

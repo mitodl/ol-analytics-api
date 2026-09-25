@@ -297,6 +297,87 @@ def test_models_keep_outcomes_when_shared():
     assert (enrollment.completion_status, enrollment.grade) == ("passed", 0.8)
 
 
+def test_models_keep_activity_when_shared():
+    enrollment = Enrollment(
+        **_enrollment_row(
+            outcomes_shared=1,
+            completion_status="in_progress",
+            last_active_on=datetime.date(2026, 8, 11),
+            days_active=34,
+            videos_watched=212,
+            problems_attempted=88,
+            chatbot_interactions=14,
+        )
+    )
+    assert (
+        enrollment.last_active_on,
+        enrollment.days_active,
+        enrollment.videos_watched,
+        enrollment.problems_attempted,
+        enrollment.chatbot_interactions,
+    ) == (datetime.date(2026, 8, 11), 34, 212, 88, 14)
+
+
+async def test_enrollments_project_the_activity_columns(app, monkeypatch):
+    pool = _FakePool()
+    await _get(
+        app, f"/organizations/{ORG_ID}/enrollments", _partner_header(ORG_ID), pool, monkeypatch
+    )
+    query, _ = pool.page_call()
+    assert "videos_played AS videos_watched" in query
+    assert "NULL AS days_active" not in query
+    # Activity alone is enough to count as started.
+    assert "WHEN grade_value > 0 OR last_active_on IS NOT NULL THEN 'in_progress'" in query
+
+
+async def test_default_learners_project_the_activity_columns(app, monkeypatch):
+    pool = _FakePool()
+    await _get(app, f"/organizations/{ORG_ID}/learners", _partner_header(ORG_ID), pool, monkeypatch)
+    query, _ = pool.page_call()
+    assert "NULL AS last_active_on" not in query
+    assert "NULL AS courses_in_progress" not in query
+    assert "last_active_on, courses_in_progress, record_updated_on FROM" in query
+
+
+async def test_recomputed_learners_count_in_progress_with_the_enrollment_status(app, monkeypatch):
+    pool = _FakePool()
+    await _get(
+        app,
+        f"/organizations/{ORG_ID}/learners?contract_id=42",
+        _partner_header(ORG_ID),
+        pool,
+        monkeypatch,
+    )
+    query, _ = pool.page_call()
+    # Activity counts active enrollments only, as mv_b2b_learner does.
+    assert (
+        "MAX(CASE WHEN enrollment_is_active = TRUE THEN last_active_on END) AS last_active_on"
+    ) in query
+    assert (
+        "COUNT(DISTINCT CASE WHEN enrollment_is_active = TRUE"
+        f" AND {queries._COMPLETION_STATUS} = 'in_progress'"  # noqa: SLF001
+        " THEN courserun_pk END) AS courses_in_progress"
+    ) in query
+    assert "COALESCE(e.courses_in_progress, 0) AS courses_in_progress" in query
+
+
+async def test_include_inactive_learners_count_activity_on_every_enrollment(app, monkeypatch):
+    pool = _FakePool()
+    await _get(
+        app,
+        f"/organizations/{ORG_ID}/learners?include_inactive=true",
+        _partner_header(ORG_ID),
+        pool,
+        monkeypatch,
+    )
+    query, _ = pool.page_call()
+    assert "MAX(last_active_on) AS last_active_on" in query
+    assert (
+        f"COUNT(DISTINCT CASE WHEN {queries._COMPLETION_STATUS} = 'in_progress'"  # noqa: SLF001
+        " THEN courserun_pk END) AS courses_in_progress"
+    ) in query
+
+
 async def test_default_learners_read_the_precomputed_rollup(app, monkeypatch):
     pool = _FakePool()
     await _get(app, f"/organizations/{ORG_ID}/learners", _partner_header(ORG_ID), pool, monkeypatch)
