@@ -114,10 +114,14 @@ _ENROLLMENT_OUTCOMES = (
 class RecordFilters:
     organization_id: uuid.UUID
     contract_id: int | None = None
+    contract_is_active: bool | None = None
     courserun_id: str | None = None
+    courserun_starts_after: datetime.datetime | None = None
+    courserun_starts_before: datetime.datetime | None = None
     learner_ids: tuple[uuid.UUID, ...] = ()
     completion_statuses: tuple[str, ...] = ()
     updated_since: datetime.datetime | None = None
+    updated_before: datetime.datetime | None = None
     include_inactive: bool = False
 
 
@@ -138,12 +142,14 @@ def _placeholders(count: int) -> str:
 
 
 def _cursor_value(value: datetime.datetime) -> str:
-    """Render ``updated_since`` for comparison against ``record_updated_on``.
+    """Render a datetime for comparison against an MV timestamp column.
 
-    The MVs store that cursor as a zone-less UTC ISO-8601 string, so the
-    comparison is lexicographic. Truncating to whole seconds makes the bound a
-    prefix of any stored value in the same second, whatever its fractional
-    precision, so a record at the boundary is re-sent rather than skipped.
+    The MVs store every MITx Online timestamp as a zone-less UTC ISO-8601
+    string, so the comparison is lexicographic. Truncating to whole seconds
+    makes the bound a prefix of any stored value in the same second, whatever
+    its fractional precision, so a record at the boundary is matched rather
+    than skipped — this matters most for ``updated_since``/``updated_before``,
+    where skipping a boundary record would drop it from every sync window.
     """
     if value.tzinfo is not None:
         value = value.astimezone(datetime.UTC).replace(tzinfo=None)
@@ -190,6 +196,11 @@ def _shared_predicates(filters: RecordFilters) -> tuple[list[str], list[Any]]:
     if filters.updated_since is not None:
         predicates.append("record_updated_on >= %s")
         params.append(_cursor_value(filters.updated_since))
+    if filters.updated_before is not None:
+        # Exclusive: paired with updated_since, [since, before) is a partition a
+        # backfill can hand to one worker without overlapping its neighbors.
+        predicates.append("record_updated_on < %s")
+        params.append(_cursor_value(filters.updated_before))
     return predicates, params
 
 
@@ -391,6 +402,20 @@ def courses(schema: str, filters: RecordFilters) -> RecordQuery:
     if filters.contract_id is not None:
         scope.append("contract_id = %s")
         params.append(filters.contract_id)
+    if filters.contract_is_active is not None:
+        scope.append("b2b_contract_is_active = %s")
+        params.append(filters.contract_is_active)
+    if filters.courserun_id is not None:
+        scope.append("courserun_readable_id = %s")
+        params.append(filters.courserun_id)
+    if filters.courserun_starts_after is not None:
+        # This MV carries no record_updated_on, so this partitions by when a
+        # run starts, not by when its row last changed.
+        scope.append("courserun_start_on >= %s")
+        params.append(_cursor_value(filters.courserun_starts_after))
+    if filters.courserun_starts_before is not None:
+        scope.append("courserun_start_on < %s")
+        params.append(_cursor_value(filters.courserun_starts_before))
     where = " AND ".join(scope)
     page = (
         "SELECT sso_organization_id AS organization_id, organization_name, contract_id,"  # noqa: S608
