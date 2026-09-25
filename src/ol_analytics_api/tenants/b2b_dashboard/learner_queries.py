@@ -45,6 +45,10 @@ _COMPLETION_STATUS = (
     " END"
 )
 
+# Upstream stores "" rather than NULL for learners who never set a name. Null
+# blank names so they sort with the missing ones instead of before every name.
+_BLANK_AS_NULL_NAME = "NULLIF(TRIM(full_name), '')"
+
 _COLUMNS = (
     "learner_id",
     "email",
@@ -114,7 +118,8 @@ def learner_progress(filters: ProgressFilters) -> ProgressQuery:
     if not filters.include_inactive:
         scope.append("enrollment_is_active = TRUE")
     records = (
-        "SELECT user_pk, courserun_pk, user_global_id AS learner_id, email, full_name,"  # noqa: S608
+        "SELECT user_pk, courserun_pk, user_global_id AS learner_id, email,"  # noqa: S608
+        f" {_BLANK_AS_NULL_NAME} AS full_name,"
         " courserun_readable_id, courserun_title, courserun_start_on, courserun_end_on,"
         " enrollment_created_on AS enrolled_on, enrollment_is_active, enrollment_mode,"
         f" {_COMPLETION_STATUS} AS completion_status, is_passing, grade_value AS grade,"
@@ -145,8 +150,8 @@ def learner_progress(filters: ProgressFilters) -> ProgressQuery:
     where = f" WHERE {' AND '.join(predicates)}" if predicates else ""
 
     direction = "DESC" if filters.descending else "ASC"
-    # Nulls last either way (full_name is often null), then a unique tie-break
-    # so LIMIT/OFFSET paging is deterministic.
+    # Nulls last either way (full_name is often null, and `records` nulls blank
+    # ones), then a unique tie-break so LIMIT/OFFSET paging is deterministic.
     order_by = (
         f"{filters.sort.value} IS NULL, {filters.sort.value} {direction}, user_pk, courserun_pk"
     )
