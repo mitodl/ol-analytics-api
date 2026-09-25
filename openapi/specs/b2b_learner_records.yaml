@@ -447,10 +447,9 @@ components:
           anyOf:
           - $ref: '#/components/schemas/CompletionStatus'
           - type: 'null'
-          description: 'Single derived answer per row. Null when outcomes are withheld.
-            Until activity data lands, not_started and in_progress come from the grade
-            alone: in_progress means a nonzero grade, so a learner active in the run
-            with no graded work yet reads not_started.'
+          description: Single derived answer per row. Null when outcomes are withheld.
+            in_progress means not passed or certified, with a nonzero grade or any
+            tracked activity in the run; not_started means neither.
         is_passing:
           anyOf:
           - type: boolean
@@ -490,41 +489,40 @@ components:
             format: date
           - type: 'null'
           title: Last Active On
-          description: 'Most recent day with recorded activity in this course run.
-            Not yet populated upstream: null for every record until activity data
-            lands, whatever outcomes_shared says.'
+          description: Most recent day with tracked activity in this course run. A
+            date in the course platform's local day, not a UTC day. Null with no activity.
+            Changes to it do not move updated_since; a full reload picks them up.
         days_active:
           anyOf:
           - type: integer
           - type: 'null'
           title: Days Active
-          description: 'Distinct days with recorded activity in this course run. Not
-            yet populated upstream: null for every record until activity data lands,
-            whatever outcomes_shared says.'
+          description: Distinct days with tracked activity in this course run. Changes
+            to it do not move updated_since; a full reload picks them up.
         videos_watched:
           anyOf:
           - type: integer
           - type: 'null'
           title: Videos Watched
-          description: 'Distinct video blocks played. Not yet populated upstream:
-            null for every record until activity data lands, whatever outcomes_shared
-            says.'
+          description: 'Video blocks played, counted once per day: a block played
+            on two days counts twice. Changes to it do not move updated_since; a full
+            reload picks them up.'
         problems_attempted:
           anyOf:
           - type: integer
           - type: 'null'
           title: Problems Attempted
-          description: 'Distinct problem blocks attempted. Not yet populated upstream:
-            null for every record until activity data lands, whatever outcomes_shared
-            says.'
+          description: 'Problem blocks checked, counted once per day: a block attempted
+            on two days counts twice. Viewing an answer is not an attempt. Changes
+            to it do not move updated_since; a full reload picks them up.'
         chatbot_interactions:
           anyOf:
           - type: integer
           - type: 'null'
           title: Chatbot Interactions
-          description: 'Chatbot interactions recorded for this course run. Not yet
-            populated upstream: null for every record until activity data lands, whatever
-            outcomes_shared says.'
+          description: Chatbot submits in this course run, counting each (session,
+            block) once per day. Changes to it do not move updated_since; a full reload
+            picks them up.
       type: object
       required:
       - learner_id
@@ -638,18 +636,19 @@ components:
             format: date
           - type: 'null'
           title: Last Active On
-          description: 'Most recent day with recorded course activity. A date, not
-            a timestamp: activity is aggregated per day. Not yet populated upstream:
-            null for every record until activity data lands, whatever outcomes_shared
-            says.'
+          description: Most recent day with tracked course activity (video play, problem
+            check, navigation, discussion or chatbot submit) across the enrollments
+            the request covers. A date in the course platform's local day, not a UTC
+            day. Null with no activity. Changes to it do not move updated_since; a
+            full reload picks them up.
         courses_in_progress:
           anyOf:
           - type: integer
           - type: 'null'
           title: Courses In Progress
-          description: 'Distinct course runs the learner has started but not yet passed
-            or certified. Not yet populated upstream: null for every record until
-            activity data lands, whatever outcomes_shared says.'
+          description: 'Distinct course runs whose completion_status is in_progress:
+            not passed or certified, with a nonzero grade or any tracked activity.
+            Changes to it do not move updated_since; a full reload picks them up.'
         courses_passed:
           anyOf:
           - type: integer
