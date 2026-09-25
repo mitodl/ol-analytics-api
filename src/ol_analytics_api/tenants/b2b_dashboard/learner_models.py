@@ -161,6 +161,12 @@ class CompletionStatusCounts(BaseModel):
     always equals ``total_count``. An unrevoked certificate always wins even
     when the same enrollment also carries a passing or in-progress grade,
     which is why each field's own description calls out what it excludes.
+
+    These counts are never suppressed for small cohorts, unlike the
+    ``cohort_policy``-gated aggregates elsewhere in b2b_analytics (e.g.
+    ``ContractUtilization``, ``EnrollmentCompletionFunnel``): this endpoint's
+    ``data`` already exposes the individual matching rows, so there's nothing
+    left to hide by suppressing the summary.
     """
 
     certified: int = Field(
