@@ -271,8 +271,14 @@ paths:
             format: date-time
           - type: 'null'
           description: Return only course runs starting at or after this instant.
+            Self-paced or otherwise unscheduled runs have no start date and match
+            neither this nor courserun_starts_before; a partitioned sync needs one
+            pass with neither set to pick those up.
           title: Courserun Starts After
-        description: Return only course runs starting at or after this instant.
+        description: Return only course runs starting at or after this instant. Self-paced
+          or otherwise unscheduled runs have no start date and match neither this
+          nor courserun_starts_before; a partitioned sync needs one pass with neither
+          set to pick those up.
       - name: courserun_starts_before
         in: query
         required: false

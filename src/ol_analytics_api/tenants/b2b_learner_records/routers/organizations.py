@@ -184,7 +184,14 @@ async def list_courses(  # noqa: PLR0913
     courserun_id: str | None = None,
     courserun_starts_after: Annotated[
         datetime.datetime | None,
-        Query(description="Return only course runs starting at or after this instant."),
+        Query(
+            description=(
+                "Return only course runs starting at or after this instant. Self-paced or "
+                "otherwise unscheduled runs have no start date and match neither this nor "
+                "courserun_starts_before; a partitioned sync needs one pass with neither "
+                "set to pick those up."
+            )
+        ),
     ] = None,
     courserun_starts_before: Annotated[
         datetime.datetime | None,

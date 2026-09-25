@@ -187,20 +187,35 @@ def _assemble(  # noqa: PLR0913, PLR0917
     return RecordQuery(page, count, (*record_params, *predicate_params), sources)
 
 
+def _window_predicates(
+    column: str, since: datetime.datetime | None, before: datetime.datetime | None
+) -> tuple[list[str], list[Any]]:
+    """``[since, before)``: paired, this is a partition a backfill can hand to
+    one worker without overlapping its neighbors. ``column`` is always one of
+    this module's own fixed identifiers, never caller input.
+    """
+    predicates: list[str] = []
+    params: list[Any] = []
+    if since is not None:
+        predicates.append(f"{column} >= %s")
+        params.append(_cursor_value(since))
+    if before is not None:
+        predicates.append(f"{column} < %s")
+        params.append(_cursor_value(before))
+    return predicates, params
+
+
 def _shared_predicates(filters: RecordFilters) -> tuple[list[str], list[Any]]:
     predicates: list[str] = []
     params: list[Any] = []
     if filters.learner_ids:
         predicates.append(f"learner_id IN ({_placeholders(len(filters.learner_ids))})")
         params.extend(str(learner_id) for learner_id in filters.learner_ids)
-    if filters.updated_since is not None:
-        predicates.append("record_updated_on >= %s")
-        params.append(_cursor_value(filters.updated_since))
-    if filters.updated_before is not None:
-        # Exclusive: paired with updated_since, [since, before) is a partition a
-        # backfill can hand to one worker without overlapping its neighbors.
-        predicates.append("record_updated_on < %s")
-        params.append(_cursor_value(filters.updated_before))
+    window_predicates, window_params = _window_predicates(
+        "record_updated_on", filters.updated_since, filters.updated_before
+    )
+    predicates.extend(window_predicates)
+    params.extend(window_params)
     return predicates, params
 
 
@@ -395,6 +410,14 @@ def courses(schema: str, filters: RecordFilters) -> RecordQuery:
 
     Built without ``_assemble``: these rows carry no personal data, so there is
     no consent projection, and ``outcomes_withheld_count`` is always 0.
+
+    This MV carries no ``record_updated_on``, so ``courserun_starts_after``/
+    ``courserun_starts_before`` partition by when a run starts, not by when its
+    row last changed. ``courserun_start_on`` is nullable (unscheduled runs), and
+    SQL comparisons against NULL are never true, so a self-paced run with no
+    start date matches neither bound and falls outside every partition. A
+    partitioned backfill that wants full coverage still needs one unfiltered
+    pass (or a pass with neither bound set) to pick those up.
     """
     table = f"{validate_sql_identifier(schema)}.{CONTRACT_COURSERUN_MV}"
     scope = ["sso_organization_id = %s"]
@@ -408,14 +431,11 @@ def courses(schema: str, filters: RecordFilters) -> RecordQuery:
     if filters.courserun_id is not None:
         scope.append("courserun_readable_id = %s")
         params.append(filters.courserun_id)
-    if filters.courserun_starts_after is not None:
-        # This MV carries no record_updated_on, so this partitions by when a
-        # run starts, not by when its row last changed.
-        scope.append("courserun_start_on >= %s")
-        params.append(_cursor_value(filters.courserun_starts_after))
-    if filters.courserun_starts_before is not None:
-        scope.append("courserun_start_on < %s")
-        params.append(_cursor_value(filters.courserun_starts_before))
+    window_scope, window_params = _window_predicates(
+        "courserun_start_on", filters.courserun_starts_after, filters.courserun_starts_before
+    )
+    scope.extend(window_scope)
+    params.extend(window_params)
     where = " AND ".join(scope)
     page = (
         "SELECT sso_organization_id AS organization_id, organization_name, contract_id,"  # noqa: S608
