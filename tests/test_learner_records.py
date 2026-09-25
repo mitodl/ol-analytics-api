@@ -480,6 +480,22 @@ async def test_enrollment_filters_are_bound_in_order(app, monkeypatch):
     assert pool.count_call()[1] == params[:-2]
 
 
+async def test_updated_before_bounds_the_window_exclusively(app, monkeypatch):
+    pool = _FakePool()
+    await _get(
+        app,
+        f"/organizations/{ORG_ID}/enrollments"
+        "?updated_since=2026-08-12T00:00:00Z&updated_before=2026-08-13T00:00:00Z",
+        _partner_header(ORG_ID),
+        pool,
+        monkeypatch,
+    )
+    query, params = pool.page_call()
+    assert "record_updated_on >= %s" in query
+    assert "record_updated_on < %s" in query
+    assert params == (ORG_ID, "2026-08-12T00:00:00", "2026-08-13T00:00:00", 100, 0)
+
+
 async def test_omitted_list_filters_add_no_predicate(app, monkeypatch):
     """`learner_id` and `completion_status` are plain arrays defaulting to [],
     not `list | None`: the optional form publishes `anyOf: [array, null]`, which
@@ -530,6 +546,25 @@ def test_cursor_value_is_a_prefix_of_stored_values_in_the_same_second():
     assert bound == "2026-08-12T06:15:00"
     for stored in ("2026-08-12T06:15:00", "2026-08-12T06:15:00.000", "2026-08-12T06:15:00.000000"):
         assert stored >= bound
+
+
+def test_round_up_cursor_value_never_excludes_a_row_before_the_requested_instant():
+    # A row stored earlier in the same second as a fractional exclusive bound
+    # must still satisfy `< bound`. Flooring 06:15:00.500 to "...:00" would put
+    # a row stored at "...:00.250" (which precedes .500) on the wrong side of
+    # `<`, silently dropping it rather than re-sending it in the next window.
+    bound = queries._cursor_value(  # noqa: SLF001
+        datetime.datetime(2026, 8, 12, 6, 15, 0, 500000, tzinfo=datetime.UTC), round_up=True
+    )
+    assert bound == "2026-08-12T06:15:01"
+    assert bound > "2026-08-12T06:15:00.250000"
+
+
+def test_round_up_cursor_value_is_unchanged_on_a_whole_second():
+    bound = queries._cursor_value(  # noqa: SLF001
+        datetime.datetime(2026, 8, 12, 6, 15, 0, tzinfo=datetime.UTC), round_up=True
+    )
+    assert bound == "2026-08-12T06:15:00"
 
 
 def test_tenant_never_imports_the_anonymization_module():
@@ -623,3 +658,31 @@ async def test_courses_contract_filter_is_bound(app, monkeypatch):
     assert "sso_organization_id = %s AND contract_id = %s" in query
     assert params == (ORG_ID, 42, 100, 0)
     assert pool.count_call()[1] == (ORG_ID, 42)
+
+
+async def test_courses_filters_are_bound_in_order(app, monkeypatch):
+    pool = _FakePool()
+    await _get(
+        app,
+        f"/organizations/{ORG_ID}/courses"
+        "?contract_is_active=true&courserun_id=course-v1:MITxT%2B14.310x%2B2T2026"
+        "&courserun_starts_after=2026-01-01T00:00:00Z&courserun_starts_before=2026-04-01T00:00:00Z",
+        _partner_header(ORG_ID),
+        pool,
+        monkeypatch,
+    )
+    query, params = pool.page_call()
+    assert "b2b_contract_is_active = %s" in query
+    assert "courserun_readable_id = %s" in query
+    assert "courserun_start_on >= %s" in query
+    assert "courserun_start_on < %s" in query
+    assert params == (
+        ORG_ID,
+        True,
+        "course-v1:MITxT+14.310x+2T2026",
+        "2026-01-01T00:00:00",
+        "2026-04-01T00:00:00",
+        100,
+        0,
+    )
+    assert pool.count_call()[1] == params[:-2]

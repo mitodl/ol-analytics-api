@@ -114,10 +114,14 @@ _ENROLLMENT_OUTCOMES = (
 class RecordFilters:
     organization_id: uuid.UUID
     contract_id: int | None = None
+    contract_is_active: bool | None = None
     courserun_id: str | None = None
+    courserun_starts_after: datetime.datetime | None = None
+    courserun_starts_before: datetime.datetime | None = None
     learner_ids: tuple[uuid.UUID, ...] = ()
     completion_statuses: tuple[str, ...] = ()
     updated_since: datetime.datetime | None = None
+    updated_before: datetime.datetime | None = None
     include_inactive: bool = False
 
 
@@ -137,17 +141,32 @@ def _placeholders(count: int) -> str:
     return ", ".join(["%s"] * count)
 
 
-def _cursor_value(value: datetime.datetime) -> str:
-    """Render ``updated_since`` for comparison against ``record_updated_on``.
+def _cursor_value(value: datetime.datetime, *, round_up: bool = False) -> str:
+    """Render a datetime for comparison against an MV timestamp column.
 
-    The MVs store that cursor as a zone-less UTC ISO-8601 string, so the
-    comparison is lexicographic. Truncating to whole seconds makes the bound a
-    prefix of any stored value in the same second, whatever its fractional
-    precision, so a record at the boundary is re-sent rather than skipped.
+    The MVs store every MITx Online timestamp as a zone-less UTC ISO-8601
+    string, so the comparison is lexicographic and only whole-second precision
+    survives. For an inclusive lower bound (the default, ``round_up=False``),
+    truncating down makes the bound a prefix of any stored value in the same
+    second, so a record at the boundary is matched by ``>=`` rather than
+    skipped — the record may be re-sent by the next window too, which a
+    sync client tolerates, but it is never dropped.
+
+    ``round_up=True`` is the same trade for an exclusive upper bound: rounding
+    a fractional instant *down* would turn ``< bound`` into ``< floor(bound)``,
+    which excludes every record in that second, including ones genuinely
+    before the requested instant — a silent drop, not a re-send. Rounding up
+    to the next whole second instead means ``<`` matches everything through
+    that second, so the same record may be re-sent by the window that starts
+    there (its ``since`` floors to the same second), never lost between them.
     """
     if value.tzinfo is not None:
         value = value.astimezone(datetime.UTC).replace(tzinfo=None)
-    return value.replace(microsecond=0).isoformat()
+    if round_up and value.microsecond:
+        value = value.replace(microsecond=0) + datetime.timedelta(seconds=1)
+    else:
+        value = value.replace(microsecond=0)
+    return value.isoformat()
 
 
 def _assemble(  # noqa: PLR0913, PLR0917
@@ -181,15 +200,38 @@ def _assemble(  # noqa: PLR0913, PLR0917
     return RecordQuery(page, count, (*record_params, *predicate_params), sources)
 
 
+def _window_predicates(
+    column: str, since: datetime.datetime | None, before: datetime.datetime | None
+) -> tuple[list[str], list[Any]]:
+    """``[since, before)``: paired with a later window whose ``since`` is this
+    ``before``, a backfill can hand each window to one worker and know no row
+    is dropped between them. Both bounds round toward re-sending a row rather
+    than skipping it, so a row at a sub-second boundary can land in both
+    windows, never in neither. ``column`` is always one of this module's own
+    fixed identifiers, never caller input.
+    """
+    predicates: list[str] = []
+    params: list[Any] = []
+    if since is not None:
+        predicates.append(f"{column} >= %s")
+        params.append(_cursor_value(since))
+    if before is not None:
+        predicates.append(f"{column} < %s")
+        params.append(_cursor_value(before, round_up=True))
+    return predicates, params
+
+
 def _shared_predicates(filters: RecordFilters) -> tuple[list[str], list[Any]]:
     predicates: list[str] = []
     params: list[Any] = []
     if filters.learner_ids:
         predicates.append(f"learner_id IN ({_placeholders(len(filters.learner_ids))})")
         params.extend(str(learner_id) for learner_id in filters.learner_ids)
-    if filters.updated_since is not None:
-        predicates.append("record_updated_on >= %s")
-        params.append(_cursor_value(filters.updated_since))
+    window_predicates, window_params = _window_predicates(
+        "record_updated_on", filters.updated_since, filters.updated_before
+    )
+    predicates.extend(window_predicates)
+    params.extend(window_params)
     return predicates, params
 
 
@@ -384,6 +426,14 @@ def courses(schema: str, filters: RecordFilters) -> RecordQuery:
 
     Built without ``_assemble``: these rows carry no personal data, so there is
     no consent projection, and ``outcomes_withheld_count`` is always 0.
+
+    This MV carries no ``record_updated_on``, so ``courserun_starts_after``/
+    ``courserun_starts_before`` partition by when a run starts, not by when its
+    row last changed. ``courserun_start_on`` is nullable (unscheduled runs), and
+    SQL comparisons against NULL are never true, so a self-paced run with no
+    start date matches neither bound and falls outside every partition. A
+    partitioned backfill that wants full coverage still needs one unfiltered
+    pass (or a pass with neither bound set) to pick those up.
     """
     table = f"{validate_sql_identifier(schema)}.{CONTRACT_COURSERUN_MV}"
     scope = ["sso_organization_id = %s"]
@@ -391,6 +441,17 @@ def courses(schema: str, filters: RecordFilters) -> RecordQuery:
     if filters.contract_id is not None:
         scope.append("contract_id = %s")
         params.append(filters.contract_id)
+    if filters.contract_is_active is not None:
+        scope.append("b2b_contract_is_active = %s")
+        params.append(filters.contract_is_active)
+    if filters.courserun_id is not None:
+        scope.append("courserun_readable_id = %s")
+        params.append(filters.courserun_id)
+    window_scope, window_params = _window_predicates(
+        "courserun_start_on", filters.courserun_starts_after, filters.courserun_starts_before
+    )
+    scope.extend(window_scope)
+    params.extend(window_params)
     where = " AND ".join(scope)
     page = (
         "SELECT sso_organization_id AS organization_id, organization_name, contract_id,"  # noqa: S608

@@ -53,6 +53,19 @@ paths:
           description: Return only records changed at or after this instant.
           title: Updated Since
         description: Return only records changed at or after this instant.
+      - name: updated_before
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: Return only records changed strictly before this instant. Paired
+            with updated_since, bounds a window for a partitioned backfill or replay.
+          title: Updated Before
+        description: Return only records changed strictly before this instant. Paired
+          with updated_since, bounds a window for a partitioned backfill or replay.
       - name: include_inactive
         in: query
         required: false
@@ -156,6 +169,19 @@ paths:
           description: Return only records changed at or after this instant.
           title: Updated Since
         description: Return only records changed at or after this instant.
+      - name: updated_before
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: Return only records changed strictly before this instant. Paired
+            with updated_since, bounds a window for a partitioned backfill or replay.
+          title: Updated Before
+        description: Return only records changed strictly before this instant. Paired
+          with updated_since, bounds a window for a partitioned backfill or replay.
       - name: include_inactive
         in: query
         required: false
@@ -220,6 +246,50 @@ paths:
           - type: integer
           - type: 'null'
           title: Contract Id
+      - name: contract_is_active
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Contract Is Active
+      - name: courserun_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Courserun Id
+      - name: courserun_starts_after
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: Return only course runs starting at or after this instant.
+            Self-paced or otherwise unscheduled runs have no start date and match
+            neither this nor courserun_starts_before; a partitioned sync needs one
+            pass with neither set to pick those up.
+          title: Courserun Starts After
+        description: Return only course runs starting at or after this instant. Self-paced
+          or otherwise unscheduled runs have no start date and match neither this
+          nor courserun_starts_before; a partitioned sync needs one pass with neither
+          set to pick those up.
+      - name: courserun_starts_before
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: Return only course runs starting strictly before this instant.
+          title: Courserun Starts Before
+        description: Return only course runs starting strictly before this instant.
       - name: limit
         in: query
         required: false
