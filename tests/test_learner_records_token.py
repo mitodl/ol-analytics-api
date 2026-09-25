@@ -469,12 +469,22 @@ def _with_contract_end(value: object) -> dict:
 
 async def test_a_token_past_its_contract_end_is_refused(app, realm_keys):  # noqa: ARG001
     ended = (datetime.now(UTC).date() - timedelta(days=2)).isoformat()
-    response = await _get(app, bearer(mint(_with_contract_end(ended))))
+    with structlog.testing.capture_logs() as logs:
+        response = await _get(app, bearer(mint(_with_contract_end(ended))))
     assert response.status_code == 401
     assert response.json() == {
         "code": "unauthorized",
         "detail": f"{CONTRACT_ENDED_DETAIL} on {ended}",
     }
+    # The alert for a client that outlived its contract keys on this event.
+    assert [entry for entry in logs if entry["event"] == "learner_records_contract_ended"] == [
+        {
+            "event": "learner_records_contract_ended",
+            "log_level": "warning",
+            "client_id": PARTNER_CLAIMS["azp"],
+            "contract_end_date": ended,
+        }
+    ]
 
 
 async def test_a_token_before_its_contract_end_is_accepted(app, realm_keys):  # noqa: ARG001
