@@ -49,6 +49,10 @@ _COMPLETION_STATUS = (
 # blank names so they sort with the missing ones instead of before every name.
 _BLANK_AS_NULL_NAME = "NULLIF(TRIM(full_name), '')"
 
+# The four branches of _COMPLETION_STATUS. Mutually exclusive, so these buckets
+# never overlap; a row with withheld outcomes falls into none of them.
+_STATUSES = ("not_started", "in_progress", "passed", "certified")
+
 _COLUMNS = (
     "learner_id",
     "email",
@@ -167,9 +171,14 @@ def learner_progress(filters: ProgressFilters) -> ProgressQuery:
         f"SELECT {projection} FROM ({records}) records{where}"  # noqa: S608
         f" ORDER BY {order_by} LIMIT %s OFFSET %s"
     )
+    status_sums = ", ".join(
+        f"SUM(CASE WHEN {shared} AND completion_status = '{value}' THEN 1 ELSE 0 END) AS {value}"
+        for value in _STATUSES
+    )
     count = (
         "SELECT COUNT(*) AS total_count,"  # noqa: S608
-        f" SUM(CASE WHEN {shared} THEN 0 ELSE 1 END) AS outcomes_withheld_count"
+        f" SUM(CASE WHEN {shared} THEN 0 ELSE 1 END) AS outcomes_withheld_count,"
+        f" {status_sums}"
         f" FROM ({records}) records{where}"
     )
     return ProgressQuery(page, count, tuple(params))

@@ -64,6 +64,15 @@ UpdatedSince = Annotated[
     datetime.datetime | None,
     Query(description="Return only records changed at or after this instant."),
 ]
+UpdatedBefore = Annotated[
+    datetime.datetime | None,
+    Query(
+        description=(
+            "Return only records changed strictly before this instant. Paired with "
+            "updated_since, bounds a window for a partitioned backfill or replay."
+        )
+    ),
+]
 IncludeInactive = Annotated[
     bool, Query(description="Include deactivated enrollments (unenrolled, refunded, transferred).")
 ]
@@ -109,6 +118,7 @@ async def list_learners(  # noqa: PLR0913
     contract_id: int | None = None,
     learner_id: LearnerIds,
     updated_since: UpdatedSince = None,
+    updated_before: UpdatedBefore = None,
     include_inactive: IncludeInactive = False,
 ) -> LearnerRecordsResponse[BaseModel]:
     filters = queries.RecordFilters(
@@ -116,6 +126,7 @@ async def list_learners(  # noqa: PLR0913
         contract_id=contract_id,
         learner_ids=tuple(learner_id or ()),
         updated_since=updated_since,
+        updated_before=updated_before,
         include_inactive=include_inactive,
     )
     return await _respond(
@@ -139,6 +150,7 @@ async def list_enrollments(  # noqa: PLR0913
     learner_id: LearnerIds,
     completion_status: Annotated[list[CompletionStatusFilter], Query(default_factory=list)],
     updated_since: UpdatedSince = None,
+    updated_before: UpdatedBefore = None,
     include_inactive: IncludeInactive = False,
 ) -> LearnerRecordsResponse[BaseModel]:
     filters = queries.RecordFilters(
@@ -148,6 +160,7 @@ async def list_enrollments(  # noqa: PLR0913
         learner_ids=tuple(learner_id or ()),
         completion_statuses=tuple(status.value for status in completion_status or ()),
         updated_since=updated_since,
+        updated_before=updated_before,
         include_inactive=include_inactive,
     )
     return await _respond(
@@ -162,13 +175,37 @@ async def list_enrollments(  # noqa: PLR0913
     response_model=LearnerRecordsResponse[CourseRun],
     summary="Contracts and course runs covered by the organization's licence",
 )
-async def list_courses(
+async def list_courses(  # noqa: PLR0913
     *,
     organization_id: uuid.UUID,
     page: PageParams,
     contract_id: int | None = None,
+    contract_is_active: bool | None = None,
+    courserun_id: str | None = None,
+    courserun_starts_after: Annotated[
+        datetime.datetime | None,
+        Query(
+            description=(
+                "Return only course runs starting at or after this instant. Self-paced or "
+                "otherwise unscheduled runs have no start date and match neither this nor "
+                "courserun_starts_before; a partitioned sync needs one pass with neither "
+                "set to pick those up."
+            )
+        ),
+    ] = None,
+    courserun_starts_before: Annotated[
+        datetime.datetime | None,
+        Query(description="Return only course runs starting strictly before this instant."),
+    ] = None,
 ) -> LearnerRecordsResponse[BaseModel]:
-    filters = queries.RecordFilters(organization_id=organization_id, contract_id=contract_id)
+    filters = queries.RecordFilters(
+        organization_id=organization_id,
+        contract_id=contract_id,
+        contract_is_active=contract_is_active,
+        courserun_id=courserun_id,
+        courserun_starts_after=courserun_starts_after,
+        courserun_starts_before=courserun_starts_before,
+    )
     return await _respond(
         queries.courses(settings.starrocks_schema, filters), organization_id, page, CourseRun
     )

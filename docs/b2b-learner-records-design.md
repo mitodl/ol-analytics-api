@@ -58,9 +58,14 @@ The second is more work but produces a correct `user_fk`-keyed
 `(learner × courserun × day)` fact that the aggregate MVs would also benefit
 from. Recommend the second.
 
-Until one lands, `last_active_on`, `days_active` and the per-run activity
-counters ship as `null`. The spec marks them `x-data-readiness: pending-model`
-so a partner sizing the integration knows which columns to expect empty.
+Resolved by the second: `afact_learner_courserun_daily_activity`
+(ol-data-platform#2672) feeds `last_active_on`, `days_active` and the per-run
+counters in both learner-records MVs (ol-data-platform#2693). The counters sum
+the fact's per-day distinct counts, so a block used on two days counts twice,
+as the `b2b_dashboard` totals do. Activity does not move `record_updated_on`: a
+day's activity first appears at a refresh after that day began, so a cursor
+taken from it would already sort below the `updated_since` a partner passes.
+Partners pick activity up from a full reload.
 
 **3. `organization_key` is unreliable for activity attribution.** In
 `organization_administration_report` it is

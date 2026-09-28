@@ -634,6 +634,63 @@ components:
         on a
 
         schedule after grading, and audit-mode enrollments never certify.'
+    CompletionStatusCounts:
+      properties:
+        certified:
+          type: integer
+          title: Certified
+          description: Matching enrollments with an unrevoked certificate, whatever
+            their grade.
+        passed:
+          type: integer
+          title: Passed
+          description: Matching enrollments with a currently passing grade, other
+            than those already counted as certified above.
+        in_progress:
+          type: integer
+          title: In Progress
+          description: Matching enrollments with a nonzero grade so far that isn't
+            yet passing, other than those already counted as certified or passed above.
+        not_started:
+          type: integer
+          title: Not Started
+          description: Matching enrollments with no certificate and no grade recorded
+            yet.
+      type: object
+      required:
+      - certified
+      - passed
+      - in_progress
+      - not_started
+      title: CompletionStatusCounts
+      description: 'Matches ``LearnerProgressResponse.total_count``''s own filters,
+        not the
+
+        contract as a whole, so it narrows along with the table it summarizes.
+
+
+        Each field counts a disjoint slice of the matching enrollments: every
+
+        enrollment falls into exactly one, in the order below (certificate beats
+
+        grade beats no grade), so summing the four plus ``outcomes_withheld_count``
+
+        always equals ``total_count``. An unrevoked certificate always wins even
+
+        when the same enrollment also carries a passing or in-progress grade,
+
+        which is why each field''s own description calls out what it excludes.
+
+
+        These counts are never suppressed for small cohorts, unlike the
+
+        ``cohort_policy``-gated aggregates elsewhere in b2b_analytics (e.g.
+
+        ``ContractUtilization``, ``EnrollmentCompletionFunnel``): this endpoint''s
+
+        ``data`` already exposes the individual matching rows, so there''s nothing
+
+        left to hide by suppressing the summary.'
     CompletionStatusFilter:
       type: string
       enum:
@@ -1550,6 +1607,10 @@ components:
           title: Outcomes Withheld Count
           description: How many of those enrollments have progress hidden because
             the learner hasn't agreed to share it.
+        completion_status_counts:
+          $ref: '#/components/schemas/CompletionStatusCounts'
+          description: How many of those enrollments are in each stage of completion.
+            Enrollments with hidden progress aren't counted in any stage.
         data:
           items:
             $ref: '#/components/schemas/LearnerProgress'
@@ -1562,6 +1623,7 @@ components:
       - as_of
       - total_count
       - outcomes_withheld_count
+      - completion_status_counts
       - data
       title: LearnerProgressResponse
       description: 'The org envelope (``organization_id``, ``as_of``, ``total_count``,

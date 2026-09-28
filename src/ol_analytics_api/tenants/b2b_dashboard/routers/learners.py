@@ -28,6 +28,7 @@ from ol_analytics_api.tenants.b2b_dashboard.auth import (
 )
 from ol_analytics_api.tenants.b2b_dashboard.config import settings
 from ol_analytics_api.tenants.b2b_dashboard.learner_models import (
+    CompletionStatusCounts,
     LearnerProgress,
     LearnerProgressResponse,
 )
@@ -103,5 +104,11 @@ async def learner_progress(  # noqa: PLR0913
         total_count=int(counts["total_count"]),
         # SUM over zero rows is NULL.
         outcomes_withheld_count=int(counts["outcomes_withheld_count"] or 0),
+        completion_status_counts=CompletionStatusCounts(
+            not_started=int(counts["not_started"] or 0),
+            in_progress=int(counts["in_progress"] or 0),
+            passed=int(counts["passed"] or 0),
+            certified=int(counts["certified"] or 0),
+        ),
         data=[LearnerProgress(**row) for row in rows],
     )
