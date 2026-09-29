@@ -235,7 +235,7 @@ async def test_needs_attention_count_reported_from_the_count_query(app):
     count_query, _ = pool.count_call()
     assert (
         "SUM(CASE WHEN FALSE AND (completion_status = 'not_started'"
-        " OR last_active_on < DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY))"
+        " OR last_active_on <= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY))"
         " THEN 1 ELSE 0 END) AS needs_attention_count" in count_query
     )
 

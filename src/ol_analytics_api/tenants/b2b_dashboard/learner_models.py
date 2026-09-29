@@ -30,7 +30,7 @@ developer detail lives here instead:
   ``CompletionStatus`` is exhaustive and its branches don't overlap.
 - ``needs_attention_count`` overlaps ``completion_status_counts`` rather than
   adding to it: a learner needs attention if they never started, or if
-  they've gone quiet for more than 30 days, so the same row can be
+  they've had no activity in 30 days or more, so the same row can be
   ``in_progress`` and also counted here.
 """
 
@@ -161,10 +161,11 @@ class CompletionStatusCounts(BaseModel):
 
     Each field counts a disjoint slice of the matching enrollments: every
     enrollment falls into exactly one, in the order below (certificate beats
-    grade beats no grade), so summing the four plus ``outcomes_withheld_count``
-    always equals ``total_count``. An unrevoked certificate always wins even
-    when the same enrollment also carries a passing or in-progress grade,
-    which is why each field's own description calls out what it excludes.
+    grade beats activity beats neither), so summing the four plus
+    ``outcomes_withheld_count`` always equals ``total_count``. An unrevoked
+    certificate always wins even when the same enrollment also carries a
+    passing or in-progress grade, which is why each field's own description
+    calls out what it excludes.
 
     These counts are never suppressed for small cohorts, unlike the
     ``cohort_policy``-gated aggregates elsewhere in b2b_analytics (e.g.
@@ -184,12 +185,16 @@ class CompletionStatusCounts(BaseModel):
     )
     in_progress: int = Field(
         description=(
-            "Matching enrollments with a nonzero grade so far that isn't yet passing, other "
-            "than those already counted as certified or passed above."
+            "Matching enrollments with a nonzero grade that isn't yet passing, or with no grade "
+            "yet but some activity in the course, other than those already counted as certified "
+            "or passed above."
         )
     )
     not_started: int = Field(
-        description="Matching enrollments with no certificate and no grade recorded yet."
+        description=(
+            "Matching enrollments with no certificate, no grade, and no activity in the course "
+            "yet."
+        )
     )
 
 
@@ -220,8 +225,8 @@ class LearnerProgressResponse(BaseModel):
     needs_attention_count: int = Field(
         description=(
             "How many of those enrollments need attention: the learner never started, or they "
-            "started but haven't done anything in the course for over 30 days. Enrollments with "
-            "hidden progress aren't counted."
+            "started but haven't done anything in the course for 30 days or more. Enrollments "
+            "with hidden progress aren't counted."
         )
     )
     data: list[LearnerProgress] = Field(description="This page of enrollments.")
