@@ -75,6 +75,7 @@ class _FakePool:
             "in_progress": 0,
             "passed": 0,
             "certified": 0,
+            "needs_attention_count": 0,
             **(status_counts or {}),
         }
         self.contract_exists = contract_exists
@@ -220,6 +221,34 @@ async def test_completion_status_counts_share_the_response_filters(app):
         )
 
 
+async def test_in_progress_also_counts_tracked_activity(app):
+    pool = _FakePool()
+    await _get(app, pool)
+    assert "grade_value > 0 OR last_active_on IS NOT NULL THEN 'in_progress'" in pool.page_call()[0]
+
+
+async def test_needs_attention_count_reported_from_the_count_query(app):
+    pool = _FakePool(status_counts={"needs_attention_count": 7})
+    response = await _get(app, pool)
+
+    assert response.json()["needs_attention_count"] == 7
+    count_query, _ = pool.count_call()
+    assert (
+        "SUM(CASE WHEN FALSE AND (completion_status = 'not_started'"
+        " OR last_active_on < DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY))"
+        " THEN 1 ELSE 0 END) AS needs_attention_count" in count_query
+    )
+
+
+async def test_needs_attention_count_shares_the_response_filters(app):
+    pool = _FakePool()
+    await _get(app, pool, params={"completion_status": ["passed"]})
+    count_query, _ = pool.count_call()
+    # Same query, same WHERE clause as total_count and the status buckets.
+    assert count_query.count("WHERE") == 2
+    assert "needs_attention_count" in count_query
+
+
 def test_completion_status_buckets_are_mutually_exclusive_and_exhaustive():
     # Each row's completion_status is exactly one CASE branch
     # (learner_queries._COMPLETION_STATUS), so the four buckets never overlap
@@ -286,7 +315,7 @@ def test_every_outcome_column_is_consent_gated_in_the_query():
     query = learner_queries.learner_progress(
         learner_queries.ProgressFilters(organization_id=ORG_ID, contract_id=CONTRACT_ID)
     )
-    for name in ("completion_status", "is_passing", "grade", "letter_grade"):
+    for name in ("completion_status", "is_passing", "grade", "letter_grade", "last_active_on"):
         assert f"CASE WHEN FALSE THEN {name} END AS {name}" in query.page
 
 

@@ -20,14 +20,18 @@ developer detail lives here instead:
   everything in ``_OUTCOME_FIELDS`` is.
 - ``completion_status``: an unrevoked certificate is ``certified``. A revoked
   certificate doesn't count, and the status then follows the grade, so it can
-  read ``passed``, ``in_progress`` or ``not_started``. Until learner-grain
-  activity data lands, ``in_progress`` means a nonzero grade.
-- ``last_active_on`` is NULL for every row until activity data lands, whatever
-  ``outcomes_shared`` says.
+  read ``passed``, ``in_progress`` or ``not_started``. ``in_progress`` means a
+  nonzero grade or any tracked activity.
+- ``last_active_on`` is NULL, whatever ``outcomes_shared`` says, until the
+  learner has any tracked activity.
 - ``outcomes_withheld_count`` counts the rows in ``total_count`` whose
   ``outcomes_shared`` is false. ``completion_status_counts`` buckets the rest
   by status; the two together add up to ``total_count``, since
   ``CompletionStatus`` is exhaustive and its branches don't overlap.
+- ``needs_attention_count`` overlaps ``completion_status_counts`` rather than
+  adding to it: a learner needs attention if they never started, or if
+  they've gone quiet for more than 30 days, so the same row can be
+  ``in_progress`` and also counted here.
 """
 
 from __future__ import annotations
@@ -138,8 +142,8 @@ class LearnerProgress(BaseModel):
     )
     last_active_on: datetime.date | None = Field(
         description=(
-            "The last day the learner did anything in the course. Not available yet, so always "
-            "empty for now."
+            f"The last day the learner did anything in the course. Empty if they haven't yet. "
+            f"{_HIDDEN}"
         )
     )
 
@@ -211,6 +215,13 @@ class LearnerProgressResponse(BaseModel):
         description=(
             "How many of those enrollments are in each stage of completion. Enrollments with "
             "hidden progress aren't counted in any stage."
+        )
+    )
+    needs_attention_count: int = Field(
+        description=(
+            "How many of those enrollments need attention: the learner never started, or they "
+            "started but haven't done anything in the course for over 30 days. Enrollments with "
+            "hidden progress aren't counted."
         )
     )
     data: list[LearnerProgress] = Field(description="This page of enrollments.")

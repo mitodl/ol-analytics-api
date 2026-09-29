@@ -1561,8 +1561,9 @@ components:
             format: date
           - type: 'null'
           title: Last Active On
-          description: The last day the learner did anything in the course. Not available
-            yet, so always empty for now.
+          description: The last day the learner did anything in the course. Empty
+            if they haven't yet. Hidden if the learner hasn't agreed to share their
+            progress.
       type: object
       required:
       - learner_id
@@ -1611,6 +1612,12 @@ components:
           $ref: '#/components/schemas/CompletionStatusCounts'
           description: How many of those enrollments are in each stage of completion.
             Enrollments with hidden progress aren't counted in any stage.
+        needs_attention_count:
+          type: integer
+          title: Needs Attention Count
+          description: 'How many of those enrollments need attention: the learner
+            never started, or they started but haven''t done anything in the course
+            for over 30 days. Enrollments with hidden progress aren''t counted.'
         data:
           items:
             $ref: '#/components/schemas/LearnerProgress'
@@ -1624,6 +1631,7 @@ components:
       - total_count
       - outcomes_withheld_count
       - completion_status_counts
+      - needs_attention_count
       - data
       title: LearnerProgressResponse
       description: 'The org envelope (``organization_id``, ``as_of``, ``total_count``,
