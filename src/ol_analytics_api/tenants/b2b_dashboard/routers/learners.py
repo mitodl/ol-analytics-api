@@ -78,7 +78,10 @@ async def learner_progress(  # noqa: PLR0913
     ],
     courserun_readable_id: Annotated[
         str | None,
-        Query(description="Exact match. Narrows to one course run, e.g. the module filter."),
+        Query(
+            min_length=1,
+            description="Exact match. Narrows to one course run, e.g. the module filter.",
+        ),
     ] = None,
     include_inactive: Annotated[
         bool, Query(description="Include deactivated enrollments (unenrolled, refunded).")

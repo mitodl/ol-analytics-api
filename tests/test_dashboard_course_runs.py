@@ -130,7 +130,8 @@ async def test_nulls_start_date_sorts_last(app):
     pool = _FakePool()
     await _get(app, pool)
     assert pool.page_call()[0].endswith(
-        "ORDER BY courserun_start_on IS NULL, courserun_start_on, courserun_title"
+        "ORDER BY courserun_start_on IS NULL, courserun_start_on, courserun_title,"
+        " courserun_readable_id"
         " LIMIT %s OFFSET %s"
     )
 

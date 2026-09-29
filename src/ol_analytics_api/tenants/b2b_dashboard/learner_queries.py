@@ -208,13 +208,15 @@ def course_runs(organization_id: str, contract_id: int) -> CourseRunsQuery:
     table = f"{validate_sql_identifier(settings.learner_records_schema)}.{CONTRACT_COURSERUN_MV}"
     where = "sso_organization_id = %s AND contract_id = %s"
     params: tuple[Any, ...] = (organization_id, contract_id)
-    # Nulls last (self-paced runs have no start date), then title as a stable
-    # tie-break so LIMIT/OFFSET paging is deterministic.
+    # Nulls last (self-paced runs have no start date), then title for a
+    # human-friendly order, then the readable id as a unique tie-break so
+    # LIMIT/OFFSET paging is deterministic even when runs share a title.
     page = (
         "SELECT courserun_readable_id AS courserun_id, courserun_title,"  # noqa: S608
         " courserun_start_on, courserun_end_on"
         f" FROM {table} WHERE {where}"
-        " ORDER BY courserun_start_on IS NULL, courserun_start_on, courserun_title"
+        " ORDER BY courserun_start_on IS NULL, courserun_start_on, courserun_title,"
+        " courserun_readable_id"
         " LIMIT %s OFFSET %s"
     )
     count = f"SELECT COUNT(*) AS total_count FROM {table} WHERE {where}"  # noqa: S608

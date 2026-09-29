@@ -251,6 +251,13 @@ async def test_courserun_filter_is_bound_when_given_and_omitted_otherwise(app):
     assert "courserun_readable_id = %s" not in pool.page_call()[0]
 
 
+async def test_empty_courserun_filter_is_rejected(app):
+    # An explicit empty value is a malformed request, not "no filter" -- silently
+    # falling back to the unfiltered list would hide the mistake.
+    response = await _get(app, _FakePool(), params={"courserun_readable_id": ""})
+    assert response.status_code == 422
+
+
 async def test_status_filter_cannot_reveal_withheld_statuses(app):
     pool = _FakePool()
     await _get(app, pool, params={"completion_status": ["passed", "unknown"]})
