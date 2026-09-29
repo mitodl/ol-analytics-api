@@ -46,8 +46,8 @@ _COMPLETION_STATUS = (
     " END"
 )
 
-# A learner needs attention if they never started, or if they started but have
-# had no activity in 30 days or more (product definition, Danielle Frappier).
+# A learner needs attention if they never started, or if their last recorded
+# activity was at least 30 days ago (product definition, Danielle Frappier).
 # A NULL last_active_on on a non-not_started row (grade but no tracked
 # activity) doesn't match the staleness branch -- there's no timestamp to
 # judge quiet against.

@@ -30,8 +30,10 @@ developer detail lives here instead:
   ``CompletionStatus`` is exhaustive and its branches don't overlap.
 - ``needs_attention_count`` overlaps ``completion_status_counts`` rather than
   adding to it: a learner needs attention if they never started, or if
-  they've had no activity in 30 days or more, so the same row can be
-  ``in_progress`` and also counted here.
+  their last recorded activity was at least 30 days ago, so the same row
+  can be ``in_progress`` and also counted here. A grade-only ``in_progress``
+  row with no ``last_active_on`` has no recorded activity to judge stale,
+  so it isn't counted either.
 """
 
 from __future__ import annotations
@@ -223,9 +225,9 @@ class LearnerProgressResponse(BaseModel):
     )
     needs_attention_count: int = Field(
         description=(
-            "How many of those enrollments need attention: the learner never started, or they "
-            "started but haven't done anything in the course for 30 days or more. Enrollments "
-            "with hidden progress aren't counted."
+            "How many of those enrollments need attention: the learner never started, or their "
+            "last recorded activity was at least 30 days ago. Enrollments with hidden progress "
+            "aren't counted."
         )
     )
     data: list[LearnerProgress] = Field(description="This page of enrollments.")

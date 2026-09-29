@@ -1619,8 +1619,8 @@ components:
           type: integer
           title: Needs Attention Count
           description: 'How many of those enrollments need attention: the learner
-            never started, or they started but haven''t done anything in the course
-            for 30 days or more. Enrollments with hidden progress aren''t counted.'
+            never started, or their last recorded activity was at least 30 days ago.
+            Enrollments with hidden progress aren''t counted.'
         data:
           items:
             $ref: '#/components/schemas/LearnerProgress'
