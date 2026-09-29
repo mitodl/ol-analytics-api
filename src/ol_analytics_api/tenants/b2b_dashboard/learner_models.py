@@ -192,8 +192,7 @@ class CompletionStatusCounts(BaseModel):
     )
     not_started: int = Field(
         description=(
-            "Matching enrollments with no certificate, no grade, and no activity in the course "
-            "yet."
+            "Matching enrollments with no certificate, no grade, and no activity in the course yet."
         )
     )
 
