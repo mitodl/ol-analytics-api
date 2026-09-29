@@ -515,6 +515,7 @@ paths:
         schema:
           anyOf:
           - type: string
+            minLength: 1
           - type: 'null'
           description: Exact match. Narrows to one course run, e.g. the module filter.
           title: Courserun Readable Id
