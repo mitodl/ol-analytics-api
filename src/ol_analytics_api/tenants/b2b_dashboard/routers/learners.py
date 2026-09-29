@@ -29,6 +29,8 @@ from ol_analytics_api.tenants.b2b_dashboard.auth import (
 from ol_analytics_api.tenants.b2b_dashboard.config import settings
 from ol_analytics_api.tenants.b2b_dashboard.learner_models import (
     CompletionStatusCounts,
+    CourseRun,
+    CourseRunsResponse,
     LearnerProgress,
     LearnerProgressResponse,
 )
@@ -74,6 +76,10 @@ async def learner_progress(  # noqa: PLR0913
             default_factory=list,
         ),
     ],
+    courserun_readable_id: Annotated[
+        str | None,
+        Query(description="Exact match. Narrows to one course run, e.g. the module filter."),
+    ] = None,
     include_inactive: Annotated[
         bool, Query(description="Include deactivated enrollments (unenrolled, refunded).")
     ] = False,
@@ -86,6 +92,7 @@ async def learner_progress(  # noqa: PLR0913
             contract_id=contract_id,
             search=search,
             completion_statuses=tuple(status.value for status in completion_status or ()),
+            courserun_readable_id=courserun_readable_id,
             include_inactive=include_inactive,
             sort=sort,
             descending=descending,
@@ -111,4 +118,31 @@ async def learner_progress(  # noqa: PLR0913
             certified=int(counts["certified"] or 0),
         ),
         data=[LearnerProgress(**row) for row in rows],
+    )
+
+
+@router.get(
+    "/course-runs",
+    response_model=CourseRunsResponse,
+    name="course_runs",
+    operation_id="learners_course_runs_retrieve",
+    summary="Course runs under the contract, for the learner-progress module filter",
+)
+async def course_runs(
+    *,
+    organization_id: str,
+    contract_id: int,
+    page: Annotated[Pagination, Depends(pagination)],
+) -> CourseRunsResponse:
+    query = learner_queries.course_runs(organization_id, contract_id)
+    as_of = await latest_refresh_timestamp(
+        settings.learner_records_schema, learner_queries.CONTRACT_COURSERUN_MV
+    )
+    rows = await starrocks_pool.fetch_all(query.page, (*query.params, page.limit, page.offset))
+    counts = (await starrocks_pool.fetch_all(query.count, query.params))[0]
+    return CourseRunsResponse(
+        organization_id=organization_id,
+        as_of=as_of,
+        total_count=int(counts["total_count"]),
+        data=[CourseRun(**row) for row in rows],
     )

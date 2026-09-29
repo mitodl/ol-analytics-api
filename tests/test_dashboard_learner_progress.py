@@ -236,6 +236,21 @@ async def test_search_is_bound_with_wildcards_escaped(app):
     assert page_params[-4:-2] == ("%garcia\\_50\\%%", "%garcia\\_50\\%%")
 
 
+async def test_courserun_filter_is_bound_when_given_and_omitted_otherwise(app):
+    pool = _FakePool()
+    await _get(app, pool, params={"courserun_readable_id": "course-v1:MITxT+14.310x+2T2026"})
+    page_query, page_params = pool.page_call()
+    count_query, count_params = pool.count_call()
+    assert "courserun_readable_id = %s" in page_query
+    assert "courserun_readable_id = %s" in count_query
+    assert "course-v1:MITxT+14.310x+2T2026" in page_params
+    assert "course-v1:MITxT+14.310x+2T2026" in count_params
+
+    pool = _FakePool()
+    await _get(app, pool)
+    assert "courserun_readable_id = %s" not in pool.page_call()[0]
+
+
 async def test_status_filter_cannot_reveal_withheld_statuses(app):
     pool = _FakePool()
     await _get(app, pool, params={"completion_status": ["passed", "unknown"]})
