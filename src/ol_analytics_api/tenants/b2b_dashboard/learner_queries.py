@@ -11,6 +11,15 @@ parameter. The only per-request variation is which of a fixed set of
 predicates and orderings is included, and code chooses that, not input. That
 is the justification for each ``# noqa: S608`` below.
 
+The one spliced value is the needs-attention cutoff, and it is not
+caller-supplied: the router reads it from StarRocks with
+``NEEDS_ATTENTION_CUTOFF_QUERY``, and ``_date_literal`` narrows it to a
+``datetime.date`` before rendering, so the text it produces can only ever be
+``'YYYY-MM-DD'``. It is spliced rather than bound because it appears in the
+SELECT list, which precedes the WHERE clause the existing parameters bind to;
+binding it would mean prepending it to a tuple the page and count queries
+share.
+
 Each query is two layers, as in the b2b_learner_records tenant. The inner
 ``records`` select scopes to the organization and contract and derives
 ``completion_status``; the outer select applies consent, search and the status
@@ -23,6 +32,7 @@ the field lands, ``_outcomes_shared`` becomes ``COALESCE(<field>, <literal>)``.
 
 from __future__ import annotations
 
+import datetime
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -47,25 +57,75 @@ _COMPLETION_STATUS = (
     " END"
 )
 
-# A learner needs attention if they never started, or if their last recorded
-# activity was at least 30 days ago (product definition, Danielle Frappier).
-# `<=` is deliberate: "at least 30 days ago" includes the 30th day itself, and
-# test_needs_attention_boundary_is_computed_from_real_rows pins that day.
-#
-# A NULL last_active_on on a non-not_started row (grade but no tracked
-# activity) doesn't match the staleness branch -- there's no timestamp to
-# judge quiet against. COALESCE settles that as "no" instead of NULL, which
-# makes the expression two-valued. That matters now that all three readers
-# share it: SUM(CASE WHEN ...) already folded NULL into its ELSE, but an
-# unguarded NULL in a WHERE clause is not FALSE, so such a row would fall out
-# of `needs_attention=true` AND `needs_attention=false` alike, and project
-# `needs_attention: null` on a row whose outcomes are shared.
-_NEEDS_ATTENTION = (
-    "COALESCE("
-    "completion_status = 'not_started'"
-    " OR last_active_on <= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)"
-    ", FALSE)"
+NEEDS_ATTENTION_QUIET_DAYS = 30
+
+# Resolves the cutoff on the StarRocks cluster, whose timezone is the one the
+# rule is defined in -- not this process's, and not a browser's.
+NEEDS_ATTENTION_CUTOFF_QUERY = (
+    f"SELECT DATE_SUB(CURRENT_DATE(), INTERVAL {NEEDS_ATTENTION_QUIET_DAYS} DAY) AS cutoff"
 )
+
+
+def _date_literal(value: object) -> str:
+    """``value`` as a quoted SQL date literal, ``'YYYY-MM-DD'``.
+
+    Splicing is safe only because this narrows to a real calendar date first:
+    the rendered text comes from a ``datetime.date``, never from the input
+    string. Anything it cannot read as a date raises rather than reaching the
+    query -- see the module docstring.
+
+    It accepts ``date``, ``datetime`` and an ISO-8601 string because the value
+    crosses the DB driver, and which of those a DATE column arrives as depends
+    on the driver and the StarRocks build. Rejecting the other two would turn
+    a type surprise into a 500 on every request. ``datetime`` is truncated
+    rather than passed through: it subclasses ``date``, so rendering its
+    isoformat unchanged would emit ``YYYY-MM-DDTHH:MM:SS`` and change the
+    comparison.
+
+    Written bare rather than as ``DATE '...'`` so the expression parses in
+    sqlite too, which is what lets the tests execute the production string
+    verbatim instead of rewriting it. StarRocks casts an ISO-8601 literal to
+    DATE to compare it against a DATE column.
+    """
+    if isinstance(value, datetime.datetime):
+        value = value.date()
+    elif isinstance(value, str):
+        value = datetime.date.fromisoformat(value)
+    if type(value) is not datetime.date:
+        message = f"needs-attention cutoff must be a date, got {type(value).__name__}"
+        raise TypeError(message)
+    return f"'{value.isoformat()}'"
+
+
+def _needs_attention(cutoff: datetime.date) -> str:
+    """A learner needs attention if they never started, or if their last
+    recorded activity was on or before ``cutoff`` (30 days before the
+    cluster's today).
+
+    ``<=`` is deliberate: "at least 30 days ago" includes the 30th day itself,
+    and test_needs_attention_boundary_is_computed_from_real_rows pins that day.
+
+    A NULL last_active_on on a non-not_started row (grade but no tracked
+    activity) doesn't match the staleness branch -- there's no timestamp to
+    judge quiet against. COALESCE settles that as "no" instead of NULL, which
+    makes the expression two-valued. That matters because all three readers
+    share it: SUM(CASE WHEN ...) already folded NULL into its ELSE, but an
+    unguarded NULL in a WHERE clause is not FALSE, so such a row would fall out
+    of ``needs_attention=true`` AND ``needs_attention=false`` alike, and
+    project ``needs_attention: null`` on a row whose outcomes are shared.
+
+    The cutoff is passed in rather than written as ``CURRENT_DATE()`` so that
+    the page and count statements -- two round trips, and so two evaluations --
+    cannot straddle midnight and disagree about which learners are quiet. The
+    caller resolves it once per request, as it already does for ``as_of``.
+    """
+    return (
+        "COALESCE("
+        "completion_status = 'not_started'"
+        f" OR last_active_on <= {_date_literal(cutoff)}"
+        ", FALSE)"
+    )
+
 
 # Upstream stores "" rather than NULL for learners who never set a name. Null
 # blank names so they sort with the missing ones instead of before every name.
@@ -138,7 +198,7 @@ def _contains_pattern(term: str) -> str:
     return f"%{escaped}%"
 
 
-def learner_progress(filters: ProgressFilters) -> ProgressQuery:
+def learner_progress(filters: ProgressFilters, cutoff: datetime.date) -> ProgressQuery:
     table = f"{validate_sql_identifier(settings.learner_records_schema)}.{ENROLLMENT_MV}"
     # The org predicate stays next to the contract one: contract ids are
     # globally unique but not secret.
@@ -157,6 +217,8 @@ def learner_progress(filters: ProgressFilters) -> ProgressQuery:
     )
 
     shared = _outcomes_shared()
+    # One expression, one cutoff, for the row field, the filter and the count.
+    needs_attention = _needs_attention(cutoff)
     predicates: list[str] = []
     if filters.search:
         pattern = _contains_pattern(filters.search)
@@ -186,7 +248,7 @@ def learner_progress(filters: ProgressFilters) -> ProgressQuery:
         # here as there is for status -- a bool has no third member -- so
         # withheld rows are reachable only by leaving this filter off.
         negate = "" if filters.needs_attention else "NOT "
-        predicates.append(f"({shared} AND {negate}({_NEEDS_ATTENTION}))")
+        predicates.append(f"({shared} AND {negate}({needs_attention}))")
     where = f" WHERE {' AND '.join(predicates)}" if predicates else ""
 
     direction = "DESC" if filters.descending else "ASC"
@@ -202,10 +264,10 @@ def learner_progress(filters: ProgressFilters) -> ProgressQuery:
             *(f"CASE WHEN {shared} THEN {name} END AS {name}" for name in _OUTCOMES),
             # Derived here rather than joining _OUTCOMES, which are columns:
             # this reads `records.completion_status`, an alias that only
-            # resolves in this outer select. It is the same _NEEDS_ATTENTION
-            # the count and the filter use, so a row, the page it came on and
-            # needs_attention_count can never disagree about it.
-            f"CASE WHEN {shared} THEN {_NEEDS_ATTENTION} END AS needs_attention",
+            # resolves in this outer select. Same expression and same cutoff
+            # as the filter and the count, so the three cannot disagree about
+            # which learners are quiet.
+            f"CASE WHEN {shared} THEN {needs_attention} END AS needs_attention",
         ]
     )
     page = (
@@ -220,7 +282,7 @@ def learner_progress(filters: ProgressFilters) -> ProgressQuery:
         "SELECT COUNT(*) AS total_count,"  # noqa: S608
         f" SUM(CASE WHEN {shared} THEN 0 ELSE 1 END) AS outcomes_withheld_count,"
         f" {status_sums},"
-        f" SUM(CASE WHEN {shared} AND ({_NEEDS_ATTENTION}) THEN 1 ELSE 0 END)"
+        f" SUM(CASE WHEN {shared} AND ({needs_attention}) THEN 1 ELSE 0 END)"
         " AS needs_attention_count"
         f" FROM ({records}) records{where}"
     )

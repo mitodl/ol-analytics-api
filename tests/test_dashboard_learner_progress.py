@@ -30,6 +30,10 @@ ORG_ID = "11111111-1111-1111-1111-111111111111"
 CONTRACT_ID = 101
 PATH = f"/api/v1/analytics/organizations/{ORG_ID}/contracts/{CONTRACT_ID}/learner-progress"
 _AS_OF = datetime.datetime(2026, 9, 15, 6, 0)  # noqa: DTZ001 - StarRocks returns naive UTC
+# What the cluster answers NEEDS_ATTENTION_CUTOFF_QUERY with: 30 days before _AS_OF's
+# date. Fixed, so the SQL these tests assert on is stable.
+_CUTOFF = datetime.date(2026, 8, 16)
+_CUTOFF_SQL = "'2026-08-16'"
 
 
 def _manager_header(organization_id=ORG_ID):
@@ -85,6 +89,8 @@ class _FakePool:
 
     async def fetch_all(self, query, params=()):
         self.calls.append((query, params))
+        if query == learner_queries.NEEDS_ATTENTION_CUTOFF_QUERY:
+            return [{"cutoff": _CUTOFF}]
         if "information_schema" in query:
             return [{"as_of": _AS_OF}]
         if query.startswith("SELECT 1 "):
@@ -237,7 +243,7 @@ async def test_needs_attention_count_reported_from_the_count_query(app):
     count_query, _ = pool.count_call()
     assert (
         "SUM(CASE WHEN FALSE AND (COALESCE(completion_status = 'not_started'"
-        " OR last_active_on <= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY), FALSE))"
+        f" OR last_active_on <= {_CUTOFF_SQL}, FALSE))"
         " THEN 1 ELSE 0 END) AS needs_attention_count" in count_query
     )
 
@@ -252,18 +258,16 @@ async def test_needs_attention_count_shares_the_response_filters(app):
 
 
 def _needs_attention_sql(cutoff):
-    # sqlite has no DATE_SUB/INTERVAL syntax, so swap in the one computed
-    # literal StarRocks would evaluate server-side. Every column, CASE branch
-    # and comparison operator below this is the real production string.
-    return learner_queries._NEEDS_ATTENTION.replace(  # noqa: SLF001
-        "DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)", f"'{cutoff.isoformat()}'"
-    )
+    # The production string, verbatim -- no substitution. The cutoff is
+    # resolved on the cluster and spliced as a date literal, which sqlite
+    # parses too, so these tests execute exactly what StarRocks would.
+    return learner_queries._needs_attention(cutoff)  # noqa: SLF001
 
 
 def test_needs_attention_boundary_is_computed_from_real_rows():
     # test_needs_attention_count_reported_from_the_count_query pins the SQL
     # text; this actually runs learner_queries._COMPLETION_STATUS and
-    # ._NEEDS_ATTENTION against rows in sqlite, so a day-30 regression (or a
+    # ._needs_attention against rows in sqlite, so a day-30 regression (or a
     # reverted `<=`) fails here even though _FakePool never evaluates a WHERE
     # clause on its own.
     today = datetime.date.today()  # noqa: DTZ011 - the boundary is date-only
@@ -345,7 +349,7 @@ def test_needs_attention_is_two_valued_so_the_filter_partitions_rows():
     # would fall out of `needs_attention=true` and `needs_attention=false`
     # alike while still counting toward total_count, and would serialize as
     # `needs_attention: null` on a row whose outcomes are shared. COALESCE in
-    # ._NEEDS_ATTENTION settles it as false; this pins that every shared row
+    # ._needs_attention settles it as false; this pins that every shared row
     # lands in exactly one direction of the filter.
     today = datetime.date.today()  # noqa: DTZ011 - the boundary is date-only
     cutoff = today - datetime.timedelta(days=30)
@@ -397,7 +401,7 @@ async def test_needs_attention_filter_is_consent_gated_in_both_directions(app):
         await _get(app, pool, params={"needs_attention": value})
         expected = (
             f"(FALSE AND {negate}(COALESCE(completion_status = 'not_started'"
-            " OR last_active_on <= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY), FALSE)))"
+            f" OR last_active_on <= {_CUTOFF_SQL}, FALSE)))"
         )
         # The `FALSE AND` is the consent gate: a withheld row matches neither
         # direction, so the filter can't reveal the outcome it withholds.
@@ -434,10 +438,70 @@ async def test_needs_attention_row_field_reuses_the_count_expression(app):
     await _get(app, pool)
     page_query = pool.page_call()[0]
     assert (
-        f"CASE WHEN FALSE THEN {learner_queries._NEEDS_ATTENTION} END AS needs_attention"  # noqa: SLF001
+        f"CASE WHEN FALSE THEN {learner_queries._needs_attention(_CUTOFF)} END AS needs_attention"  # noqa: SLF001
         in page_query
     )
-    assert learner_queries._NEEDS_ATTENTION in pool.count_call()[0]  # noqa: SLF001
+    assert learner_queries._needs_attention(_CUTOFF) in pool.count_call()[0]  # noqa: SLF001
+
+
+async def test_cutoff_is_resolved_once_on_the_cluster_and_shared_by_both_statements(app):
+    # The page and the count are two round trips. With CURRENT_DATE() left in
+    # the SQL each would evaluate it separately, so a request straddling
+    # midnight in the cluster's timezone would filter the page on one cutoff
+    # and count on another -- an off-by-one between a row's needs_attention
+    # and needs_attention_count, and a total_count the page contradicts.
+    pool = _FakePool()
+    await _get(app, pool, params={"needs_attention": "true"})
+
+    queries = [query for query, _ in pool.calls]
+    assert queries.count(learner_queries.NEEDS_ATTENTION_CUTOFF_QUERY) == 1
+    # Resolved before either statement is built, like as_of.
+    cutoff_at = queries.index(learner_queries.NEEDS_ATTENTION_CUTOFF_QUERY)
+    assert cutoff_at < queries.index(pool.page_call()[0])
+    assert cutoff_at < queries.index(pool.count_call()[0])
+
+    for query in (pool.page_call()[0], pool.count_call()[0]):
+        assert "CURRENT_DATE" not in query
+        assert _CUTOFF_SQL in query
+
+
+def test_cutoff_query_reads_no_table():
+    # No FROM clause, so StarRocks answers it without touching storage. That
+    # is what makes the extra round trip per request cheap enough to prefer
+    # over caching a value whose whole purpose is to be correct at a boundary.
+    assert " FROM " not in learner_queries.NEEDS_ATTENTION_CUTOFF_QUERY
+    assert str(learner_queries.NEEDS_ATTENTION_QUIET_DAYS) in (
+        learner_queries.NEEDS_ATTENTION_CUTOFF_QUERY
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        _CUTOFF,
+        # Which of these a DATE column arrives as depends on the driver and
+        # the StarRocks build, so all three normalize to the same literal
+        # rather than 500ing the endpoint on a type surprise.
+        datetime.datetime(2026, 8, 16, 9, 30),  # noqa: DTZ001 - StarRocks returns naive
+        "2026-08-16",
+    ],
+)
+def test_cutoff_literal_normalizes_every_shape_the_driver_can_return(value):
+    # datetime is the one that matters: it subclasses date, so rendering its
+    # isoformat unchanged would emit a time component and change the
+    # comparison. It is truncated, not passed through.
+    assert learner_queries._date_literal(value) == _CUTOFF_SQL  # noqa: SLF001
+
+
+@pytest.mark.parametrize(
+    ("value", "error"),
+    [(None, TypeError), (20260816, TypeError), ("16/08/2026", ValueError)],
+)
+def test_cutoff_literal_refuses_what_it_cannot_read_as_a_date(value, error):
+    # The cutoff is spliced, not bound, so nothing that isn't a real calendar
+    # date may reach the query text.
+    with pytest.raises(error):
+        learner_queries._date_literal(value)  # noqa: SLF001
 
 
 async def test_needs_attention_row_field_is_served_and_withheld_with_consent(app):
@@ -541,14 +605,14 @@ def test_models_null_outcomes_a_row_carries_when_not_shared():
 
 def test_every_outcome_column_is_consent_gated_in_the_query():
     query = learner_queries.learner_progress(
-        learner_queries.ProgressFilters(organization_id=ORG_ID, contract_id=CONTRACT_ID)
+        learner_queries.ProgressFilters(organization_id=ORG_ID, contract_id=CONTRACT_ID), _CUTOFF
     )
     for name in ("completion_status", "is_passing", "grade", "letter_grade", "last_active_on"):
         assert f"CASE WHEN FALSE THEN {name} END AS {name}" in query.page
     # needs_attention is derived, not selected, so the same gate wraps an
     # expression rather than a column name.
     assert (
-        f"CASE WHEN FALSE THEN {learner_queries._NEEDS_ATTENTION} END AS needs_attention"  # noqa: SLF001
+        f"CASE WHEN FALSE THEN {learner_queries._needs_attention(_CUTOFF)} END AS needs_attention"  # noqa: SLF001
         in query.page
     )
 

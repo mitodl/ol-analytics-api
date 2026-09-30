@@ -34,14 +34,15 @@ developer detail lives here instead:
   can be ``in_progress`` and also counted here. A grade-only ``in_progress``
   row with no ``last_active_on`` has no recorded activity to judge stale,
   so it isn't counted either.
-- ``needs_attention`` is the per-row form of that same rule, from the one
-  ``learner_queries._NEEDS_ATTENTION`` expression the count is built on, so a
-  row can never disagree with the count it is summarized by. Read it rather
-  than recomputing it client-side: the 30-day cutoff is evaluated against
-  ``CURRENT_DATE()`` in the StarRocks cluster's timezone, which a browser's
-  own "today" can be a day off from. It is consent-gated, so it is NULL
-  exactly when the other outcome fields are; it is never NULL otherwise, not
-  even on a row with no ``last_active_on``.
+- ``needs_attention`` is the per-row form of that same rule, built from the
+  one ``learner_queries._needs_attention`` expression the count is built on,
+  against a cutoff the router resolves on the cluster once per request. So a
+  row and the count it is summarized by apply the same rule on the same date,
+  even though they arrive on separate round trips. Read it rather than
+  recomputing it client-side: the cutoff is 30 days before the StarRocks
+  cluster's today, which a browser's own "today" can be a day off from. It is
+  consent-gated, so it is NULL exactly when the other outcome fields are; it
+  is never NULL otherwise, not even on a row with no ``last_active_on``.
 """
 
 from __future__ import annotations

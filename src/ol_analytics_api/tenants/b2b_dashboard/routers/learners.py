@@ -106,6 +106,18 @@ async def learner_progress(  # noqa: PLR0913
     sort: learner_queries.SortKey = learner_queries.SortKey.FULL_NAME,
     descending: bool = False,
 ) -> LearnerProgressResponse:
+    # Resolve the needs-attention cutoff on the cluster once, before either
+    # data query. The page and the count are two statements, so leaving
+    # CURRENT_DATE() in the SQL would let them evaluate it either side of
+    # midnight and disagree about which learners are quiet -- a row reading
+    # `false` while needs_attention_count counted it, and a `total_count` the
+    # page's own filter contradicts. Resolved per request and never cached:
+    # the failure this prevents is a date boundary, so a cached cutoff would
+    # be wrong for exactly as long as the cache held it. This is the one
+    # non-deterministic expression in the tenant's SQL.
+    cutoff = (await starrocks_pool.fetch_all(learner_queries.NEEDS_ATTENTION_CUTOFF_QUERY))[0][
+        "cutoff"
+    ]
     query = learner_queries.learner_progress(
         learner_queries.ProgressFilters(
             organization_id=organization_id,
@@ -117,7 +129,8 @@ async def learner_progress(  # noqa: PLR0913
             include_inactive=include_inactive,
             sort=sort,
             descending=descending,
-        )
+        ),
+        cutoff,
     )
     # Freshness first, so a refresh landing mid-request labels newer rows with
     # the older as_of rather than the reverse.
