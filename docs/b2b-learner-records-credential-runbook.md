@@ -108,14 +108,19 @@ order of preference. Staff with read access to
    lookup succeeds if the wrapping token is still unused (the partner has the
    wrong token), and fails if it was already unwrapped.
 
-   The partner checks the token before using it, then unwraps it once:
+   The partner checks the token before using it, then unwraps it once. The
+   token is read without echo and piped to `curl` on stdin, so it never
+   appears in process arguments or shell history, where another local process
+   could take it and unwrap first:
 
    ```bash
-   curl -s -X POST -d '{"token": "<wrapping token>"}' \
+   read -rs WRAP
+   printf '{"token": "%s"}' "$WRAP" | curl -s -X POST --data @- \
      https://vault-production.odl.mit.edu/v1/sys/wrapping/lookup
    # creation_path must be secret-operations/sso/learner-records/<name>
-   curl -s -X POST -H "X-Vault-Token: <wrapping token>" \
+   printf 'X-Vault-Token: %s\n' "$WRAP" | curl -s -X POST -H @- \
      https://vault-production.odl.mit.edu/v1/sys/wrapping/unwrap
+   unset WRAP
    ```
 
    A wrong `creation_path` means the token was swapped in transit. A failed
@@ -133,10 +138,10 @@ Tell the partner:
 
 - Access tokens last 300 seconds. Request a new one with the client-credentials
   grant as needed.
-- The client is removed on the contract's end date. Once
+- Access ends at 12:00 UTC on the day after the contract's end date. The end
+  date is inclusive and read as Anywhere on Earth, the same cutoff
   [ol-analytics-api#73](https://github.com/mitodl/ol-analytics-api/pull/73)
-  merges, the API also refuses its tokens from 12:00 UTC on the day after the
-  end date, whichever comes first.
+  enforces once it merges.
 - Who to contact to rotate the secret or report it exposed.
 
 ## How fast a change takes effect
@@ -170,8 +175,9 @@ when the partner asks. No routine rotation interval has been set.
 Removing the client's entry from the stack config deletes the Keycloak client
 and its Vault document.
 
-- Planned end: open the removal PR before the end date, and merge and deploy it
-  on the day. Once #73 merges, every `learner_records_access` log line carries
+- Planned end: open the removal PR before the end date, and deploy it after
+  12:00 UTC on the day after the end date. Deploying earlier cuts the partner
+  off before the end of the end date in its own timezone. Once #73 merges, every `learner_records_access` log line carries
   the client's `contract_end_date`, so a Loki alert can warn ahead of a lapse.
   That alert rule doesn't exist yet.
 - Early termination: the same removal PR, deployed immediately.
