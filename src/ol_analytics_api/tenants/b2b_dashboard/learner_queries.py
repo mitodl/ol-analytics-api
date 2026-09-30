@@ -34,15 +34,26 @@ ENROLLMENT_MV = "mv_b2b_learner_enrollment"
 
 # Matches the b2b_learner_records tenant. An unrevoked certificate is certified
 # without requiring is_passing, since production has unrevoked certificates with
-# is_passing false (ol-data-platform#2669). Until activity data lands,
-# "in progress" can only mean a nonzero grade.
+# is_passing false (ol-data-platform#2669). in_progress must match
+# mv_b2b_learner.courses_in_progress: a nonzero grade or any tracked activity
+# (ol-data-platform#2693).
 _COMPLETION_STATUS = (
     "CASE"
     " WHEN certificate_is_revoked = FALSE THEN 'certified'"
     " WHEN is_passing = TRUE THEN 'passed'"
-    " WHEN grade_value > 0 THEN 'in_progress'"
+    " WHEN grade_value > 0 OR last_active_on IS NOT NULL THEN 'in_progress'"
     " ELSE 'not_started'"
     " END"
+)
+
+# A learner needs attention if they never started, or if their last recorded
+# activity was at least 30 days ago (product definition, Danielle Frappier).
+# A NULL last_active_on on a non-not_started row (grade but no tracked
+# activity) doesn't match the staleness branch -- there's no timestamp to
+# judge quiet against.
+_NEEDS_ATTENTION = (
+    "completion_status = 'not_started'"
+    " OR last_active_on <= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)"
 )
 
 # Upstream stores "" rather than NULL for learners who never set a name. Null
@@ -72,6 +83,7 @@ _OUTCOMES = (
     "letter_grade",
     "certificate_issued_on",
     "certificate_is_revoked",
+    "last_active_on",
 )
 
 
@@ -127,7 +139,7 @@ def learner_progress(filters: ProgressFilters) -> ProgressQuery:
         " courserun_readable_id, courserun_title, courserun_start_on, courserun_end_on,"
         " enrollment_created_on AS enrolled_on, enrollment_is_active, enrollment_mode,"
         f" {_COMPLETION_STATUS} AS completion_status, is_passing, grade_value AS grade,"
-        " letter_grade, certificate_issued_on, certificate_is_revoked"
+        " letter_grade, certificate_issued_on, certificate_is_revoked, last_active_on"
         f" FROM {table} WHERE {' AND '.join(scope)}"
     )
 
@@ -164,7 +176,6 @@ def learner_progress(filters: ProgressFilters) -> ProgressQuery:
             *_COLUMNS,
             f"{shared} AS outcomes_shared",
             *(f"CASE WHEN {shared} THEN {name} END AS {name}" for name in _OUTCOMES),
-            "NULL AS last_active_on",
         ]
     )
     page = (
@@ -178,7 +189,9 @@ def learner_progress(filters: ProgressFilters) -> ProgressQuery:
     count = (
         "SELECT COUNT(*) AS total_count,"  # noqa: S608
         f" SUM(CASE WHEN {shared} THEN 0 ELSE 1 END) AS outcomes_withheld_count,"
-        f" {status_sums}"
+        f" {status_sums},"
+        f" SUM(CASE WHEN {shared} AND ({_NEEDS_ATTENTION}) THEN 1 ELSE 0 END)"
+        " AS needs_attention_count"
         f" FROM ({records}) records{where}"
     )
     return ProgressQuery(page, count, tuple(params))
