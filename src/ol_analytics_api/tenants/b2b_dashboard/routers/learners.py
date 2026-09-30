@@ -45,6 +45,13 @@ router = APIRouter(
 )
 
 
+# CompletionStatus plus `unknown` for the withheld rows. A docstring here would
+# render into the published spec as the parameter's description, so this stays a
+# comment: needing attention is deliberately not a member, because it cuts
+# across these four instead of partitioning them (a stale `in_progress` row is
+# both). Folding it in would break the "exactly one bucket per row" property
+# CompletionStatusCounts rests on, so it is the separate `needs_attention`
+# filter below.
 class CompletionStatusFilter(StrEnum):
     NOT_STARTED = "not_started"
     IN_PROGRESS = "in_progress"
@@ -83,6 +90,16 @@ async def learner_progress(  # noqa: PLR0913
             description="Exact match. Narrows to one course run, e.g. the module filter.",
         ),
     ] = None,
+    needs_attention: Annotated[
+        bool | None,
+        Query(
+            description=(
+                "Keep only the learners who need attention, or only those who don't. "
+                "Cuts the same rows `needs_attention_count` counts. Rows with withheld "
+                "outcomes match neither, so omit this to see them."
+            )
+        ),
+    ] = None,
     include_inactive: Annotated[
         bool, Query(description="Include deactivated enrollments (unenrolled, refunded).")
     ] = False,
@@ -96,6 +113,7 @@ async def learner_progress(  # noqa: PLR0913
             search=search,
             completion_statuses=tuple(status.value for status in completion_status or ()),
             courserun_readable_id=courserun_readable_id,
+            needs_attention=needs_attention,
             include_inactive=include_inactive,
             sort=sort,
             descending=descending,

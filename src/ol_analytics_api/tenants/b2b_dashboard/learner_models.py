@@ -34,6 +34,14 @@ developer detail lives here instead:
   can be ``in_progress`` and also counted here. A grade-only ``in_progress``
   row with no ``last_active_on`` has no recorded activity to judge stale,
   so it isn't counted either.
+- ``needs_attention`` is the per-row form of that same rule, from the one
+  ``learner_queries._NEEDS_ATTENTION`` expression the count is built on, so a
+  row can never disagree with the count it is summarized by. Read it rather
+  than recomputing it client-side: the 30-day cutoff is evaluated against
+  ``CURRENT_DATE()`` in the StarRocks cluster's timezone, which a browser's
+  own "today" can be a day off from. It is consent-gated, so it is NULL
+  exactly when the other outcome fields are; it is never NULL otherwise, not
+  even on a row with no ``last_active_on``.
 """
 
 from __future__ import annotations
@@ -61,6 +69,7 @@ _OUTCOME_FIELDS = (
     "certificate_issued_on",
     "certificate_is_revoked",
     "last_active_on",
+    "needs_attention",
 )
 
 _HIDDEN = "Hidden if the learner hasn't agreed to share their progress."
@@ -146,6 +155,12 @@ class LearnerProgress(BaseModel):
         description=(
             f"The last day the learner did anything in the course. Empty if they haven't yet. "
             f"{_HIDDEN}"
+        )
+    )
+    needs_attention: bool | None = Field(
+        description=(
+            "Whether this learner may need a nudge: they never started the course, or their "
+            f"last recorded activity was at least 30 days ago. {_HIDDEN}"
         )
     )
 

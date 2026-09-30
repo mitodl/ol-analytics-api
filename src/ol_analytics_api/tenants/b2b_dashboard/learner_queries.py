@@ -49,12 +49,22 @@ _COMPLETION_STATUS = (
 
 # A learner needs attention if they never started, or if their last recorded
 # activity was at least 30 days ago (product definition, Danielle Frappier).
+# `<=` is deliberate: "at least 30 days ago" includes the 30th day itself, and
+# test_needs_attention_boundary_is_computed_from_real_rows pins that day.
+#
 # A NULL last_active_on on a non-not_started row (grade but no tracked
 # activity) doesn't match the staleness branch -- there's no timestamp to
-# judge quiet against.
+# judge quiet against. COALESCE settles that as "no" instead of NULL, which
+# makes the expression two-valued. That matters now that all three readers
+# share it: SUM(CASE WHEN ...) already folded NULL into its ELSE, but an
+# unguarded NULL in a WHERE clause is not FALSE, so such a row would fall out
+# of `needs_attention=true` AND `needs_attention=false` alike, and project
+# `needs_attention: null` on a row whose outcomes are shared.
 _NEEDS_ATTENTION = (
+    "COALESCE("
     "completion_status = 'not_started'"
     " OR last_active_on <= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)"
+    ", FALSE)"
 )
 
 # Upstream stores "" rather than NULL for learners who never set a name. Null
@@ -102,6 +112,7 @@ class ProgressFilters:
     search: str | None = None
     completion_statuses: tuple[str, ...] = ()
     courserun_readable_id: str | None = None
+    needs_attention: bool | None = None
     include_inactive: bool = False
     sort: SortKey = SortKey.FULL_NAME
     descending: bool = False
@@ -168,6 +179,14 @@ def learner_progress(filters: ProgressFilters) -> ProgressQuery:
         if "unknown" in filters.completion_statuses:
             alternatives.append(f"NOT {shared}")
         predicates.append(f"({' OR '.join(alternatives)})")
+    if filters.needs_attention is not None:
+        # Consent-gated like the status filter, and for the same reason: a
+        # withheld row matches neither direction, so filtering can't reveal the
+        # outcome the row is withholding. There is no `unknown` escape hatch
+        # here as there is for status -- a bool has no third member -- so
+        # withheld rows are reachable only by leaving this filter off.
+        negate = "" if filters.needs_attention else "NOT "
+        predicates.append(f"({shared} AND {negate}({_NEEDS_ATTENTION}))")
     where = f" WHERE {' AND '.join(predicates)}" if predicates else ""
 
     direction = "DESC" if filters.descending else "ASC"
@@ -181,6 +200,12 @@ def learner_progress(filters: ProgressFilters) -> ProgressQuery:
             *_COLUMNS,
             f"{shared} AS outcomes_shared",
             *(f"CASE WHEN {shared} THEN {name} END AS {name}" for name in _OUTCOMES),
+            # Derived here rather than joining _OUTCOMES, which are columns:
+            # this reads `records.completion_status`, an alias that only
+            # resolves in this outer select. It is the same _NEEDS_ATTENTION
+            # the count and the filter use, so a row, the page it came on and
+            # needs_attention_count can never disagree about it.
+            f"CASE WHEN {shared} THEN {_NEEDS_ATTENTION} END AS needs_attention",
         ]
     )
     page = (
