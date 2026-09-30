@@ -150,7 +150,7 @@ ignore_missing_imports = true
 [tool.scriv]
 format = "md"
 fragment_directory = "changelog.d"
-output_file = "CHANGELOG.md"
+changelog = "CHANGELOG.md"
 version = "literal: pyproject.toml: project.version"
 categories = ["Added", "Changed", "Deprecated", "Removed", "Fixed", "Security"]
 md_header_level = "2"
