@@ -120,6 +120,7 @@ async def learner_progress(  # noqa: PLR0913
             passed=int(counts["passed"] or 0),
             certified=int(counts["certified"] or 0),
         ),
+        needs_attention_count=int(counts["needs_attention_count"] or 0),
         data=[LearnerProgress(**row) for row in rows],
     )
 

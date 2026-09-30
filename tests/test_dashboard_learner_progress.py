@@ -10,6 +10,7 @@ import base64
 import datetime
 import json
 import re
+import sqlite3
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -75,6 +76,7 @@ class _FakePool:
             "in_progress": 0,
             "passed": 0,
             "certified": 0,
+            "needs_attention_count": 0,
             **(status_counts or {}),
         }
         self.contract_exists = contract_exists
@@ -220,6 +222,118 @@ async def test_completion_status_counts_share_the_response_filters(app):
         )
 
 
+async def test_in_progress_also_counts_tracked_activity(app):
+    pool = _FakePool()
+    await _get(app, pool)
+    assert "grade_value > 0 OR last_active_on IS NOT NULL THEN 'in_progress'" in pool.page_call()[0]
+
+
+async def test_needs_attention_count_reported_from_the_count_query(app):
+    pool = _FakePool(status_counts={"needs_attention_count": 7})
+    response = await _get(app, pool)
+
+    assert response.json()["needs_attention_count"] == 7
+    count_query, _ = pool.count_call()
+    assert (
+        "SUM(CASE WHEN FALSE AND (completion_status = 'not_started'"
+        " OR last_active_on <= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY))"
+        " THEN 1 ELSE 0 END) AS needs_attention_count" in count_query
+    )
+
+
+async def test_needs_attention_count_shares_the_response_filters(app):
+    pool = _FakePool()
+    await _get(app, pool, params={"completion_status": ["passed"]})
+    count_query, _ = pool.count_call()
+    # Same query, same WHERE clause as total_count and the status buckets.
+    assert count_query.count("WHERE") == 2
+    assert "needs_attention_count" in count_query
+
+
+def _needs_attention_sql(cutoff):
+    # sqlite has no DATE_SUB/INTERVAL syntax, so swap in the one computed
+    # literal StarRocks would evaluate server-side. Every column, CASE branch
+    # and comparison operator below this is the real production string.
+    return learner_queries._NEEDS_ATTENTION.replace(  # noqa: SLF001
+        "DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)", f"'{cutoff.isoformat()}'"
+    )
+
+
+def test_needs_attention_boundary_is_computed_from_real_rows():
+    # test_needs_attention_count_reported_from_the_count_query pins the SQL
+    # text; this actually runs learner_queries._COMPLETION_STATUS and
+    # ._NEEDS_ATTENTION against rows in sqlite, so a day-30 regression (or a
+    # reverted `<=`) fails here even though _FakePool never evaluates a WHERE
+    # clause on its own.
+    today = datetime.date.today()  # noqa: DTZ011 - the boundary is date-only
+    cutoff = today - datetime.timedelta(days=30)
+    needs_attention = _needs_attention_sql(cutoff)
+
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE enrollment (certificate_is_revoked INTEGER, is_passing INTEGER,"
+        " grade_value REAL, last_active_on TEXT)"
+    )
+    conn.executemany(
+        "INSERT INTO enrollment VALUES (?, ?, ?, ?)",
+        [
+            (1, 0, None, None),  # never started
+            (1, 0, None, (today - datetime.timedelta(days=29)).isoformat()),  # active 29 days ago
+            (1, 0, None, cutoff.isoformat()),  # active exactly 30 days ago
+        ],
+    )
+    rows = conn.execute(
+        "SELECT completion_status,"  # noqa: S608
+        f" ({needs_attention}) AS needs_attention FROM"
+        f" (SELECT *, {learner_queries._COMPLETION_STATUS} AS completion_status FROM enrollment)"  # noqa: SLF001
+    ).fetchall()
+    conn.close()
+
+    assert rows == [
+        ("not_started", 1),  # never started: needs attention
+        ("in_progress", 0),  # active 29 days ago: still recent
+        ("in_progress", 1),  # active exactly 30 days ago: needs attention
+    ]
+
+
+def test_needs_attention_count_respects_the_consent_gate(monkeypatch):
+    # The same rows, but through the full SUM(CASE WHEN shared AND (...))
+    # aggregate, with consent fail-closed (the default, so every row's
+    # outcome -- including needs-attention -- is withheld) and fail-open.
+    today = datetime.date.today()  # noqa: DTZ011 - the boundary is date-only
+    cutoff = today - datetime.timedelta(days=30)
+    needs_attention = _needs_attention_sql(cutoff)
+
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE enrollment (certificate_is_revoked INTEGER, is_passing INTEGER,"
+        " grade_value REAL, last_active_on TEXT)"
+    )
+    conn.executemany(
+        "INSERT INTO enrollment VALUES (?, ?, ?, ?)",
+        [
+            (1, 0, None, None),  # never started
+            (1, 0, None, (today - datetime.timedelta(days=29)).isoformat()),  # active 29 days ago
+            (1, 0, None, cutoff.isoformat()),  # active exactly 30 days ago
+        ],
+    )
+
+    def count(shared):
+        query = (
+            f"SELECT SUM(CASE WHEN {shared} AND ({needs_attention}) THEN 1 ELSE 0 END) FROM"  # noqa: S608
+            f" (SELECT *, {learner_queries._COMPLETION_STATUS} AS completion_status"  # noqa: SLF001
+            " FROM enrollment)"
+        )
+        return conn.execute(query).fetchone()[0]
+
+    assert type(settings)().consent_fail_open is False
+    assert count(learner_queries._outcomes_shared()) == 0  # noqa: SLF001
+
+    monkeypatch.setattr(settings, "consent_fail_open", True)
+    assert count(learner_queries._outcomes_shared()) == 2  # noqa: SLF001
+    conn.close()
+
+
 def test_completion_status_buckets_are_mutually_exclusive_and_exhaustive():
     # Each row's completion_status is exactly one CASE branch
     # (learner_queries._COMPLETION_STATUS), so the four buckets never overlap
@@ -308,7 +422,7 @@ def test_every_outcome_column_is_consent_gated_in_the_query():
     query = learner_queries.learner_progress(
         learner_queries.ProgressFilters(organization_id=ORG_ID, contract_id=CONTRACT_ID)
     )
-    for name in ("completion_status", "is_passing", "grade", "letter_grade"):
+    for name in ("completion_status", "is_passing", "grade", "letter_grade", "last_active_on"):
         assert f"CASE WHEN FALSE THEN {name} END AS {name}" in query.page
 
 

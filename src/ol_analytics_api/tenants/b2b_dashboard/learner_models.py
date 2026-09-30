@@ -20,14 +20,20 @@ developer detail lives here instead:
   everything in ``_OUTCOME_FIELDS`` is.
 - ``completion_status``: an unrevoked certificate is ``certified``. A revoked
   certificate doesn't count, and the status then follows the grade, so it can
-  read ``passed``, ``in_progress`` or ``not_started``. Until learner-grain
-  activity data lands, ``in_progress`` means a nonzero grade.
-- ``last_active_on`` is NULL for every row until activity data lands, whatever
-  ``outcomes_shared`` says.
+  read ``passed``, ``in_progress`` or ``not_started``. ``in_progress`` means a
+  nonzero grade or any tracked activity.
+- ``last_active_on`` is NULL, whatever ``outcomes_shared`` says, until the
+  learner has any tracked activity.
 - ``outcomes_withheld_count`` counts the rows in ``total_count`` whose
   ``outcomes_shared`` is false. ``completion_status_counts`` buckets the rest
   by status; the two together add up to ``total_count``, since
   ``CompletionStatus`` is exhaustive and its branches don't overlap.
+- ``needs_attention_count`` overlaps ``completion_status_counts`` rather than
+  adding to it: a learner needs attention if they never started, or if
+  their last recorded activity was at least 30 days ago, so the same row
+  can be ``in_progress`` and also counted here. A grade-only ``in_progress``
+  row with no ``last_active_on`` has no recorded activity to judge stale,
+  so it isn't counted either.
 """
 
 from __future__ import annotations
@@ -138,8 +144,8 @@ class LearnerProgress(BaseModel):
     )
     last_active_on: datetime.date | None = Field(
         description=(
-            "The last day the learner did anything in the course. Not available yet, so always "
-            "empty for now."
+            f"The last day the learner did anything in the course. Empty if they haven't yet. "
+            f"{_HIDDEN}"
         )
     )
 
@@ -157,10 +163,11 @@ class CompletionStatusCounts(BaseModel):
 
     Each field counts a disjoint slice of the matching enrollments: every
     enrollment falls into exactly one, in the order below (certificate beats
-    grade beats no grade), so summing the four plus ``outcomes_withheld_count``
-    always equals ``total_count``. An unrevoked certificate always wins even
-    when the same enrollment also carries a passing or in-progress grade,
-    which is why each field's own description calls out what it excludes.
+    grade beats activity beats neither), so summing the four plus
+    ``outcomes_withheld_count`` always equals ``total_count``. An unrevoked
+    certificate always wins even when the same enrollment also carries a
+    passing or in-progress grade, which is why each field's own description
+    calls out what it excludes.
 
     These counts are never suppressed for small cohorts, unlike the
     ``cohort_policy``-gated aggregates elsewhere in b2b_analytics (e.g.
@@ -180,12 +187,15 @@ class CompletionStatusCounts(BaseModel):
     )
     in_progress: int = Field(
         description=(
-            "Matching enrollments with a nonzero grade so far that isn't yet passing, other "
-            "than those already counted as certified or passed above."
+            "Matching enrollments with a nonzero grade that isn't yet passing, or with no grade "
+            "yet but some activity in the course, other than those already counted as certified "
+            "or passed above."
         )
     )
     not_started: int = Field(
-        description="Matching enrollments with no certificate and no grade recorded yet."
+        description=(
+            "Matching enrollments with no certificate, no grade, and no activity in the course yet."
+        )
     )
 
 
@@ -238,6 +248,13 @@ class LearnerProgressResponse(BaseModel):
         description=(
             "How many of those enrollments are in each stage of completion. Enrollments with "
             "hidden progress aren't counted in any stage."
+        )
+    )
+    needs_attention_count: int = Field(
+        description=(
+            "How many of those enrollments need attention: the learner never started, or their "
+            "last recorded activity was at least 30 days ago. Enrollments with hidden progress "
+            "aren't counted."
         )
     )
     data: list[LearnerProgress] = Field(description="This page of enrollments.")
