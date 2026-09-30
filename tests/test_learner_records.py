@@ -1,26 +1,29 @@
 """End-to-end tests for the b2b_learner_records tenant.
 
-Drives the mounted app over ASGITransport with an X-Userinfo header shaped like
-a client-credentials token's claims, stubbing only the StarRocks pool. The SQL
-itself isn't executed here; these tests pin what it filters on and what it binds.
+Drives the mounted app over ASGITransport with a real RS256 client-credentials
+token signed by the test realm in conftest, stubbing only the StarRocks pool
+and the realm's JWKS endpoint. The SQL itself isn't executed here; these tests
+pin what it filters on and what it binds.
 """
 
 import ast
-import base64
 import datetime
-import json
 import pathlib
 
 import pytest
+import yaml
 from httpx import ASGITransport, AsyncClient
 
+from ol_analytics_api.core.db.client import PoolAcquireTimeoutError
 from ol_analytics_api.core.db.refresh_metadata import _clear_cache
 from ol_analytics_api.main import create_app
 from ol_analytics_api.tenants import b2b_learner_records
 from ol_analytics_api.tenants.b2b_learner_records import queries
 from ol_analytics_api.tenants.b2b_learner_records.auth import NO_GRANT_DETAIL
 from ol_analytics_api.tenants.b2b_learner_records.config import settings
+from ol_analytics_api.tenants.b2b_learner_records.errors import ErrorCode
 from ol_analytics_api.tenants.b2b_learner_records.models import CourseRun, Enrollment, Learner
+from tests.conftest import bearer, mint
 
 BASE = "/api/v1/learner-records"
 ORG_ID = "8f14e45f-ceea-467a-9c1b-2f4b9c0a3d21"
@@ -28,14 +31,20 @@ OTHER_ORG_ID = "22222222-2222-2222-2222-222222222222"
 LEARNER_ID = "3e1a9c74-5b2d-4f88-9a01-7c6de2b4f019"
 OTHER_LEARNER_ID = "c04e8a17-3d62-4b95-a7e8-51fb2c8d9042"
 _AS_OF = datetime.datetime(2026, 8, 13, 6, 15)  # noqa: DTZ001 - StarRocks returns naive UTC
+_CONTRACT_PATH = (
+    pathlib.Path(__file__).resolve().parents[1] / "docs/openapi/b2b-learner-records-v1.yaml"
+)
+
+# Every request here carries a token, so every test may fetch the realm JWKS.
+pytestmark = pytest.mark.usefixtures("realm_keys")
 
 
-def _header(claims: dict) -> str:
-    return base64.b64encode(json.dumps(claims).encode()).decode()
+def _token(claims: dict) -> str:
+    return mint(claims)
 
 
-def _partner_header(*organization_ids, scope="learner-records:read"):
-    return _header(
+def _partner_token(*organization_ids, scope="learner-records:read"):
+    return _token(
         {
             "azp": "contoso-lms",
             "scope": f"profile email {scope}",
@@ -144,15 +153,15 @@ def _clear_as_of_cache():
     _clear_cache()
 
 
-async def _get(app, path, header=None, pool=None, monkeypatch=None):
+async def _get(app, path, token=None, pool=None, monkeypatch=None):
     pool = pool or _FakePool()
     monkeypatch.setattr("ol_analytics_api.core.db.client.starrocks_pool.fetch_all", pool.fetch_all)
-    headers = {"X-Userinfo": header} if header else {}
+    headers = bearer(token) if token else {}
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         return await client.get(f"{BASE}{path}", headers=headers)
 
 
-async def test_requires_forwarded_claims(app, monkeypatch):
+async def test_requires_a_bearer_token(app, monkeypatch):
     response = await _get(app, f"/organizations/{ORG_ID}/learners", monkeypatch=monkeypatch)
     assert response.status_code == 401
 
@@ -161,7 +170,7 @@ async def test_user_token_without_the_grant_claim_is_refused(app, monkeypatch):
     # A logged-in org manager's token carries no learner_records_organizations
     # claim, so the b2b_dashboard audience can't reach individual records.
     pool = _FakePool()
-    header = _header(
+    token = _token(
         {
             "sub": "kc-user",
             "scope": "openid learner-records:read",
@@ -169,44 +178,49 @@ async def test_user_token_without_the_grant_claim_is_refused(app, monkeypatch):
         }
     )
     response = await _get(
-        app, f"/organizations/{ORG_ID}/learners", header, pool, monkeypatch=monkeypatch
+        app, f"/organizations/{ORG_ID}/learners", token, pool, monkeypatch=monkeypatch
     )
     assert response.status_code == 403
-    assert response.json() == {"detail": NO_GRANT_DETAIL}
+    assert response.json() == {"code": "no_organization_access", "detail": NO_GRANT_DETAIL}
     assert pool.calls == []
 
 
 async def test_ungranted_and_nonexistent_organizations_are_indistinguishable(app, monkeypatch):
-    header = _partner_header(ORG_ID)
+    token = _partner_token(ORG_ID)
     ungranted = await _get(
-        app, f"/organizations/{OTHER_ORG_ID}/enrollments", header, monkeypatch=monkeypatch
+        app, f"/organizations/{OTHER_ORG_ID}/enrollments", token, monkeypatch=monkeypatch
     )
     missing = await _get(
         app,
         "/organizations/99999999-9999-9999-9999-999999999999/enrollments",
-        header,
+        token,
         monkeypatch=monkeypatch,
     )
     assert ungranted.status_code == missing.status_code == 403
-    assert ungranted.json() == missing.json() == {"detail": NO_GRANT_DETAIL}
+    assert (
+        ungranted.json()
+        == missing.json()
+        == {"code": "no_organization_access", "detail": NO_GRANT_DETAIL}
+    )
 
 
 async def test_missing_scope_is_refused(app, monkeypatch):
     response = await _get(
         app,
         f"/organizations/{ORG_ID}/learners",
-        _partner_header(ORG_ID, scope="learner-records:write"),
+        _partner_token(ORG_ID, scope="learner-records:write"),
         monkeypatch=monkeypatch,
     )
     assert response.status_code == 403
+    assert response.json()["code"] == "missing_scope"
 
 
 @pytest.mark.parametrize("claim", [ORG_ID, f"{ORG_ID},{OTHER_ORG_ID}", {"id": ORG_ID}, None, [42]])
 async def test_a_grant_claim_that_is_not_a_json_array_of_uuids_grants_nothing(
     app, monkeypatch, claim
 ):
-    header = _header({"scope": "learner-records:read", "learner_records_organizations": claim})
-    response = await _get(app, f"/organizations/{ORG_ID}/learners", header, monkeypatch=monkeypatch)
+    token = _token({"scope": "learner-records:read", "learner_records_organizations": claim})
+    response = await _get(app, f"/organizations/{ORG_ID}/learners", token, monkeypatch=monkeypatch)
     assert response.status_code == 403
 
 
@@ -214,7 +228,7 @@ async def test_grant_matches_the_uuid_not_its_spelling(app, monkeypatch):
     response = await _get(
         app,
         f"/organizations/{ORG_ID}/learners",
-        _partner_header(ORG_ID.upper()),
+        _partner_token(ORG_ID.upper()),
         monkeypatch=monkeypatch,
     )
     assert response.status_code == 200
@@ -223,7 +237,7 @@ async def test_grant_matches_the_uuid_not_its_spelling(app, monkeypatch):
 async def test_learners_envelope_withholds_outcomes_and_counts_them(app, monkeypatch):
     pool = _FakePool(rows=[_learner_row()], total_count=47, withheld=47)
     response = await _get(
-        app, f"/organizations/{ORG_ID}/learners", _partner_header(ORG_ID), pool, monkeypatch
+        app, f"/organizations/{ORG_ID}/learners", _partner_token(ORG_ID), pool, monkeypatch
     )
 
     assert response.status_code == 200
@@ -246,7 +260,7 @@ async def test_learners_envelope_withholds_outcomes_and_counts_them(app, monkeyp
 async def test_outcome_columns_read_null_while_consent_is_absent(app, monkeypatch):
     pool = _FakePool()
     await _get(
-        app, f"/organizations/{ORG_ID}/enrollments", _partner_header(ORG_ID), pool, monkeypatch
+        app, f"/organizations/{ORG_ID}/enrollments", _partner_token(ORG_ID), pool, monkeypatch
     )
     page_query, _ = pool.page_call()
     assert "FALSE AS outcomes_shared" in page_query
@@ -259,7 +273,7 @@ async def test_consent_fail_open_discloses_outcomes(app, monkeypatch):
     monkeypatch.setattr(settings, "consent_fail_open", True)
     pool = _FakePool()
     await _get(
-        app, f"/organizations/{ORG_ID}/enrollments", _partner_header(ORG_ID), pool, monkeypatch
+        app, f"/organizations/{ORG_ID}/enrollments", _partner_token(ORG_ID), pool, monkeypatch
     )
     page_query, _ = pool.page_call()
     assert "TRUE AS outcomes_shared" in page_query
@@ -321,7 +335,7 @@ def test_models_keep_activity_when_shared():
 async def test_enrollments_project_the_activity_columns(app, monkeypatch):
     pool = _FakePool()
     await _get(
-        app, f"/organizations/{ORG_ID}/enrollments", _partner_header(ORG_ID), pool, monkeypatch
+        app, f"/organizations/{ORG_ID}/enrollments", _partner_token(ORG_ID), pool, monkeypatch
     )
     query, _ = pool.page_call()
     assert "videos_played AS videos_watched" in query
@@ -332,7 +346,7 @@ async def test_enrollments_project_the_activity_columns(app, monkeypatch):
 
 async def test_default_learners_project_the_activity_columns(app, monkeypatch):
     pool = _FakePool()
-    await _get(app, f"/organizations/{ORG_ID}/learners", _partner_header(ORG_ID), pool, monkeypatch)
+    await _get(app, f"/organizations/{ORG_ID}/learners", _partner_token(ORG_ID), pool, monkeypatch)
     query, _ = pool.page_call()
     assert "NULL AS last_active_on" not in query
     assert "NULL AS courses_in_progress" not in query
@@ -344,7 +358,7 @@ async def test_recomputed_learners_count_in_progress_with_the_enrollment_status(
     await _get(
         app,
         f"/organizations/{ORG_ID}/learners?contract_id=42",
-        _partner_header(ORG_ID),
+        _partner_token(ORG_ID),
         pool,
         monkeypatch,
     )
@@ -366,7 +380,7 @@ async def test_include_inactive_learners_count_activity_on_every_enrollment(app,
     await _get(
         app,
         f"/organizations/{ORG_ID}/learners?include_inactive=true",
-        _partner_header(ORG_ID),
+        _partner_token(ORG_ID),
         pool,
         monkeypatch,
     )
@@ -380,7 +394,7 @@ async def test_include_inactive_learners_count_activity_on_every_enrollment(app,
 
 async def test_default_learners_read_the_precomputed_rollup(app, monkeypatch):
     pool = _FakePool()
-    await _get(app, f"/organizations/{ORG_ID}/learners", _partner_header(ORG_ID), pool, monkeypatch)
+    await _get(app, f"/organizations/{ORG_ID}/learners", _partner_token(ORG_ID), pool, monkeypatch)
     query, params = pool.page_call()
     assert f"FROM b2b_learner_records.{queries.LEARNER_MV} WHERE" in query
     assert queries.ENROLLMENT_MV not in query
@@ -395,7 +409,7 @@ async def test_contract_filter_recomputes_learners_from_that_contracts_enrollmen
     await _get(
         app,
         f"/organizations/{ORG_ID}/learners?contract_id=42&limit=10&offset=20",
-        _partner_header(ORG_ID),
+        _partner_token(ORG_ID),
         pool,
         monkeypatch,
     )
@@ -423,7 +437,7 @@ async def test_include_inactive_learners_keep_every_roster_member(app, monkeypat
     await _get(
         app,
         f"/organizations/{ORG_ID}/learners?include_inactive=true",
-        _partner_header(ORG_ID),
+        _partner_token(ORG_ID),
         pool,
         monkeypatch,
     )
@@ -439,7 +453,7 @@ async def test_include_inactive_learners_keep_every_roster_member(app, monkeypat
 )
 async def test_blank_names_read_as_null(app, monkeypatch, path):
     pool = _FakePool()
-    await _get(app, f"/organizations/{ORG_ID}/{path}", _partner_header(ORG_ID), pool, monkeypatch)
+    await _get(app, f"/organizations/{ORG_ID}/{path}", _partner_token(ORG_ID), pool, monkeypatch)
     query, _ = pool.page_call()
     assert "NULLIF(TRIM(full_name), '')" in query
 
@@ -450,7 +464,7 @@ async def test_recomputed_learners_report_the_staler_view(app, monkeypatch):
     response = await _get(
         app,
         f"/organizations/{ORG_ID}/learners?contract_id=42",
-        _partner_header(ORG_ID),
+        _partner_token(ORG_ID),
         pool,
         monkeypatch,
     )
@@ -466,7 +480,7 @@ async def test_enrollment_filters_are_bound_in_order(app, monkeypatch):
         f"&learner_id={LEARNER_ID}&learner_id={OTHER_LEARNER_ID}"
         "&completion_status=passed&completion_status=unknown"
         "&updated_since=2026-08-12T06:15:00.5%2B02:00",
-        _partner_header(ORG_ID),
+        _partner_token(ORG_ID),
         pool,
         monkeypatch,
     )
@@ -497,7 +511,7 @@ async def test_updated_before_bounds_the_window_exclusively(app, monkeypatch):
         app,
         f"/organizations/{ORG_ID}/enrollments"
         "?updated_since=2026-08-12T00:00:00Z&updated_before=2026-08-13T00:00:00Z",
-        _partner_header(ORG_ID),
+        _partner_token(ORG_ID),
         pool,
         monkeypatch,
     )
@@ -519,7 +533,7 @@ async def test_omitted_list_filters_add_no_predicate(app, monkeypatch):
     response = await _get(
         app,
         f"/organizations/{ORG_ID}/enrollments",
-        _partner_header(ORG_ID),
+        _partner_token(ORG_ID),
         pool,
         monkeypatch,
     )
@@ -543,11 +557,13 @@ async def test_malformed_parameters_are_400_with_a_string_detail(app, monkeypatc
     response = await _get(
         app,
         f"/organizations/{ORG_ID}/enrollments?{query}",
-        _partner_header(ORG_ID),
+        _partner_token(ORG_ID),
         monkeypatch=monkeypatch,
     )
     assert response.status_code == 400
-    assert isinstance(response.json()["detail"], str)
+    body = response.json()
+    assert isinstance(body["detail"], str)
+    assert body["code"] == "invalid_parameter"
 
 
 def test_cursor_value_is_a_prefix_of_stored_values_in_the_same_second():
@@ -606,7 +622,7 @@ async def test_as_of_is_read_before_the_records(app, monkeypatch):
     # refresh time, and a client syncing from that as_of would skip the new rows.
     pool = _FakePool()
     await _get(
-        app, f"/organizations/{ORG_ID}/enrollments", _partner_header(ORG_ID), pool, monkeypatch
+        app, f"/organizations/{ORG_ID}/enrollments", _partner_token(ORG_ID), pool, monkeypatch
     )
     kinds = [
         "as_of" if "information_schema" in query else "count" if "COUNT(*)" in query else "page"
@@ -637,7 +653,7 @@ def _course_row(**overrides):
 async def test_courses_read_the_contract_courserun_view(app, monkeypatch):
     pool = _FakePool(rows=[_course_row()], total_count=1)
     response = await _get(
-        app, f"/organizations/{ORG_ID}/courses", _partner_header(ORG_ID), pool, monkeypatch
+        app, f"/organizations/{ORG_ID}/courses", _partner_token(ORG_ID), pool, monkeypatch
     )
 
     assert response.status_code == 200
@@ -661,7 +677,7 @@ async def test_courses_contract_filter_is_bound(app, monkeypatch):
     await _get(
         app,
         f"/organizations/{ORG_ID}/courses?contract_id=42",
-        _partner_header(ORG_ID),
+        _partner_token(ORG_ID),
         pool,
         monkeypatch,
     )
@@ -678,7 +694,7 @@ async def test_courses_filters_are_bound_in_order(app, monkeypatch):
         f"/organizations/{ORG_ID}/courses"
         "?contract_is_active=true&courserun_id=course-v1:MITxT%2B14.310x%2B2T2026"
         "&courserun_starts_after=2026-01-01T00:00:00Z&courserun_starts_before=2026-04-01T00:00:00Z",
-        _partner_header(ORG_ID),
+        _partner_token(ORG_ID),
         pool,
         monkeypatch,
     )
@@ -697,3 +713,48 @@ async def test_courses_filters_are_bound_in_order(app, monkeypatch):
         0,
     )
     assert pool.count_call()[1] == params[:-2]
+
+
+def test_the_error_code_enum_matches_the_published_contract():
+    """ErrorCode exists to mirror the contract's enum. Read it from the
+    contract rather than trusting the copy, so the two can't drift."""
+    spec = yaml.safe_load(_CONTRACT_PATH.read_text())
+    documented = spec["components"]["schemas"]["Error"]["properties"]["code"]["enum"]
+    assert set(ErrorCode) == set(documented)
+    assert spec["components"]["schemas"]["Error"]["required"] == ["code", "detail"]
+
+
+async def test_every_error_carries_the_code_its_contract_documents(app, monkeypatch):
+    """The Error schema requires `code` and tells clients to branch on it
+    rather than on `detail`, whose wording may change. A body without one
+    fails validation in a client generated from the spec."""
+
+    async def saturated(*_args, **_kwargs):
+        msg = "pool saturated"
+        raise PoolAcquireTimeoutError(msg)
+
+    cases = [
+        (f"/organizations/{ORG_ID}/enrollments?limit=0", _partner_token(ORG_ID), 400),
+        (f"/organizations/{ORG_ID}/learners", None, 401),
+        (
+            f"/organizations/{ORG_ID}/learners",
+            _partner_token(ORG_ID, scope="learner-records:write"),
+            403,
+        ),
+        (f"/organizations/{OTHER_ORG_ID}/learners", _partner_token(ORG_ID), 403),
+    ]
+    for path, token, expected in cases:
+        response = await _get(app, path, token, monkeypatch=monkeypatch)
+        assert response.status_code == expected, path
+        assert set(response.json()) == {"code", "detail"}, path
+        assert response.json()["code"] in set(ErrorCode), path
+
+    monkeypatch.setattr("ol_analytics_api.core.db.client.starrocks_pool.fetch_all", saturated)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        unavailable = await client.get(
+            f"{BASE}/organizations/{ORG_ID}/learners",
+            headers=bearer(_partner_token(ORG_ID)),
+        )
+    assert unavailable.status_code == 503
+    assert unavailable.json()["code"] == "unavailable"
+    assert unavailable.headers["Retry-After"] == "1"
