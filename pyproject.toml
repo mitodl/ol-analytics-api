@@ -169,14 +169,13 @@ commit = false
 tag = false
 parse = "(?P<release>(?:[1-9][0-9]{3})\\.(?:1[0-2]|[1-9])\\.(?:3[0-1]|[12][0-9]|[1-9]))\\.(?P<build>\\d+)"
 serialize = ["{release}.{build}"]
-# The ol-concourse release job runs `bump-my-version bump --no-commit` in an
-# image that has pip but neither uv nor scriv, then the release resource commits
-# the tree with `git add -u`. Pre-commit hooks still run under --no-commit, after
-# pyproject.toml carries the new version, so scriv reads it from there.
-# `git add -u` stages only tracked files, so CHANGELOG.md has to exist on main
-# before a release rather than be created by one.
+# The ol-concourse release job runs `bump-my-version bump --no-commit` in the
+# mitodl/ol-concourse-dsl image, which ships uv but not scriv, then the release
+# resource commits the tree with `git add -u`. Pre-commit hooks still run under
+# --no-commit, after pyproject.toml carries the new version, so scriv reads it
+# from there. `git add -u` stages only tracked files, so CHANGELOG.md has to
+# exist on main before a release rather than be created by one.
 pre_commit_hooks = [
-    "python3 -m pip install --quiet --root-user-action=ignore uv",
     "uv run --frozen --only-group release bin/collect-changelog",
 ]
 
