@@ -199,6 +199,33 @@ class CompletionStatusCounts(BaseModel):
     )
 
 
+class CourseRun(BaseModel):
+    """One course run under the contract, for the learner-progress module filter."""
+
+    courserun_id: str = Field(
+        description="The course run's ID, e.g. course-v1:MITxT+14.310x+2T2026."
+    )
+    courserun_title: str = Field(description="The course's title.")
+    courserun_start_on: UtcDatetime | None = Field(
+        description="When the course run starts. Empty if no start date is set."
+    )
+    courserun_end_on: UtcDatetime | None = Field(
+        description="When the course run ends. Empty for self-paced courses."
+    )
+
+
+class CourseRunsResponse(BaseModel):
+    """The org envelope (``organization_id``, ``as_of``, ``total_count``, ``data``),
+    matching ``LearnerProgressResponse``'s shape."""
+
+    organization_id: str = Field(description="The organization's ID.")
+    as_of: UtcDatetime | None = Field(
+        description="When the data was last updated. Empty before the first update."
+    )
+    total_count: int = Field(description="Course runs under the contract, across all pages.")
+    data: list[CourseRun] = Field(description="This page of course runs.")
+
+
 class LearnerProgressResponse(BaseModel):
     """The org envelope (``organization_id``, ``as_of``, ``total_count``,
     ``data``) plus ``outcomes_withheld_count``, so a client can show how many

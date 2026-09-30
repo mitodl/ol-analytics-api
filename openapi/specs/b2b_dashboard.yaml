@@ -509,6 +509,17 @@ paths:
           description: Repeat for several. `unknown` selects rows with withheld outcomes.
           title: Completion Status
         description: Repeat for several. `unknown` selects rows with withheld outcomes.
+      - name: courserun_readable_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+          description: Exact match. Narrows to one course run, e.g. the module filter.
+          title: Courserun Readable Id
+        description: Exact match. Narrows to one course run, e.g. the module filter.
       - name: include_inactive
         in: query
         required: false
@@ -555,6 +566,55 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/LearnerProgressResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/analytics/organizations/{organization_id}/contracts/{contract_id}/course-runs:
+    get:
+      tags:
+      - learners
+      summary: Course runs under the contract, for the learner-progress module filter
+      operationId: learners_course_runs_retrieve
+      parameters:
+      - name: organization_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Organization Id
+      - name: contract_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Contract Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 100
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CourseRunsResponse'
         '422':
           description: Validation Error
           content:
@@ -1339,6 +1399,73 @@ components:
         ``seats_consumed`` over ``seat_limit``, null when the limit is zero or null
 
         (the view divides by ``nullif(seat_limit, 0)``).'
+    CourseRun:
+      properties:
+        courserun_id:
+          type: string
+          title: Courserun Id
+          description: The course run's ID, e.g. course-v1:MITxT+14.310x+2T2026.
+        courserun_title:
+          type: string
+          title: Courserun Title
+          description: The course's title.
+        courserun_start_on:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Courserun Start On
+          description: When the course run starts. Empty if no start date is set.
+        courserun_end_on:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Courserun End On
+          description: When the course run ends. Empty for self-paced courses.
+      type: object
+      required:
+      - courserun_id
+      - courserun_title
+      - courserun_start_on
+      - courserun_end_on
+      title: CourseRun
+      description: One course run under the contract, for the learner-progress module
+        filter.
+    CourseRunsResponse:
+      properties:
+        organization_id:
+          type: string
+          title: Organization Id
+          description: The organization's ID.
+        as_of:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: As Of
+          description: When the data was last updated. Empty before the first update.
+        total_count:
+          type: integer
+          title: Total Count
+          description: Course runs under the contract, across all pages.
+        data:
+          items:
+            $ref: '#/components/schemas/CourseRun'
+          type: array
+          title: Data
+          description: This page of course runs.
+      type: object
+      required:
+      - organization_id
+      - as_of
+      - total_count
+      - data
+      title: CourseRunsResponse
+      description: 'The org envelope (``organization_id``, ``as_of``, ``total_count``,
+        ``data``),
+
+        matching ``LearnerProgressResponse``''s shape.'
     EnrollmentCompletionFunnel:
       properties:
         organization_key:

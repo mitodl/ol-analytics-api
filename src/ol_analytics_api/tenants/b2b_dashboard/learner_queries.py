@@ -31,6 +31,7 @@ from ol_analytics_api.core.db.identifiers import validate_sql_identifier
 from ol_analytics_api.tenants.b2b_dashboard.config import settings
 
 ENROLLMENT_MV = "mv_b2b_learner_enrollment"
+CONTRACT_COURSERUN_MV = "mv_b2b_contract_courserun"
 
 # Matches the b2b_learner_records tenant. An unrevoked certificate is certified
 # without requiring is_passing, since production has unrevoked certificates with
@@ -100,6 +101,7 @@ class ProgressFilters:
     contract_id: int
     search: str | None = None
     completion_statuses: tuple[str, ...] = ()
+    courserun_readable_id: str | None = None
     include_inactive: bool = False
     sort: SortKey = SortKey.FULL_NAME
     descending: bool = False
@@ -149,6 +151,9 @@ def learner_progress(filters: ProgressFilters) -> ProgressQuery:
         pattern = _contains_pattern(filters.search)
         predicates.append("(LOWER(email) LIKE %s OR LOWER(full_name) LIKE %s)")
         params.extend([pattern, pattern])
+    if filters.courserun_readable_id:
+        predicates.append("courserun_readable_id = %s")
+        params.append(filters.courserun_readable_id)
     if filters.completion_statuses:
         # Status values match only rows whose outcomes are shared; `unknown`
         # selects the withheld ones. Otherwise a status filter would reveal the
@@ -195,3 +200,37 @@ def learner_progress(filters: ProgressFilters) -> ProgressQuery:
         f" FROM ({records}) records{where}"
     )
     return ProgressQuery(page, count, tuple(params))
+
+
+@dataclass(frozen=True)
+class CourseRunsQuery:
+    """``params`` binds ``count``; ``page`` takes ``params`` plus LIMIT and OFFSET."""
+
+    page: str
+    count: str
+    params: tuple[Any, ...]
+
+
+def course_runs(organization_id: str, contract_id: int) -> CourseRunsQuery:
+    """The contract's course runs, for ``learner_progress``'s module filter.
+
+    Catalog metadata, not learner rows: unlike ``learner_progress``, there is
+    no consent gating and no anonymization floor, matching
+    ``b2b_learner_records.queries.courses()`` for the same reason.
+    """
+    table = f"{validate_sql_identifier(settings.learner_records_schema)}.{CONTRACT_COURSERUN_MV}"
+    where = "sso_organization_id = %s AND contract_id = %s"
+    params: tuple[Any, ...] = (organization_id, contract_id)
+    # Nulls last (self-paced runs have no start date), then title for a
+    # human-friendly order, then the readable id as a unique tie-break so
+    # LIMIT/OFFSET paging is deterministic even when runs share a title.
+    page = (
+        "SELECT courserun_readable_id AS courserun_id, courserun_title,"  # noqa: S608
+        " courserun_start_on, courserun_end_on"
+        f" FROM {table} WHERE {where}"
+        " ORDER BY courserun_start_on IS NULL, courserun_start_on, courserun_title,"
+        " courserun_readable_id"
+        " LIMIT %s OFFSET %s"
+    )
+    count = f"SELECT COUNT(*) AS total_count FROM {table} WHERE {where}"  # noqa: S608
+    return CourseRunsQuery(page, count, params)
