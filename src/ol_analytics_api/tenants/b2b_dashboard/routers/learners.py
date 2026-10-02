@@ -52,9 +52,9 @@ router = APIRouter(
 # is both). Folding it in would break the "exactly one bucket per row" property
 # CompletionStatusCounts rests on, so it is the separate `needs_attention`
 # filter below. It is a subset of `not_started` and `in_progress` and never
-# selects the two terminal statuses, but that makes it no easier to express as
-# a status: it still has to compose with whichever of those two a caller asked
-# for.
+# selects rows currently classified as `passed` or `certified`, but that
+# makes it no easier to express as a status: it still has to compose with
+# whichever of those two a caller asked for.
 class CompletionStatusFilter(StrEnum):
     NOT_STARTED = "not_started"
     IN_PROGRESS = "in_progress"
