@@ -121,9 +121,8 @@ definition is the only place access is recorded.
 Not needed to write the tenant, but each needs an owner before partners
 multiply:
 
-- **Client lifecycle.** One client per contract covers creation only. Who
-  delivers the secret to the partner, who rotates it, and who removes it when
-  the contract ends are unassigned.
+- **Client lifecycle.** Issuance, handoff, rotation and removal are in
+  [`b2b-learner-records-credential-runbook.md`](b2b-learner-records-credential-runbook.md).
 - **Audit logging, before the first partner.** `auth.py` logs the client ID and
   organization on every authorized request. It doesn't log how many records
   were returned, and nothing yet says where those logs are kept or who reviews
