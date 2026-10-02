@@ -5,6 +5,14 @@ core/db/query.py's anonymization chokepoint: a k-anonymity floor would
 suppress every one of them. Org-manager authorization and the contract gate
 still apply (routers/learners.py).
 
+``needs_attention_aggregate`` is the one exception, and it goes the other way:
+it returns no learner rows at all, only per-contract distinct-learner counts,
+so it DOES go through that chokepoint and is floored like every other
+aggregate in this tenant. It lives in this module rather than with the
+materialized-view endpoints so that it can share ``_needs_attention`` and
+``_COMPLETION_STATUS`` with the row-level queries above -- one rule and one
+cutoff for the KPI tile and the learner directory alike.
+
 Every query is a fixed template. The identifiers are this module's constants
 plus the validated schema name, and every caller-supplied value is a bound
 parameter. The only per-request variation is which of a fixed set of
@@ -287,6 +295,92 @@ def learner_progress(filters: ProgressFilters, cutoff: datetime.date) -> Progres
         f" FROM ({records}) records{where}"
     )
     return ProgressQuery(page, count, tuple(params))
+
+
+@dataclass(frozen=True)
+class AggregateQuery:
+    """``page`` takes ``params`` plus LIMIT and OFFSET; ``count`` takes
+    ``params`` plus the anonymization floor."""
+
+    page: str
+    count: str
+    params: tuple[Any, ...]
+
+
+def needs_attention_aggregate(
+    organization_id: str, contract_id: int | None, cutoff: datetime.date
+) -> AggregateQuery:
+    """Distinct learners needing attention, grouped by contract.
+
+    The aggregate behind the dashboard's needs-attention KPI tile. It reads the
+    same learner-grain MV as ``learner_progress`` and reuses the same
+    ``_needs_attention`` expression against the same per-request cutoff, so the
+    tile and the directory beneath it cannot disagree about which learners are
+    quiet -- not even for a learner whose 30th quiet day is today.
+
+    ``COUNT(DISTINCT CASE WHEN ... THEN learner_id END)`` is the point of the
+    whole query. ``learner_progress``'s ``needs_attention_count`` is a
+    ``SUM(CASE WHEN ...)`` over a learner x course-run grain, so a learner
+    stale in three of the contract's courses counts three times. That cannot
+    back a tile sitting beside ``active_learners``, which is itself a
+    distinct-learner count: two adjacent tiles would read as learner counts
+    while using different units. Here that learner counts once.
+
+    ``contract_id`` narrows to one contract for the contract-scoped route;
+    ``None`` returns one row per contract the organization holds, which is what
+    the org-wide analytics view renders a card group from.
+    """
+    table = f"{validate_sql_identifier(settings.learner_records_schema)}.{ENROLLMENT_MV}"
+    # The org predicate stays next to the contract one, as in learner_progress:
+    # contract ids are globally unique but not secret.
+    scope = ["sso_organization_id = %s"]
+    params: list[Any] = [organization_id]
+    if contract_id is not None:
+        scope.append("contract_id = %s")
+        params.append(contract_id)
+    # Active enrollments only, with no caller override, and that is what makes
+    # the tile and the directory count one population: learner_progress's
+    # `include_inactive` defaults to false, so a manager clicking through from
+    # the tile lands on exactly these learners.
+    scope.append("enrollment_is_active = TRUE")
+    records = (
+        "SELECT user_global_id AS learner_id, contract_id,"  # noqa: S608
+        f" {_COMPLETION_STATUS} AS completion_status, last_active_on"
+        f" FROM {table} WHERE {' AND '.join(scope)}"
+    )
+
+    shared = _outcomes_shared()
+    needs_attention = _needs_attention(cutoff)
+    # learners_considered is deliberately NOT consent-gated and the other two
+    # are, which mirrors learner_progress exactly: being enrolled is not an
+    # outcome, so it is disclosed, while anything about a learner's progress is
+    # gated. So the three do not sum -- a withheld learner is counted in the
+    # first and the third, never the second -- and the third is what stops a
+    # fail-closed stack from reading as "nobody needs attention".
+    aggregates = (
+        "COUNT(DISTINCT learner_id) AS learners_considered,"
+        f" COUNT(DISTINCT CASE WHEN {shared} AND ({needs_attention}) THEN learner_id END)"
+        " AS learners_needing_attention,"
+        f" COUNT(DISTINCT CASE WHEN NOT {shared} THEN learner_id END)"
+        " AS learners_outcomes_withheld"
+    )
+    # Grouping by the grain key makes it unique per row, so it is also a
+    # deterministic ORDER BY for LIMIT/OFFSET paging.
+    page = (
+        f"SELECT contract_id, {aggregates} FROM ({records}) records"  # noqa: S608
+        " GROUP BY contract_id ORDER BY contract_id LIMIT %s OFFSET %s"
+    )
+    # The same primary-cohort gate build_count applies, for the same reason:
+    # suppress_small_cohorts drops sub-floor rows after the query returns, so an
+    # ungated COUNT would exceed anything paging can reach, and subtracting the
+    # rows the caller does receive would tell them exactly how many sub-floor
+    # contracts their org has.
+    count = (
+        "SELECT COUNT(*) AS total_count FROM ("  # noqa: S608
+        f"SELECT contract_id FROM ({records}) records"
+        " GROUP BY contract_id HAVING COUNT(DISTINCT learner_id) >= %s) gated"
+    )
+    return AggregateQuery(page, count, tuple(params))
 
 
 @dataclass(frozen=True)
