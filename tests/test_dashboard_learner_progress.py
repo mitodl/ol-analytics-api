@@ -343,9 +343,9 @@ def test_needs_attention_excludes_learners_who_already_finished():
     conn.close()
 
     assert rows == [
-        # Terminal. Quiet is the expected end of the course, not a lapse.
+        # Currently certified. Quiet is the expected end of the course, not a lapse.
         ("certified", 0),
-        # Also terminal. A missing certificate is certificate-issuing ops work,
+        # Currently passed. A missing certificate is certificate-issuing ops work,
         # not a learner for a manager to chase.
         ("passed", 0),
         ("in_progress", 1),  # the only staleness a nudge would fix
