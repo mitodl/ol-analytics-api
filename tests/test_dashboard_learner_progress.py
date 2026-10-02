@@ -353,6 +353,47 @@ def test_needs_attention_excludes_learners_who_already_finished():
     ]
 
 
+def test_needs_attention_follows_current_status_not_history():
+    # The exclusion is scoped to the row's CURRENT status, which is not the
+    # same as "has finished at some point" -- Copilot's review of #87 caught
+    # the field descriptions overpromising the latter. _COMPLETION_STATUS
+    # re-derives the status on every read, so revoking a certificate drops the
+    # row through to the grade and activity that remain. A learner who once
+    # certified, whose certificate is revoked and who is not passing, is
+    # in_progress again and is flagged when quiet. That is intended: a revoked
+    # certificate means they are no longer finished.
+    today = datetime.date.today()  # noqa: DTZ011 - the boundary is date-only
+    cutoff = today - datetime.timedelta(days=30)
+    long_quiet = (today - datetime.timedelta(days=62)).isoformat()
+    needs_attention = _needs_attention_sql(cutoff)
+
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE enrollment (certificate_is_revoked INTEGER, is_passing INTEGER,"
+        " grade_value REAL, last_active_on TEXT)"
+    )
+    conn.executemany(
+        "INSERT INTO enrollment VALUES (?, ?, ?, ?)",
+        [
+            (0, 0, 0.9, long_quiet),  # certificate stands
+            (1, 1, 0.9, long_quiet),  # revoked, but still passing
+            (1, 0, 0.9, long_quiet),  # revoked and not passing: no longer finished
+        ],
+    )
+    rows = conn.execute(
+        "SELECT completion_status,"  # noqa: S608
+        f" ({needs_attention}) AS needs_attention FROM"
+        f" (SELECT *, {learner_queries._COMPLETION_STATUS} AS completion_status FROM enrollment)"  # noqa: SLF001
+    ).fetchall()
+    conn.close()
+
+    assert rows == [
+        ("certified", 0),
+        ("passed", 0),  # revocation alone doesn't re-flag a learner who passed
+        ("in_progress", 1),  # back to unfinished, and quiet, so flagged again
+    ]
+
+
 def test_needs_attention_count_respects_the_consent_gate(monkeypatch):
     # The same rows, but through the full SUM(CASE WHEN shared AND (...))
     # aggregate, with consent fail-closed (the default, so every row's

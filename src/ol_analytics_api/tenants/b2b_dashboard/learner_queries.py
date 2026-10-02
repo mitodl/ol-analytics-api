@@ -103,15 +103,24 @@ def _needs_attention(cutoff: datetime.date) -> str:
     (30 days before the cluster's today).
 
     Staleness is scoped to ``in_progress`` because only an unfinished learner
-    can be quiet in a way a nudge would fix. ``passed`` and ``certified`` are
-    terminal: going quiet after earning a certificate is the expected end of
-    the course, not a lapse, and an unscoped rule got *more* certain the longer
-    ago someone finished. Against the local-dev fixture that misread 46% of all
-    flagged rows, so a manager filtering on the flag got a list dominated by
-    people who needed nothing. A ``passed`` learner awaiting a certificate is
-    excluded too: that is certificate-issuing ops work, not a learner to chase,
-    and this flag and the tile built on it are aimed at managers chasing
-    learners.
+    can be quiet in a way a nudge would fix. Going quiet while ``passed`` or
+    ``certified`` is the expected end of the course, not a lapse, and an
+    unscoped rule got *more* certain the longer ago someone finished. Against
+    the local-dev fixture that misread 46% of all flagged rows, so a manager
+    filtering on the flag got a list dominated by people who needed nothing. A
+    ``passed`` learner awaiting a certificate is excluded too: that is
+    certificate-issuing ops work, not a learner to chase, and this flag and
+    the tile built on it are aimed at managers chasing learners.
+
+    This keys on the row's CURRENT status, which is not the same as "has
+    finished at some point", and the published field descriptions are worded
+    to match. ``_COMPLETION_STATUS`` re-derives the status on every read, so
+    revoking a certificate drops the row through to the grade and activity
+    that remain: a learner who once certified, whose certificate is revoked
+    and who is not passing, is ``in_progress`` again and so can be flagged.
+    That is the behaviour we want -- a revoked certificate means they are no
+    longer finished -- and
+    test_needs_attention_follows_current_status_not_history pins it.
 
     ``<=`` is deliberate: "at least 30 days ago" includes the 30th day itself,
     and test_needs_attention_boundary_is_computed_from_real_rows pins that day.

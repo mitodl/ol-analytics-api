@@ -33,10 +33,14 @@ developer detail lives here instead:
   are still ``in_progress`` and their last recorded activity was at least 30
   days ago, so the same row can be ``in_progress`` and also counted here. It
   is a subset of the ``not_started`` and ``in_progress`` buckets and never
-  touches the other two: ``passed`` and ``certified`` are terminal, and going
-  quiet after finishing is the expected end of the course rather than a lapse.
-  A grade-only ``in_progress`` row with no ``last_active_on`` has no recorded
-  activity to judge stale, so it isn't counted either.
+  touches the other two: going quiet while ``passed`` or ``certified`` is the
+  expected end of the course rather than a lapse. That is a statement about
+  the row's current status, not the learner's history -- revoking a
+  certificate re-derives ``completion_status`` from the grade and activity
+  that remain, so a learner who once certified can land back in
+  ``in_progress`` and be counted here. A grade-only ``in_progress`` row with
+  no ``last_active_on`` has no recorded activity to judge stale, so it isn't
+  counted either.
 - ``needs_attention`` is the per-row form of that same rule, built from the
   one ``learner_queries._needs_attention`` expression the count is built on,
   against a cutoff the router resolves on the cluster once per request. So a
@@ -165,8 +169,8 @@ class LearnerProgress(BaseModel):
         description=(
             "Whether this learner may need a nudge: they never started the course, or they "
             "are still working through it and their last recorded activity was at least 30 "
-            "days ago. Never true once they have passed or earned a certificate, since going "
-            f"quiet after finishing is expected. {_HIDDEN}"
+            "days ago. False while they are passing or hold an unrevoked certificate, since "
+            f"going quiet after finishing is expected. {_HIDDEN}"
         )
     )
 
@@ -275,8 +279,8 @@ class LearnerProgressResponse(BaseModel):
         description=(
             "How many of those enrollments need attention: the learner never started, or they "
             "are still working through the course and their last recorded activity was at "
-            "least 30 days ago. Learners who have passed or earned a certificate are never "
-            "counted. Enrollments with hidden progress aren't counted."
+            "least 30 days ago. Learners who are passing or hold an unrevoked certificate "
+            "aren't counted, nor are enrollments with hidden progress."
         )
     )
     data: list[LearnerProgress] = Field(description="This page of enrollments.")
