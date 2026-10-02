@@ -218,6 +218,21 @@ uv run ruff check .
 uv run mypy src
 ```
 
+## Git hooks
+
+Hooks run through [prek](https://prek.j178.dev) and are configured in `prek.toml`. prek is
+pinned in `pyproject.toml` and locked in `uv.lock`, so `uv sync` installs it:
+
+```bash
+uv run prek install -f        # -f replaces a pre-commit git hook if one is installed
+uv run prek run --all-files
+```
+
+CI runs the same hooks in `.github/workflows/autofix.yml`. Its `prek` job runs every hook
+twice, a fixing pass and then a pass that must converge. If hooks only need to rewrite
+files, `autofix-ci[bot]` pushes one commit to the pull request and the check re-runs. A fix
+under `.github/` is refused, so run prek locally for those.
+
 ## The published API contract
 
 Each tenant's OpenAPI document is committed under `openapi/specs/<tenant>.yaml`
