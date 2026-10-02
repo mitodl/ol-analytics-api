@@ -75,9 +75,13 @@ async def _respond(
     as_of = await latest_refresh_timestamp(
         settings.learner_records_schema, learner_queries.ENROLLMENT_MV
     )
+    # The floor is bound twice on purpose: once into the page query's HAVING, so
+    # the page and total_count describe the same gated set, and once for
+    # fetch_and_suppress, which still nulls the sub-floor secondary counts
+    # within a surviving row.
     rows = await fetch_and_suppress(
         query.page,
-        (*query.params, page.limit, page.offset),
+        (*query.params, settings.anonymization_floor, page.limit, page.offset),
         ContractNeedsAttention,
         settings.anonymization_floor,
     )

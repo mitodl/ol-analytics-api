@@ -299,8 +299,8 @@ def learner_progress(filters: ProgressFilters, cutoff: datetime.date) -> Progres
 
 @dataclass(frozen=True)
 class AggregateQuery:
-    """``page`` takes ``params`` plus LIMIT and OFFSET; ``count`` takes
-    ``params`` plus the anonymization floor."""
+    """``page`` takes ``params`` plus the anonymization floor, LIMIT and
+    OFFSET; ``count`` takes ``params`` plus the floor."""
 
     page: str
     count: str
@@ -364,21 +364,31 @@ def needs_attention_aggregate(
         f" COUNT(DISTINCT CASE WHEN NOT {shared} THEN learner_id END)"
         " AS learners_outcomes_withheld"
     )
+    # The primary-cohort gate, applied to the page AND the count, written once
+    # so the two cannot drift. suppress_small_cohorts would drop a sub-floor row
+    # anyway, but dropping it in Python AFTER the LIMIT is not equivalent:
+    #
+    #   - A page whose rows are all sub-floor comes back empty beside a positive
+    #     total_count, and the visible contracts behind it are reachable only by
+    #     guessing an offset. OrgAnalyticsResponse tells clients to compare
+    #     total_count against len(data) plus offset, which that breaks.
+    #   - Varying the offset and watching which contracts surface reveals how
+    #     many suppressed ones precede each visible one -- exactly the count of
+    #     sub-floor cohorts that gating the count query exists to withhold.
+    #
+    # Gating in SQL is what makes the page and the count describe one set.
+    cohort_gate = "HAVING COUNT(DISTINCT learner_id) >= %s"
     # Grouping by the grain key makes it unique per row, so it is also a
     # deterministic ORDER BY for LIMIT/OFFSET paging.
     page = (
         f"SELECT contract_id, {aggregates} FROM ({records}) records"  # noqa: S608
-        " GROUP BY contract_id ORDER BY contract_id LIMIT %s OFFSET %s"
+        f" GROUP BY contract_id {cohort_gate}"
+        " ORDER BY contract_id LIMIT %s OFFSET %s"
     )
-    # The same primary-cohort gate build_count applies, for the same reason:
-    # suppress_small_cohorts drops sub-floor rows after the query returns, so an
-    # ungated COUNT would exceed anything paging can reach, and subtracting the
-    # rows the caller does receive would tell them exactly how many sub-floor
-    # contracts their org has.
     count = (
         "SELECT COUNT(*) AS total_count FROM ("  # noqa: S608
         f"SELECT contract_id FROM ({records}) records"
-        " GROUP BY contract_id HAVING COUNT(DISTINCT learner_id) >= %s) gated"
+        f" GROUP BY contract_id {cohort_gate}) gated"
     )
     return AggregateQuery(page, count, tuple(params))
 

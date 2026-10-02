@@ -38,6 +38,11 @@ _AS_OF = datetime.datetime(2026, 9, 15, 6, 0)  # noqa: DTZ001 - StarRocks return
 # What the cluster answers NEEDS_ATTENTION_CUTOFF_QUERY with: 30 days before
 # _AS_OF's date. Fixed, so the SQL these tests assert on is stable.
 _CUTOFF = datetime.date(2026, 8, 16)
+# Bound into the page query's HAVING by the tests whose subject is the
+# needs-attention rule rather than the k-anonymity floor: their fixtures are a
+# handful of learners on purpose, and the real floor would gate them all out.
+# The two tests that ARE about the floor bind it explicitly instead.
+_NO_FLOOR = 1
 
 # The MV columns the aggregate's inner select reads. Same shape as the
 # learner-progress sqlite fixtures, plus the scoping and grain columns this
@@ -144,7 +149,7 @@ def test_counts_each_learner_once_however_many_courses_they_are_quiet_in():
     ]
     conn = _db(rows)
     query = learner_queries.needs_attention_aggregate(ORG_ID, CONTRACT_ID, _CUTOFF)
-    [row] = _run(conn, query.page, (*query.params, 100, 0)).fetchall()
+    [row] = _run(conn, query.page, (*query.params, _NO_FLOOR, 100, 0)).fetchall()
 
     # 6 enrollments, 3 learners, 2 of them needing attention.
     assert row == (CONTRACT_ID, 3, 2, 0)
@@ -176,7 +181,7 @@ def test_projects_exactly_the_model_fields_in_order():
     # cursor's column names catches that, and proves the SQL parses.
     conn = _db([_enrollment("learner-a")])
     query = learner_queries.needs_attention_aggregate(ORG_ID, CONTRACT_ID, _CUTOFF)
-    cursor = _run(conn, query.page, (*query.params, 100, 0))
+    cursor = _run(conn, query.page, (*query.params, _NO_FLOOR, 100, 0))
     columns = [description[0] for description in cursor.description]
     conn.close()
 
@@ -198,7 +203,7 @@ def test_consent_gate_moves_learners_between_the_counts(monkeypatch):
 
     def aggregate():
         query = learner_queries.needs_attention_aggregate(ORG_ID, CONTRACT_ID, _CUTOFF)
-        return _run(conn, query.page, (*query.params, 100, 0)).fetchall()
+        return _run(conn, query.page, (*query.params, _NO_FLOOR, 100, 0)).fetchall()
 
     # The code default fails closed, so no learner's quietness is disclosed and
     # both are reported as withheld instead.
@@ -234,7 +239,7 @@ def test_boundary_is_the_same_day_the_learner_directory_uses():
         ]
     )
     query = learner_queries.needs_attention_aggregate(ORG_ID, CONTRACT_ID, _CUTOFF)
-    [row] = _run(conn, query.page, (*query.params, 100, 0)).fetchall()
+    [row] = _run(conn, query.page, (*query.params, _NO_FLOOR, 100, 0)).fetchall()
     conn.close()
 
     assert row == (CONTRACT_ID, 4, 2, 0)
@@ -253,7 +258,7 @@ def test_inactive_enrollments_are_left_out_like_the_directory_default():
         ]
     )
     query = learner_queries.needs_attention_aggregate(ORG_ID, CONTRACT_ID, _CUTOFF)
-    [row] = _run(conn, query.page, (*query.params, 100, 0)).fetchall()
+    [row] = _run(conn, query.page, (*query.params, _NO_FLOOR, 100, 0)).fetchall()
     conn.close()
 
     assert row == (CONTRACT_ID, 1, 1, 0)
@@ -275,10 +280,39 @@ def test_org_scope_returns_one_row_per_contract_and_never_crosses_orgs():
         ]
     )
     query = learner_queries.needs_attention_aggregate(ORG_ID, None, _CUTOFF)
-    rows = _run(conn, query.page, (*query.params, 100, 0)).fetchall()
+    rows = _run(conn, query.page, (*query.params, _NO_FLOOR, 100, 0)).fetchall()
     conn.close()
 
     assert rows == [(101, 1, 1, 0), (102, 1, 1, 0)]
+
+
+@pytest.mark.usefixtures("_fail_open")
+def test_page_and_count_describe_the_same_gated_set():
+    """Regression: the page used to be ungated while total_count was gated.
+
+    Two sub-floor contracts sorting ahead of a visible one made the first page
+    come back empty beside a positive total_count, leaving the visible contract
+    reachable only by guessing an offset -- and offset-probing then revealed how
+    many suppressed contracts preceded it, which is the figure gating the count
+    exists to withhold. Both now carry the same HAVING.
+    """
+    rows = [
+        # 101 and 102 are sub-floor and sort first; 103 is visible.
+        *(_enrollment(f"l101-{n}", contract_id=101) for n in range(2)),
+        *(_enrollment(f"l102-{n}", contract_id=102) for n in range(2)),
+        *(_enrollment(f"l103-{n}", contract_id=103) for n in range(6)),
+    ]
+    conn = _db(rows)
+    query = learner_queries.needs_attention_aggregate(ORG_ID, None, _CUTOFF)
+    floor = settings.anonymization_floor
+    first_page = _run(conn, query.page, (*query.params, floor, 2, 0)).fetchall()
+    [(total,)] = _run(conn, query.count, (*query.params, floor)).fetchall()
+    conn.close()
+
+    # The visible contract is on the first page, not behind two hidden ones.
+    assert [row[0] for row in first_page] == [103]
+    assert total == 1
+    assert len(first_page) == total
 
 
 @pytest.mark.usefixtures("_fail_open")
@@ -295,13 +329,13 @@ def test_count_query_applies_the_primary_cohort_floor():
         ]
     )
     query = learner_queries.needs_attention_aggregate(ORG_ID, None, _CUTOFF)
-    page = _run(conn, query.page, (*query.params, 100, 0)).fetchall()
+    page = _run(conn, query.page, (*query.params, 5, 100, 0)).fetchall()
     [(total,)] = _run(conn, query.count, (*query.params, 5)).fetchall()
     conn.close()
 
-    # The page itself is unfiltered -- Python suppression drops the small row --
-    # but the count already excludes it.
-    assert [row[0] for row in page] == [101, 102]
+    # The sub-floor contract is gated out of both, so neither can disclose how
+    # many of them the org has.
+    assert [row[0] for row in page] == [101]
     assert total == 1
 
 
@@ -396,13 +430,13 @@ async def test_envelope_carries_the_learner_mvs_own_freshness(app):
 async def test_org_route_binds_the_org_and_the_contract_route_binds_both(app):
     pool = _FakePool()
     await _get(app, pool, path=ORG_PATH)
-    assert pool.page_call()[1] == (ORG_ID, 100, 0)
+    assert pool.page_call()[1] == (ORG_ID, settings.anonymization_floor, 100, 0)
     assert pool.count_call()[1] == (ORG_ID, settings.anonymization_floor)
     assert "contract_id = %s" not in pool.page_call()[0]
 
     pool = _FakePool()
     await _get(app, pool)
-    assert pool.page_call()[1] == (ORG_ID, CONTRACT_ID, 100, 0)
+    assert pool.page_call()[1] == (ORG_ID, CONTRACT_ID, settings.anonymization_floor, 100, 0)
     assert pool.count_call()[1] == (ORG_ID, CONTRACT_ID, settings.anonymization_floor)
     # The org predicate is never dropped when the contract one is added.
     assert "sso_organization_id = %s AND contract_id = %s" in pool.page_call()[0]
@@ -472,7 +506,7 @@ async def test_pagination_bounds_are_enforced(app):
     pool = _FakePool()
     response = await _get(app, pool, path=ORG_PATH, params={"limit": 10, "offset": 20})
     assert response.status_code == 200
-    assert pool.page_call()[1] == (ORG_ID, 10, 20)
+    assert pool.page_call()[1] == (ORG_ID, settings.anonymization_floor, 10, 20)
 
     response = await _get(app, _FakePool(), path=ORG_PATH, params={"limit": 0})
     assert response.status_code == 422
