@@ -64,6 +64,10 @@ def test_each_row_model_gets_its_own_response_schema(specs):
         "ContentEngagementDepth",
         "ContractMonthlyEngagementTrend",
         "ContractContentEngagementDepth",
+        # Not registered by either loop -- its two routes are written out in
+        # needs_attention.py -- but it parametrizes the same envelope, so a
+        # generated client must get its own typed row here too.
+        "ContractNeedsAttention",
     }
     assert envelopes == {f"OrgAnalyticsResponse_{model}_" for model in row_models}
     assert row_models <= set(schemas)
