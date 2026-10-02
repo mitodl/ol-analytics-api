@@ -48,10 +48,13 @@ router = APIRouter(
 # CompletionStatus plus `unknown` for the withheld rows. A docstring here would
 # render into the published spec as the parameter's description, so this stays a
 # comment: needing attention is deliberately not a member, because it cuts
-# across these four instead of partitioning them (a stale `in_progress` row is
-# both). Folding it in would break the "exactly one bucket per row" property
+# across these buckets instead of partitioning them (a stale `in_progress` row
+# is both). Folding it in would break the "exactly one bucket per row" property
 # CompletionStatusCounts rests on, so it is the separate `needs_attention`
-# filter below.
+# filter below. It is a subset of `not_started` and `in_progress` and never
+# selects the two terminal statuses, but that makes it no easier to express as
+# a status: it still has to compose with whichever of those two a caller asked
+# for.
 class CompletionStatusFilter(StrEnum):
     NOT_STARTED = "not_started"
     IN_PROGRESS = "in_progress"

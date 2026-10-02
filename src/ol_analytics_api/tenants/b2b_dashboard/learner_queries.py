@@ -98,14 +98,25 @@ def _date_literal(value: object) -> str:
 
 
 def _needs_attention(cutoff: datetime.date) -> str:
-    """A learner needs attention if they never started, or if their last
-    recorded activity was on or before ``cutoff`` (30 days before the
-    cluster's today).
+    """A learner needs attention if they never started, or if they are still
+    in progress and their last recorded activity was on or before ``cutoff``
+    (30 days before the cluster's today).
+
+    Staleness is scoped to ``in_progress`` because only an unfinished learner
+    can be quiet in a way a nudge would fix. ``passed`` and ``certified`` are
+    terminal: going quiet after earning a certificate is the expected end of
+    the course, not a lapse, and an unscoped rule got *more* certain the longer
+    ago someone finished. Against the local-dev fixture that misread 46% of all
+    flagged rows, so a manager filtering on the flag got a list dominated by
+    people who needed nothing. A ``passed`` learner awaiting a certificate is
+    excluded too: that is certificate-issuing ops work, not a learner to chase,
+    and this flag and the tile built on it are aimed at managers chasing
+    learners.
 
     ``<=`` is deliberate: "at least 30 days ago" includes the 30th day itself,
     and test_needs_attention_boundary_is_computed_from_real_rows pins that day.
 
-    A NULL last_active_on on a non-not_started row (grade but no tracked
+    A NULL last_active_on on an in_progress row (grade but no tracked
     activity) doesn't match the staleness branch -- there's no timestamp to
     judge quiet against. COALESCE settles that as "no" instead of NULL, which
     makes the expression two-valued. That matters because all three readers
@@ -113,6 +124,9 @@ def _needs_attention(cutoff: datetime.date) -> str:
     unguarded NULL in a WHERE clause is not FALSE, so such a row would fall out
     of ``needs_attention=true`` AND ``needs_attention=false`` alike, and
     project ``needs_attention: null`` on a row whose outcomes are shared.
+    Scoping staleness to ``in_progress`` does not remove that hazard -- a
+    terminal row short-circuits on ``FALSE AND NULL``, but an in_progress one
+    still evaluates ``TRUE AND NULL`` -- so the COALESCE stays.
 
     The cutoff is passed in rather than written as ``CURRENT_DATE()`` so that
     the page and count statements -- two round trips, and so two evaluations --
@@ -122,7 +136,8 @@ def _needs_attention(cutoff: datetime.date) -> str:
     return (
         "COALESCE("
         "completion_status = 'not_started'"
-        f" OR last_active_on <= {_date_literal(cutoff)}"
+        " OR (completion_status = 'in_progress'"
+        f" AND last_active_on <= {_date_literal(cutoff)})"
         ", FALSE)"
     )
 
