@@ -25,6 +25,10 @@ from ol_analytics_api.tenants.b2b_learner_records.errors import ErrorCode
 from ol_analytics_api.tenants.b2b_learner_records.models import CourseRun, Enrollment, Learner
 from tests.conftest import bearer, mint
 
+# What _outcomes_shared() renders with consent_fail_open off and on.
+_CLOSED = "COALESCE(outcomes_decision, FALSE)"
+_OPEN = "COALESCE(outcomes_decision, TRUE)"
+
 BASE = "/api/v1/learner-records"
 ORG_ID = "8f14e45f-ceea-467a-9c1b-2f4b9c0a3d21"
 OTHER_ORG_ID = "22222222-2222-2222-2222-222222222222"
@@ -263,10 +267,10 @@ async def test_outcome_columns_read_null_while_consent_is_absent(app, monkeypatc
         app, f"/organizations/{ORG_ID}/enrollments", _partner_token(ORG_ID), pool, monkeypatch
     )
     page_query, _ = pool.page_call()
-    assert "FALSE AS outcomes_shared" in page_query
-    assert "CASE WHEN FALSE THEN grade END AS grade" in page_query
+    assert f"{_CLOSED} AS outcomes_shared" in page_query
+    assert f"CASE WHEN {_CLOSED} THEN grade END AS grade" in page_query
     count_query, _ = pool.count_call()
-    assert "SUM(CASE WHEN FALSE THEN 0 ELSE 1 END) AS outcomes_withheld_count" in count_query
+    assert f"SUM(CASE WHEN {_CLOSED} THEN 0 ELSE 1 END) AS outcomes_withheld_count" in count_query
 
 
 async def test_consent_fail_open_discloses_outcomes(app, monkeypatch):
@@ -276,10 +280,10 @@ async def test_consent_fail_open_discloses_outcomes(app, monkeypatch):
         app, f"/organizations/{ORG_ID}/enrollments", _partner_token(ORG_ID), pool, monkeypatch
     )
     page_query, _ = pool.page_call()
-    assert "TRUE AS outcomes_shared" in page_query
-    assert "CASE WHEN TRUE THEN grade END AS grade" in page_query
+    assert f"{_OPEN} AS outcomes_shared" in page_query
+    assert f"CASE WHEN {_OPEN} THEN grade END AS grade" in page_query
     count_query, _ = pool.count_call()
-    assert "SUM(CASE WHEN TRUE THEN 0 ELSE 1 END) AS outcomes_withheld_count" in count_query
+    assert f"SUM(CASE WHEN {_OPEN} THEN 0 ELSE 1 END) AS outcomes_withheld_count" in count_query
 
 
 def test_consent_fails_closed_by_default():
@@ -488,7 +492,7 @@ async def test_enrollment_filters_are_bound_in_order(app, monkeypatch):
     query, params = pool.page_call()
     assert "enrollment_is_active = TRUE" in query
     assert "learner_id IN (%s, %s)" in query
-    assert "((FALSE AND completion_status IN (%s)) OR NOT FALSE)" in query
+    assert f"(({_CLOSED} AND completion_status IN (%s)) OR NOT {_CLOSED})" in query
     assert params == (
         ORG_ID,
         42,

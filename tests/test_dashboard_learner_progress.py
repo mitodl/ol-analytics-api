@@ -26,6 +26,10 @@ from ol_analytics_api.tenants.b2b_dashboard.learner_models import (
     LearnerProgressResponse,
 )
 
+# What _outcomes_shared() renders with consent_fail_open off and on.
+_CLOSED = "COALESCE(outcomes_decision, FALSE)"
+_OPEN = "COALESCE(outcomes_decision, TRUE)"
+
 ORG_ID = "11111111-1111-1111-1111-111111111111"
 CONTRACT_ID = 101
 PATH = f"/api/v1/analytics/organizations/{ORG_ID}/contracts/{CONTRACT_ID}/learner-progress"
@@ -183,8 +187,8 @@ async def test_consent_fails_closed_by_default(app):
     pool = _FakePool()
     await _get(app, pool)
     page_query, _ = pool.page_call()
-    assert "FALSE AS outcomes_shared" in page_query
-    assert "CASE WHEN FALSE THEN grade END AS grade" in page_query
+    assert f"{_CLOSED} AS outcomes_shared" in page_query
+    assert f"CASE WHEN {_CLOSED} THEN grade END AS grade" in page_query
 
 
 async def test_consent_fail_open_discloses_outcomes(app, monkeypatch):
@@ -194,8 +198,8 @@ async def test_consent_fail_open_discloses_outcomes(app, monkeypatch):
 
     [row] = response.json()["data"]
     assert (row["completion_status"], row["grade"]) == ("passed", 0.8)
-    assert "TRUE AS outcomes_shared" in pool.page_call()[0]
-    assert "SUM(CASE WHEN TRUE THEN 0 ELSE 1 END)" in pool.count_call()[0]
+    assert f"{_OPEN} AS outcomes_shared" in pool.page_call()[0]
+    assert f"SUM(CASE WHEN {_OPEN} THEN 0 ELSE 1 END)" in pool.count_call()[0]
 
 
 async def test_completion_status_counts_reported_from_the_count_query(app):
@@ -224,7 +228,7 @@ async def test_completion_status_counts_share_the_response_filters(app):
     assert count_query.count("WHERE") == 2
     for status in ("not_started", "in_progress", "passed", "certified"):
         assert (
-            f"SUM(CASE WHEN FALSE AND completion_status = '{status}' THEN 1 ELSE 0 END)"
+            f"SUM(CASE WHEN {_CLOSED} AND completion_status = '{status}' THEN 1 ELSE 0 END)"
             f" AS {status}" in count_query
         )
 
@@ -245,7 +249,7 @@ async def test_needs_attention_count_reported_from_the_count_query(app):
     # pins is the aggregate's shape and its consent gate, not the rule inside.
     # The rule is pinned by the sqlite tests below, which execute it.
     assert (
-        f"SUM(CASE WHEN FALSE AND ({_needs_attention_sql(_CUTOFF)})"
+        f"SUM(CASE WHEN {_CLOSED} AND ({_needs_attention_sql(_CUTOFF)})"
         " THEN 1 ELSE 0 END) AS needs_attention_count" in count_query
     )
 
@@ -395,9 +399,9 @@ def test_needs_attention_follows_current_status_not_history():
 
 
 def test_needs_attention_count_respects_the_consent_gate(monkeypatch):
-    # The same rows, but through the full SUM(CASE WHEN shared AND (...))
-    # aggregate, with consent fail-closed (the default, so every row's
-    # outcome -- including needs-attention -- is withheld) and fail-open.
+    # Runs the full SUM(CASE WHEN shared AND (...)) aggregate over rows that
+    # all need attention and differ only in the recorded consent decision. A
+    # recorded decision wins either way; consent_fail_open decides the rest.
     today = datetime.date.today()  # noqa: DTZ011 - the boundary is date-only
     cutoff = today - datetime.timedelta(days=30)
     needs_attention = _needs_attention_sql(cutoff)
@@ -405,30 +409,28 @@ def test_needs_attention_count_respects_the_consent_gate(monkeypatch):
     conn = sqlite3.connect(":memory:")
     conn.execute(
         "CREATE TABLE enrollment (certificate_is_revoked INTEGER, is_passing INTEGER,"
-        " grade_value REAL, last_active_on TEXT)"
+        " grade_value REAL, last_active_on TEXT, outcomes_decision INTEGER)"
     )
     conn.executemany(
-        "INSERT INTO enrollment VALUES (?, ?, ?, ?)",
-        [
-            (1, 0, None, None),  # never started
-            (1, 0, None, (today - datetime.timedelta(days=29)).isoformat()),  # active 29 days ago
-            (1, 0, None, cutoff.isoformat()),  # active exactly 30 days ago
-        ],
+        "INSERT INTO enrollment VALUES (1, 0, NULL, NULL, ?)",
+        [(None,), (None,), (1,), (0,)],  # two undecided, one consented, one declined
     )
 
-    def count(shared):
+    def count():
+        shared = learner_queries._outcomes_shared()  # noqa: SLF001
         query = (
-            f"SELECT SUM(CASE WHEN {shared} AND ({needs_attention}) THEN 1 ELSE 0 END) FROM"  # noqa: S608
+            f"SELECT SUM(CASE WHEN {shared} AND ({needs_attention}) THEN 1 ELSE 0 END),"  # noqa: S608
+            f" SUM(CASE WHEN {shared} THEN 0 ELSE 1 END) FROM"
             f" (SELECT *, {learner_queries._COMPLETION_STATUS} AS completion_status"  # noqa: SLF001
             " FROM enrollment)"
         )
-        return conn.execute(query).fetchone()[0]
+        return conn.execute(query).fetchone()
 
     assert type(settings)().consent_fail_open is False
-    assert count(learner_queries._outcomes_shared()) == 0  # noqa: SLF001
+    assert count() == (1, 3)  # only the recorded consent is disclosed
 
     monkeypatch.setattr(settings, "consent_fail_open", True)
-    assert count(learner_queries._outcomes_shared()) == 2  # noqa: SLF001
+    assert count() == (3, 1)  # the recorded decline stays withheld
     conn.close()
 
 
@@ -497,8 +499,8 @@ async def test_needs_attention_filter_is_consent_gated_in_both_directions(app):
         await _get(app, pool, params={"needs_attention": value})
         # From the production expression, not a copy: this pins the gate and
         # the negation, and the sqlite tests pin the rule they wrap.
-        expected = f"(FALSE AND {negate}({_needs_attention_sql(_CUTOFF)}))"
-        # The `FALSE AND` is the consent gate: a withheld row matches neither
+        expected = f"({_CLOSED} AND {negate}({_needs_attention_sql(_CUTOFF)}))"
+        # The COALESCE is the consent gate: a withheld row matches neither
         # direction, so the filter can't reveal the outcome it withholds.
         assert expected in pool.page_call()[0]
         assert expected in pool.count_call()[0]
@@ -533,8 +535,8 @@ async def test_needs_attention_row_field_reuses_the_count_expression(app):
     await _get(app, pool)
     page_query = pool.page_call()[0]
     assert (
-        f"CASE WHEN FALSE THEN {learner_queries._needs_attention(_CUTOFF)} END AS needs_attention"  # noqa: SLF001
-        in page_query
+        f"CASE WHEN {_CLOSED} THEN {learner_queries._needs_attention(_CUTOFF)} END"  # noqa: SLF001
+        " AS needs_attention" in page_query
     )
     assert learner_queries._needs_attention(_CUTOFF) in pool.count_call()[0]  # noqa: SLF001
 
@@ -656,7 +658,7 @@ async def test_status_filter_cannot_reveal_withheld_statuses(app):
     pool = _FakePool()
     await _get(app, pool, params={"completion_status": ["passed", "unknown"]})
     page_query, page_params = pool.page_call()
-    assert "((FALSE AND completion_status IN (%s)) OR NOT FALSE)" in page_query
+    assert f"(({_CLOSED} AND completion_status IN (%s)) OR NOT {_CLOSED})" in page_query
     assert "passed" in page_params
 
 
@@ -703,12 +705,12 @@ def test_every_outcome_column_is_consent_gated_in_the_query():
         learner_queries.ProgressFilters(organization_id=ORG_ID, contract_id=CONTRACT_ID), _CUTOFF
     )
     for name in ("completion_status", "is_passing", "grade", "letter_grade", "last_active_on"):
-        assert f"CASE WHEN FALSE THEN {name} END AS {name}" in query.page
+        assert f"CASE WHEN {_CLOSED} THEN {name} END AS {name}" in query.page
     # needs_attention is derived, not selected, so the same gate wraps an
     # expression rather than a column name.
     assert (
-        f"CASE WHEN FALSE THEN {learner_queries._needs_attention(_CUTOFF)} END AS needs_attention"  # noqa: SLF001
-        in query.page
+        f"CASE WHEN {_CLOSED} THEN {learner_queries._needs_attention(_CUTOFF)} END"  # noqa: SLF001
+        " AS needs_attention" in query.page
     )
 
 

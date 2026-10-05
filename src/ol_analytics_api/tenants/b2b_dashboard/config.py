@@ -69,9 +69,9 @@ class B2BDashboardSettings(BaseSettings):
     max_page_size: int = 1000
 
     # Whether a learner with no recorded consent decision shares their outcomes
-    # on the learner-progress endpoint. No consent field exists upstream yet, so
-    # today this decides every row. False fails closed, and is the default so a
-    # deployment that never sets it discloses nothing; deployments opt in
+    # on the learner-progress endpoint. A recorded decision always wins
+    # (learner_queries._outcomes_shared). False fails closed, and is the default
+    # so a deployment that never sets it discloses nothing; deployments opt in
     # through ol-infrastructure.
     consent_fail_open: bool = False
 

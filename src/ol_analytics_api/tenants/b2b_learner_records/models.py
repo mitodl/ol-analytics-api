@@ -9,9 +9,8 @@ outcome fields unless ``outcomes_shared`` is true. The queries already project
 NULL for them (see queries._outcomes_shared). This is a second check, so a
 query change that projects a raw outcome column still can't disclose it.
 
-The consent date isn't in the warehouse yet, so it is projected as NULL and
-ships null until the upstream model lands. It has no default, so the generated
-schema lists it as required and nullable, as the contract does.
+``outcomes_consent_on`` has no default, so the generated schema lists it as
+required and nullable, as the contract does.
 """
 
 from __future__ import annotations

@@ -33,9 +33,11 @@ Each query is two layers, as in the b2b_learner_records tenant. The inner
 ``completion_status``; the outer select applies consent, search and the status
 filter, so the page and its count always share one WHERE clause.
 
-Consent gates outcome fields, not the row. No consent field exists upstream
-yet, so ``consent_fail_open`` picks the literal that decides every row. When
-the field lands, ``_outcomes_shared`` becomes ``COALESCE(<field>, <literal>)``.
+Consent gates outcome fields, not the row. The MV carries the learner's
+recorded decision for the contract as a nullable ``outcomes_shared`` (null =
+none recorded), which ``records`` projects as ``outcomes_decision`` so the
+outer alias ``outcomes_shared`` only ever means the resolved answer. A recorded
+decision always wins; ``consent_fail_open`` covers learners with none.
 """
 
 from __future__ import annotations
@@ -220,7 +222,7 @@ class ProgressQuery:
 
 
 def _outcomes_shared() -> str:
-    return "TRUE" if settings.consent_fail_open else "FALSE"
+    return f"COALESCE(outcomes_decision, {'TRUE' if settings.consent_fail_open else 'FALSE'})"
 
 
 def _contains_pattern(term: str) -> str:
@@ -244,7 +246,8 @@ def learner_progress(filters: ProgressFilters, cutoff: datetime.date) -> Progres
         " courserun_readable_id, courserun_title, courserun_start_on, courserun_end_on,"
         " enrollment_created_on AS enrolled_on, enrollment_is_active, enrollment_mode,"
         f" {_COMPLETION_STATUS} AS completion_status, is_passing, grade_value AS grade,"
-        " letter_grade, certificate_issued_on, certificate_is_revoked, last_active_on"
+        " letter_grade, certificate_issued_on, certificate_is_revoked, last_active_on,"
+        " outcomes_shared AS outcomes_decision"
         f" FROM {table} WHERE {' AND '.join(scope)}"
     )
 

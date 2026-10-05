@@ -13,15 +13,18 @@ cursor). The outer select applies consent, the cross-collection filters,
 ordering and paging, so the page and its count always share one WHERE clause.
 
 Consent is enforced here. ``_outcomes_shared()`` returns the SQL expression
-deciding whether a record's outcomes may be disclosed. No consent field exists
-upstream yet, so it is a literal chosen by ``consent_fail_open``: FALSE by
-default, which fails closed and nulls every outcome column, or TRUE where a
-deployment opts to fail open. When the field lands, the inner selects project
-it and this becomes ``COALESCE(<consent column>, <that literal>)``, so a
-recorded decision always wins and the setting only covers learners with none.
+deciding whether a record's outcomes may be disclosed. The MVs carry the
+learner's recorded decision as a nullable ``outcomes_shared`` (null = none
+recorded, ol-data-platform#2785), which the inner selects project as
+``outcomes_decision``; the outer alias ``outcomes_shared`` is the resolved
+answer, and a WHERE clause must never see that name mean both. The expression
+is ``COALESCE(outcomes_decision, <literal>)``, the literal chosen by
+``consent_fail_open``: a recorded decision always wins, and the setting only
+covers learners with none (FALSE by default, which fails closed).
 
-The consent date isn't in the warehouse yet, so the inner selects project it
-as NULL; filling it in touches the inner select only.
+Consent is recorded per contract. An enrollment carries its own contract's
+decision. A learner rollup resolves the contracts it counts outcomes from with
+``_ROLLUP_DECISION``, the rule ``mv_b2b_learner`` uses.
 """
 
 from __future__ import annotations
@@ -40,7 +43,16 @@ CONTRACT_COURSERUN_MV = "mv_b2b_contract_courserun"
 
 
 def _outcomes_shared() -> str:
-    return "TRUE" if settings.consent_fail_open else "FALSE"
+    return f"COALESCE(outcomes_decision, {'TRUE' if settings.consent_fail_open else 'FALSE'})"
+
+
+# Any recorded decline withholds, then any contract with no decision leaves it
+# undecided, and only a consent on every contract shares.
+_ROLLUP_DECISION = (
+    "CASE WHEN SUM(CASE WHEN outcomes_shared = FALSE THEN 1 ELSE 0 END) > 0 THEN FALSE"
+    " WHEN SUM(CASE WHEN outcomes_shared IS NULL THEN 1 ELSE 0 END) > 0 THEN NULL"
+    " ELSE TRUE END"
+)
 
 
 # An unrevoked certificate is certified without requiring is_passing: production
@@ -77,7 +89,6 @@ _LEARNER_OUTCOMES = (
     "courses_certified",
     "certificates_earned",
 )
-_LEARNER_PENDING = " NULL AS outcomes_consent_on,"
 
 _ENROLLMENT_COLUMNS = (
     "learner_id",
@@ -261,7 +272,7 @@ def enrollments(schema: str, filters: RecordFilters) -> RecordQuery:
         f" enrollment_status, {_COMPLETION_STATUS} AS completion_status, is_passing,"
         " grade_value AS grade, letter_grade, certificate_issued_on, certificate_is_revoked,"
         " last_active_on, days_active, videos_played AS videos_watched, problems_attempted,"
-        " chatbot_interactions, record_updated_on"
+        " chatbot_interactions, outcomes_shared AS outcomes_decision, record_updated_on"
         f" FROM {table} WHERE {' AND '.join(scope)}"
     )
 
@@ -316,7 +327,8 @@ def learners(schema: str, filters: RecordFilters) -> RecordQuery:
             " is_organization_manager, first_enrolled_on, last_enrolled_on, courses_enrolled,"
             " courses_passed, courses_certified,"
             " courses_certified + program_certificates_earned AS certificates_earned,"
-            f"{_LEARNER_PENDING} last_active_on, courses_in_progress, record_updated_on"
+            " outcomes_shared AS outcomes_decision, outcomes_consent_on,"
+            " last_active_on, courses_in_progress, record_updated_on"
             f" FROM {schema}.{LEARNER_MV} WHERE sso_organization_id = %s"
         )
         record_params: list[Any] = [str(filters.organization_id)]
@@ -370,6 +382,10 @@ def _recomputed_learners(schema: str, filters: RecordFilters) -> tuple[str, list
         join = "RIGHT JOIN"
         program_certificates = "0"
         record_updated_on = "e.record_updated_on"
+        # Outcomes come from this contract alone, so its decision is the one
+        # that applies, as on the contract's enrollment records.
+        decision = "e.outcomes_decision"
+        consent_on = "CASE WHEN e.outcomes_decision THEN e.outcomes_consent_on END"
     else:
         # include_inactive: every roster member, plus anyone enrolled at all.
         join = "FULL OUTER JOIN"
@@ -378,6 +394,15 @@ def _recomputed_learners(schema: str, filters: RecordFilters) -> tuple[str, list
             "CASE WHEN l.record_updated_on IS NULL THEN e.record_updated_on"
             " WHEN e.record_updated_on IS NULL THEN l.record_updated_on"
             " ELSE GREATEST(l.record_updated_on, e.record_updated_on) END"
+        )
+        # mv_b2b_learner resolves every contract of the organization the learner
+        # has a membership or any enrollment under, which is this rollup's scope.
+        decision = (
+            "CASE WHEN l.user_pk IS NOT NULL THEN l.outcomes_shared ELSE e.outcomes_decision END"
+        )
+        consent_on = (
+            "CASE WHEN l.user_pk IS NOT NULL THEN l.outcomes_consent_on"
+            " WHEN e.outcomes_decision THEN e.outcomes_consent_on END"
         )
 
     enrollment_rollup = (
@@ -393,6 +418,8 @@ def _recomputed_learners(schema: str, filters: RecordFilters) -> tuple[str, list
         " AS courses_certified,"
         f" MAX({active_on}) AS last_active_on,"
         f" COUNT(DISTINCT CASE WHEN {in_progress} THEN courserun_pk END) AS courses_in_progress,"
+        f" {_ROLLUP_DECISION} AS outcomes_decision,"
+        " MAX(outcomes_consent_on) AS outcomes_consent_on,"
         " MAX(record_updated_on) AS record_updated_on"
         f" FROM {schema}.{ENROLLMENT_MV} WHERE {' AND '.join(scope)} GROUP BY user_pk"
     )
@@ -420,7 +447,8 @@ def _recomputed_learners(schema: str, filters: RecordFilters) -> tuple[str, list
         " COALESCE(e.courses_passed, 0) AS courses_passed,"
         " COALESCE(e.courses_certified, 0) AS courses_certified,"
         f" COALESCE(e.courses_certified, 0) + {program_certificates} AS certificates_earned,"
-        f"{_LEARNER_PENDING} e.last_active_on,"
+        f" {decision} AS outcomes_decision, {consent_on} AS outcomes_consent_on,"
+        " e.last_active_on,"
         " COALESCE(e.courses_in_progress, 0) AS courses_in_progress,"
         f" {record_updated_on} AS record_updated_on"
         f" FROM (SELECT * FROM {schema}.{LEARNER_MV} WHERE sso_organization_id = %s) l"
