@@ -52,10 +52,12 @@ both the aggregates and the records could subtract one from the other to learn
 a declining learner's outcome. See design §4.
 
 **Consent enforcement fails closed.** No recorded opt-in means no outcome data.
-Because suppression is per-field rather than per-record, the service can ship
-before the consent field exists — every record simply reads `outcomes_shared:
-false` with outcomes null, which is a degraded response rather than an empty
-one, so partner integration can proceed against real records. One upstream
+Suppression is per-field rather than per-record, so a learner with no recorded
+decision reads `outcomes_shared: false` with outcomes null, which is a degraded
+response rather than an empty one. The decision is recorded per contract in
+MITx Online and reaches the service through the learner-records MVs
+(ol-data-platform#2785); a recorded decision always wins over the deployment's
+default. One upstream
 property is a hard requirement and cheap only if specified now: *withdrawal must
 be a retained state change, not a deleted row*. A deleted consent row is
 indistinguishable from one never granted and does not move the record's change
@@ -230,8 +232,9 @@ Options: an end-date claim on the client, or a warehouse check against
 ## Dependencies
 
 Degrading, not blocking — the service ships without these and fills in as they
-land: the learner-consent field, without which every record reads
-`outcomes_shared: false`; a per-learner activity model, without which "last
+land: learners recording a consent decision (the field landed in
+ol-data-platform#2785), without which a record reads `outcomes_shared: false`;
+a per-learner activity model, without which "last
 active" and the engagement counters are null (wired in tenant-side, gated on
 ol-data-platform#2693 merging and the MVs rebuilding with the new columns);
 and learner removal on `mv_b2b_learner`, without which `is_current` is always

@@ -144,12 +144,16 @@ class Learner(BaseModel):
     )
     outcomes_shared: bool = Field(
         description=(
-            "Whether this learner has opted in to sharing their course status. False means "
-            "every field below is null."
+            "Whether this learner's course status is shared. A recorded consent decision "
+            "always decides it; with none recorded, the deployment's default does. False "
+            "means every field below is null."
         )
     )
     outcomes_consent_on: UtcDatetime | None = Field(
-        description="When consent was recorded. Null when outcomes_shared is false."
+        description=(
+            "When consent was recorded. Null when outcomes_shared is false, and when it is "
+            "true with no recorded decision."
+        )
     )
     last_active_on: datetime.date | None = Field(
         description=(
@@ -232,8 +236,9 @@ class Enrollment(BaseModel):
     enrollment_status: str | None = Field(description="Deactivation reason where one was recorded.")
     outcomes_shared: bool = Field(
         description=(
-            "Whether the learner has opted in to sharing their course status. False means "
-            "every field below is null."
+            "Whether the learner's course status is shared for this enrollment's contract. A "
+            "recorded consent decision always decides it; with none recorded, the "
+            "deployment's default does. False means every field below is null."
         )
     )
     completion_status: CompletionStatus | None = Field(

@@ -511,8 +511,9 @@ components:
         outcomes_shared:
           type: boolean
           title: Outcomes Shared
-          description: Whether the learner has opted in to sharing their course status.
-            False means every field below is null.
+          description: Whether the learner's course status is shared for this enrollment's
+            contract. A recorded consent decision always decides it; with none recorded,
+            the deployment's default does. False means every field below is null.
         completion_status:
           anyOf:
           - $ref: '#/components/schemas/CompletionStatus'
@@ -691,15 +692,17 @@ components:
         outcomes_shared:
           type: boolean
           title: Outcomes Shared
-          description: Whether this learner has opted in to sharing their course status.
-            False means every field below is null.
+          description: Whether this learner's course status is shared. A recorded
+            consent decision always decides it; with none recorded, the deployment's
+            default does. False means every field below is null.
         outcomes_consent_on:
           anyOf:
           - type: string
             format: date-time
           - type: 'null'
           title: Outcomes Consent On
-          description: When consent was recorded. Null when outcomes_shared is false.
+          description: When consent was recorded. Null when outcomes_shared is false,
+            and when it is true with no recorded decision.
         last_active_on:
           anyOf:
           - type: string

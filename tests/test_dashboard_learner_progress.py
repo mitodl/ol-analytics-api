@@ -740,3 +740,84 @@ def test_every_field_has_a_manager_facing_description(model):
         assert field.description, f"{name} has no description"
         named = set(re.findall(r"\b[a-z]+(?:_[a-z]+)+\b", field.description)) & field_names
         assert not named, f"{name}'s description names {named}"
+
+
+_ENROLLMENT_MV_COLUMNS = (
+    "user_pk",
+    "courserun_pk",
+    "user_global_id",
+    "email",
+    "full_name",
+    "sso_organization_id",
+    "contract_id",
+    "courserun_readable_id",
+    "courserun_title",
+    "courserun_start_on",
+    "courserun_end_on",
+    "enrollment_created_on",
+    "enrollment_is_active",
+    "enrollment_mode",
+    "certificate_is_revoked",
+    "is_passing",
+    "grade_value",
+    "letter_grade",
+    "certificate_issued_on",
+    "last_active_on",
+    "outcomes_shared",
+)
+
+
+@pytest.mark.parametrize(
+    ("fail_open", "disclosed"),
+    [(False, {"consented"}), (True, {"consented", "undecided"})],
+)
+def test_recorded_decision_is_read_from_the_view(monkeypatch, fail_open, disclosed):
+    # Runs learner_progress() itself against an MV-shaped table, so the inner
+    # select has to carry the view's outcomes_shared through: three learners
+    # who all passed and differ only in the decision recorded for the contract.
+    monkeypatch.setattr(settings, "consent_fail_open", fail_open)
+    schema = settings.learner_records_schema
+    table = f"{schema}.{learner_queries.ENROLLMENT_MV}"
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(f"ATTACH ':memory:' AS {schema}")
+    conn.execute(f"CREATE TABLE {table} ({', '.join(_ENROLLMENT_MV_COLUMNS)})")
+    for name, decision in (("consented", True), ("declined", False), ("undecided", None)):
+        row = {
+            "user_pk": name,
+            "courserun_pk": "run",
+            "user_global_id": name,
+            "sso_organization_id": ORG_ID,
+            "contract_id": CONTRACT_ID,
+            "enrollment_is_active": True,
+            "is_passing": True,
+            "grade_value": 0.8,
+            "outcomes_shared": decision,
+        }
+        conn.execute(
+            f"INSERT INTO {table} VALUES ({', '.join('?' * len(_ENROLLMENT_MV_COLUMNS))})",  # noqa: S608
+            [row.get(column) for column in _ENROLLMENT_MV_COLUMNS],
+        )
+
+    def run(**filters):
+        query = learner_queries.learner_progress(
+            learner_queries.ProgressFilters(
+                organization_id=ORG_ID, contract_id=CONTRACT_ID, **filters
+            ),
+            _CUTOFF,
+        )
+        rows = conn.execute(query.page.replace("%s", "?"), (*query.params, 100, 0)).fetchall()
+        count = conn.execute(query.count.replace("%s", "?"), query.params).fetchone()
+        return {row["learner_id"]: row for row in rows}, count
+
+    rows, count = run()
+    assert {name for name, row in rows.items() if row["grade"] is not None} == disclosed
+    assert {name for name, row in rows.items() if row["needs_attention"] is not None} == disclosed
+    assert count["outcomes_withheld_count"] == 3 - len(disclosed)
+    assert count["passed"] == len(disclosed)
+
+    # Neither filter may say what a withheld row is withholding.
+    assert set(run(completion_statuses=("passed",))[0]) == disclosed
+    assert set(run(completion_statuses=("unknown",))[0]) == set(rows) - disclosed
+    assert set(run(needs_attention=False)[0]) == disclosed
+    conn.close()

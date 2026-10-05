@@ -261,7 +261,7 @@ async def test_learners_envelope_withholds_outcomes_and_counts_them(app, monkeyp
     assert set(learner) == set(Learner.model_fields)
 
 
-async def test_outcome_columns_read_null_while_consent_is_absent(app, monkeypatch):
+async def test_outcome_columns_are_gated_on_the_consent_expression(app, monkeypatch):
     pool = _FakePool()
     await _get(
         app, f"/organizations/{ORG_ID}/enrollments", _partner_token(ORG_ID), pool, monkeypatch

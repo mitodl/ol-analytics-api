@@ -90,14 +90,12 @@ derivation, so the spec adds a derived `completion_status` enum
 (`not_started | in_progress | passed | certified`) as the single field to read,
 with the raw signals alongside.
 
-**6. Learner consent does not exist yet, and it gates the outcome columns.** The
-only consent-shaped fields in the warehouse today are email-marketing opt-in
-(`irx__*__email_opt_in`), Emeritus/Global Alumni GDPR consent dates, and
-Keycloak's OAuth client-consent representations. None of them is a
-learner-to-organization data-sharing consent. It needs to resolve per
-`(user_fk, organization_fk)` — either a column on `bridge_user_organization` or
-a fact keyed the same way — so the learner-grain models can join it directly.
-See §4.
+**6. Learner consent gates the outcome columns.** MITx Online records it per
+(learner, contract) on `b2b_userb2bcontract`, and it reaches the warehouse as
+`bridge_user_contract` (ol-data-platform#2785). `mv_b2b_learner_enrollment`
+joins it on the enrollment's contract. `mv_b2b_learner` resolves it across the
+organization's contracts: any decline withholds, then any contract with no
+decision leaves it null, and only a consent on every one shares. See §4.
 
 **7. MITx Online only.** Every `b2b_analytics` MV filters
 `org.platform = 'mitxonline'`. xPro B2B is order-based
@@ -284,10 +282,11 @@ null; identity, contract, course run and enrollment facts are unaffected. The
 envelope's `outcomes_withheld_count` reports how many records in the result are
 in that state.
 
-The field does not exist upstream yet. Enforcement fails closed, so until it
-ships every record reads `outcomes_shared: false` and the outcome columns are
-uniformly null. That is a degraded response rather than an empty one, which
-means partner integration can proceed against real records.
+A recorded decision always decides the record. With none recorded, the
+deployment's `consent_fail_open` setting does; it defaults to fail closed, so
+the record reads `outcomes_shared: false` and its outcome columns are null.
+That is a degraded response rather than an empty one, which means partner
+integration can proceed against real records.
 
 ### Why suppression rather than exclusion
 

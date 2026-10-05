@@ -23,8 +23,9 @@ is ``COALESCE(outcomes_decision, <literal>)``, the literal chosen by
 covers learners with none (FALSE by default, which fails closed).
 
 Consent is recorded per contract. An enrollment carries its own contract's
-decision. A learner rollup resolves the contracts it counts outcomes from with
-``_ROLLUP_DECISION``, the rule ``mv_b2b_learner`` uses.
+decision. A learner rollup takes the decision for the contracts it counts
+outcomes from: ``mv_b2b_learner``'s organization-grain one, or under
+``contract_id`` that contract's alone (see ``_recomputed_learners``).
 """
 
 from __future__ import annotations
@@ -397,11 +398,16 @@ def _recomputed_learners(schema: str, filters: RecordFilters) -> tuple[str, list
         )
         # mv_b2b_learner resolves every contract of the organization the learner
         # has a membership or any enrollment under, which is this rollup's scope.
+        # A decline in e wins over it: the two MVs refresh one after the other,
+        # so e can carry a decline l hasn't caught up with, and the counts here
+        # come from e.
         decision = (
-            "CASE WHEN l.user_pk IS NOT NULL THEN l.outcomes_shared ELSE e.outcomes_decision END"
+            "CASE WHEN e.outcomes_decision = FALSE THEN FALSE"
+            " WHEN l.user_pk IS NOT NULL THEN l.outcomes_shared ELSE e.outcomes_decision END"
         )
         consent_on = (
-            "CASE WHEN l.user_pk IS NOT NULL THEN l.outcomes_consent_on"
+            "CASE WHEN e.outcomes_decision = FALSE THEN NULL"
+            " WHEN l.user_pk IS NOT NULL THEN l.outcomes_consent_on"
             " WHEN e.outcomes_decision THEN e.outcomes_consent_on END"
         )
 

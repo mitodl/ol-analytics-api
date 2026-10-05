@@ -80,13 +80,54 @@ def _insert(conn, mv, columns, **values):
     )
 
 
+def _enroll(conn, name, contract_id, *, decision, consent_on=None):
+    _insert(
+        conn,
+        queries.ENROLLMENT_MV,
+        _ENROLLMENT_MV_COLUMNS,
+        user_pk=name,
+        user_global_id=name,
+        sso_organization_id=ORG_ID,
+        contract_id=contract_id,
+        courserun_pk=f"run-{contract_id}",
+        courserun_readable_id=f"run-{contract_id}",
+        enrollment_is_active=True,
+        is_passing=True,
+        grade_value=0.8,
+        outcomes_shared=decision,
+        outcomes_consent_on=consent_on,
+    )
+
+
+def _roster(conn, name, *, decision, consent_on=None):
+    _insert(
+        conn,
+        queries.LEARNER_MV,
+        _LEARNER_MV_COLUMNS,
+        user_pk=name,
+        user_global_id=name,
+        sso_organization_id=ORG_ID,
+        membership_source="both",
+        is_organization_manager=False,
+        courses_enrolled=1,
+        courses_passed=1,
+        courses_certified=0,
+        program_certificates_earned=0,
+        courses_in_progress=0,
+        outcomes_shared=decision,
+        outcomes_consent_on=consent_on,
+    )
+
+
 @pytest.fixture
 def conn():
-    """Both learner MVs, holding three learners who each pass one run under
-    contract 42: ``consented`` said yes there, ``declined`` said no and
-    ``undecided`` has no decision. ``consented`` also passed a run under
-    contract 43 with no decision, so their organization-grain decision in
-    ``mv_b2b_learner`` is null.
+    """Both learner MVs. Every learner passes each run they are enrolled in.
+
+    Under contract 42, ``all_in`` said yes, ``declined`` said no and
+    ``undecided`` has no decision. ``consented`` and ``mixed`` said yes under
+    42 and also hold a run under 43, where ``consented`` has no decision and
+    ``mixed`` said no. The ``mv_b2b_learner`` rows carry the decision that
+    view would resolve across both contracts.
     """
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
@@ -97,46 +138,18 @@ def conn():
     )
     conn.execute(f"CREATE TABLE {SCHEMA}.{queries.LEARNER_MV} ({', '.join(_LEARNER_MV_COLUMNS)})")
 
-    enrollments = (
-        ("consented", 42, True, CONSENT_ON),
-        ("consented", 43, None, None),
-        ("declined", 42, False, None),
-        ("undecided", 42, None, None),
-    )
-    for name, contract_id, decision, consent_on in enrollments:
-        _insert(
-            conn,
-            queries.ENROLLMENT_MV,
-            _ENROLLMENT_MV_COLUMNS,
-            user_pk=name,
-            user_global_id=name,
-            sso_organization_id=ORG_ID,
-            contract_id=contract_id,
-            courserun_pk=f"run-{contract_id}",
-            courserun_readable_id=f"run-{contract_id}",
-            enrollment_is_active=True,
-            is_passing=True,
-            grade_value=0.8,
-            outcomes_shared=decision,
-            outcomes_consent_on=consent_on,
-        )
-    for name, decision in (("consented", None), ("declined", False), ("undecided", None)):
-        _insert(
-            conn,
-            queries.LEARNER_MV,
-            _LEARNER_MV_COLUMNS,
-            user_pk=name,
-            user_global_id=name,
-            sso_organization_id=ORG_ID,
-            membership_source="both",
-            is_organization_manager=False,
-            courses_enrolled=1,
-            courses_passed=1,
-            courses_certified=0,
-            program_certificates_earned=0,
-            courses_in_progress=0,
-            outcomes_shared=decision,
-        )
+    _enroll(conn, "all_in", 42, decision=True, consent_on=CONSENT_ON)
+    _enroll(conn, "declined", 42, decision=False)
+    _enroll(conn, "undecided", 42, decision=None)
+    _enroll(conn, "consented", 42, decision=True, consent_on=CONSENT_ON)
+    _enroll(conn, "consented", 43, decision=None)
+    _enroll(conn, "mixed", 42, decision=True, consent_on=CONSENT_ON)
+    _enroll(conn, "mixed", 43, decision=False)
+    _roster(conn, "all_in", decision=True, consent_on=CONSENT_ON)
+    _roster(conn, "declined", decision=False)
+    _roster(conn, "undecided", decision=None)
+    _roster(conn, "consented", decision=None)
+    _roster(conn, "mixed", decision=False)
     yield conn
     conn.close()
 
@@ -160,72 +173,108 @@ def _learners(conn, **filters):
     return {row["learner_id"]: row for row in rows}, count["outcomes_withheld_count"]
 
 
+def _disclosed(rows, field):
+    return {key for key, row in rows.items() if row[field] is not None}
+
+
 def test_enrollments_disclose_only_recorded_consent_when_failing_closed(conn):
     assert settings.consent_fail_open is False
     rows, withheld = _enrollments(conn)
-    assert {key: row["grade"] for key, row in rows.items()} == {
-        ("consented", 42): 0.8,
-        ("consented", 43): None,
-        ("declined", 42): None,
-        ("undecided", 42): None,
-    }
-    assert withheld == 3
+    assert len(rows) == 7
+    assert _disclosed(rows, "grade") == {("all_in", 42), ("consented", 42), ("mixed", 42)}
+    assert withheld == 4
 
 
 def test_enrollments_withhold_a_recorded_decline_when_failing_open(conn, monkeypatch):
     monkeypatch.setattr(settings, "consent_fail_open", True)
     rows, withheld = _enrollments(conn)
-    assert {key: bool(row["outcomes_shared"]) for key, row in rows.items()} == {
-        ("consented", 42): True,
-        ("consented", 43): True,
-        ("declined", 42): False,
-        ("undecided", 42): True,
-    }
-    assert rows["declined", 42]["grade"] is None
-    assert withheld == 1
+    declines = {("declined", 42), ("mixed", 43)}
+    assert {key for key, row in rows.items() if not row["outcomes_shared"]} == declines
+    assert _disclosed(rows, "grade") == set(rows) - declines
+    assert withheld == 2
 
 
 def test_status_filter_follows_the_recorded_decision(conn, monkeypatch):
     monkeypatch.setattr(settings, "consent_fail_open", True)
-    # The decliner passed too, and `passed` must not say so.
+    # The decliners passed too, and `passed` must not say so.
     passed, _ = _enrollments(conn, completion_statuses=("passed",))
-    assert ("declined", 42) not in passed
+    assert not {("declined", 42), ("mixed", 43)} & set(passed)
     unknown, _ = _enrollments(conn, completion_statuses=("unknown",))
-    assert set(unknown) == {("declined", 42)}
+    assert set(unknown) == {("declined", 42), ("mixed", 43)}
 
 
 @pytest.mark.parametrize("include_inactive", [False, True])
 def test_learners_take_the_organization_decision(conn, monkeypatch, include_inactive):
     # The precomputed rollup and the include_inactive recompute both span every
-    # contract, so they take mv_b2b_learner's decision, not one contract's.
+    # contract, so they take mv_b2b_learner's decision, not one contract's:
+    # `consented` and `mixed` said yes under 42 and are still not shared.
     rows, withheld = _learners(conn, include_inactive=include_inactive)
-    assert {name: row["courses_passed"] for name, row in rows.items()} == {
-        "consented": None,
-        "declined": None,
-        "undecided": None,
-    }
-    assert withheld == 3
+    assert _disclosed(rows, "courses_passed") == {"all_in"}
+    assert rows["all_in"]["outcomes_consent_on"] == CONSENT_ON
+    assert withheld == 4
 
     monkeypatch.setattr(settings, "consent_fail_open", True)
     rows, withheld = _learners(conn, include_inactive=include_inactive)
-    assert rows["declined"]["courses_passed"] is None
-    assert rows["consented"]["courses_passed"] is not None
-    assert rows["undecided"]["courses_passed"] is not None
-    assert withheld == 1
+    assert _disclosed(rows, "courses_passed") == {"all_in", "consented", "undecided"}
+    # Shared by the deployment's default, not by a recorded consent.
+    assert rows["consented"]["outcomes_consent_on"] is None
+    assert withheld == 2
 
 
-def test_contract_scoped_learners_take_that_contracts_decision(conn):
+def test_contract_scoped_learners_take_that_contracts_decision(conn, monkeypatch):
     assert settings.consent_fail_open is False
     rows, withheld = _learners(conn, contract_id=42)
-    # `consented` has no decision under contract 43, which this request leaves out.
-    assert rows["consented"]["courses_passed"] == 1
-    assert rows["consented"]["outcomes_consent_on"] == CONSENT_ON
-    assert rows["declined"]["courses_passed"] is None
-    assert rows["undecided"]["courses_passed"] is None
+    # 43 is out of scope, so what `consented` and `mixed` left there doesn't apply.
+    assert _disclosed(rows, "courses_passed") == {"all_in", "consented", "mixed"}
+    assert rows["mixed"]["outcomes_consent_on"] == CONSENT_ON
     assert withheld == 2
 
     rows, withheld = _learners(conn, contract_id=43)
-    assert set(rows) == {"consented"}
-    assert rows["consented"]["courses_passed"] is None
-    assert rows["consented"]["outcomes_consent_on"] is None
+    assert set(rows) == {"consented", "mixed"}
+    assert _disclosed(rows, "courses_passed") == set()
+    assert _disclosed(rows, "outcomes_consent_on") == set()
+    assert withheld == 2
+
+    monkeypatch.setattr(settings, "consent_fail_open", True)
+    rows, withheld = _learners(conn, contract_id=42)
+    assert _disclosed(rows, "courses_passed") == set(rows) - {"declined"}
     assert withheld == 1
+    rows, withheld = _learners(conn, contract_id=43)
+    assert _disclosed(rows, "courses_passed") == {"consented"}
+    assert withheld == 1
+
+
+def test_recomputed_rollup_resolves_learners_missing_from_the_learner_view(conn, monkeypatch):
+    # With no mv_b2b_learner row the decision comes from the enrollments, by
+    # that view's rule: any decline withholds, then any contract with no
+    # decision leaves it undecided, and only a consent on every one shares.
+    for name, other_contract in (("yes_no", False), ("yes_unasked", None), ("yes_yes", True)):
+        _enroll(conn, name, 42, decision=True, consent_on=CONSENT_ON)
+        _enroll(
+            conn,
+            name,
+            43,
+            decision=other_contract,
+            consent_on=CONSENT_ON if other_contract else None,
+        )
+    added = {"yes_no", "yes_unasked", "yes_yes"}
+
+    rows, _ = _learners(conn, include_inactive=True)
+    assert _disclosed(rows, "courses_passed") & added == {"yes_yes"}
+    assert _disclosed(rows, "outcomes_consent_on") & added == {"yes_yes"}
+
+    monkeypatch.setattr(settings, "consent_fail_open", True)
+    rows, _ = _learners(conn, include_inactive=True)
+    assert _disclosed(rows, "courses_passed") & added == {"yes_unasked", "yes_yes"}
+    assert _disclosed(rows, "outcomes_consent_on") & added == {"yes_yes"}
+
+
+def test_a_decline_the_learner_view_has_not_caught_up_with_still_withholds(conn):
+    # The two MVs refresh one after the other. The include_inactive counts come
+    # from the enrollment view, so its decline wins over a stale consent.
+    _enroll(conn, "stale", 42, decision=False)
+    _roster(conn, "stale", decision=True, consent_on=CONSENT_ON)
+    rows, _ = _learners(conn, include_inactive=True)
+    assert rows["stale"]["outcomes_shared"] == 0
+    assert rows["stale"]["courses_passed"] is None
+    assert rows["stale"]["outcomes_consent_on"] is None

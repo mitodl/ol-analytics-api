@@ -19,8 +19,8 @@ info:
       activity fields are populated only where the learner has opted in to
       sharing their course status. `outcomes_shared` says which. Identity and
       enrollment facts are not consent-gated — the organization assigned the
-      seat. Enforcement fails closed, so every record reads
-      `outcomes_shared: false` until the upstream consent field ships.
+      seat. A recorded decision always decides it. With none recorded,
+      enforcement fails closed and the record reads `outcomes_shared: false`.
     * **The same schemas are delivered two ways.** This REST API, and a
       per-organization bulk export written to S3 on each refresh. The export
       carries the same records under the same field names. It is readable
@@ -439,8 +439,8 @@ components:
       description: >-
         Return only records changed at or after this instant. Pass the previous
         sync's `as_of`. A record's change time is the latest of its enrollment,
-        grade, certificate, organization membership and (once it exists)
-        consent changes. Activity doesn't move it. Deactivated enrollments and
+        grade, certificate, organization membership and consent changes.
+        Activity doesn't move it. Deactivated enrollments and
         learners no longer in the organization are changes too, but
         `include_inactive` still filters them, so pass
         `include_inactive=true` when syncing.
@@ -586,12 +586,12 @@ components:
           description: >-
             Whether this learner has opted in to sharing their course status.
             False means every field below is null.
-          x-data-readiness: pending-model
+          x-data-readiness: available
         outcomes_consent_on:
           type: [string, 'null']
           format: date-time
           description: When consent was recorded. Null when `outcomes_shared` is false.
-          x-data-readiness: pending-model
+          x-data-readiness: available
         last_active_on:
           type: [string, 'null']
           format: date
@@ -723,7 +723,7 @@ components:
         outcomes_shared:
           type: boolean
           description: Whether the learner has opted in to sharing their course status. False means every field below is null.
-          x-data-readiness: pending-model
+          x-data-readiness: available
         completion_status:
           oneOf:
             - $ref: '#/components/schemas/CompletionStatus'
