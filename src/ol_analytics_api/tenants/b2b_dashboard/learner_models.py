@@ -20,12 +20,29 @@ developer detail lives here instead:
   everything in ``_OUTCOME_FIELDS`` is.
 - ``completion_status``: an unrevoked certificate is ``certified``. A revoked
   certificate doesn't count, and the status then follows the grade, so it can
-  read ``passed``, ``in_progress`` or ``not_started``. Until learner-grain
-  activity data lands, ``in_progress`` means a nonzero grade.
-- ``last_active_on`` is NULL for every row until activity data lands, whatever
-  ``outcomes_shared`` says.
+  read ``passed``, ``in_progress`` or ``not_started``. ``in_progress`` means a
+  nonzero grade or any tracked activity.
+- ``last_active_on`` is NULL, whatever ``outcomes_shared`` says, until the
+  learner has any tracked activity.
 - ``outcomes_withheld_count`` counts the rows in ``total_count`` whose
-  ``outcomes_shared`` is false.
+  ``outcomes_shared`` is false. ``completion_status_counts`` buckets the rest
+  by status; the two together add up to ``total_count``, since
+  ``CompletionStatus`` is exhaustive and its branches don't overlap.
+- ``needs_attention_count`` overlaps ``completion_status_counts`` rather than
+  adding to it: a learner needs attention if they never started, or if
+  their last recorded activity was at least 30 days ago, so the same row
+  can be ``in_progress`` and also counted here. A grade-only ``in_progress``
+  row with no ``last_active_on`` has no recorded activity to judge stale,
+  so it isn't counted either.
+- ``needs_attention`` is the per-row form of that same rule, built from the
+  one ``learner_queries._needs_attention`` expression the count is built on,
+  against a cutoff the router resolves on the cluster once per request. So a
+  row and the count it is summarized by apply the same rule on the same date,
+  even though they arrive on separate round trips. Read it rather than
+  recomputing it client-side: the cutoff is 30 days before the StarRocks
+  cluster's today, which a browser's own "today" can be a day off from. It is
+  consent-gated, so it is NULL exactly when the other outcome fields are; it
+  is never NULL otherwise, not even on a row with no ``last_active_on``.
 """
 
 from __future__ import annotations
@@ -53,6 +70,7 @@ _OUTCOME_FIELDS = (
     "certificate_issued_on",
     "certificate_is_revoked",
     "last_active_on",
+    "needs_attention",
 )
 
 _HIDDEN = "Hidden if the learner hasn't agreed to share their progress."
@@ -136,8 +154,14 @@ class LearnerProgress(BaseModel):
     )
     last_active_on: datetime.date | None = Field(
         description=(
-            "The last day the learner did anything in the course. Not available yet, so always "
-            "empty for now."
+            f"The last day the learner did anything in the course. Empty if they haven't yet. "
+            f"{_HIDDEN}"
+        )
+    )
+    needs_attention: bool | None = Field(
+        description=(
+            "Whether this learner may need a nudge: they never started the course, or their "
+            f"last recorded activity was at least 30 days ago. {_HIDDEN}"
         )
     )
 
@@ -147,6 +171,75 @@ class LearnerProgress(BaseModel):
             for name in _OUTCOME_FIELDS:
                 setattr(self, name, None)
         return self
+
+
+class CompletionStatusCounts(BaseModel):
+    """Matches ``LearnerProgressResponse.total_count``'s own filters, not the
+    contract as a whole, so it narrows along with the table it summarizes.
+
+    Each field counts a disjoint slice of the matching enrollments: every
+    enrollment falls into exactly one, in the order below (certificate beats
+    grade beats activity beats neither), so summing the four plus
+    ``outcomes_withheld_count`` always equals ``total_count``. An unrevoked
+    certificate always wins even when the same enrollment also carries a
+    passing or in-progress grade, which is why each field's own description
+    calls out what it excludes.
+
+    These counts are never suppressed for small cohorts, unlike the
+    ``cohort_policy``-gated aggregates elsewhere in b2b_analytics (e.g.
+    ``ContractUtilization``, ``EnrollmentCompletionFunnel``): this endpoint's
+    ``data`` already exposes the individual matching rows, so there's nothing
+    left to hide by suppressing the summary.
+    """
+
+    certified: int = Field(
+        description="Matching enrollments with an unrevoked certificate, whatever their grade."
+    )
+    passed: int = Field(
+        description=(
+            "Matching enrollments with a currently passing grade, other than those already "
+            "counted as certified above."
+        )
+    )
+    in_progress: int = Field(
+        description=(
+            "Matching enrollments with a nonzero grade that isn't yet passing, or with no grade "
+            "yet but some activity in the course, other than those already counted as certified "
+            "or passed above."
+        )
+    )
+    not_started: int = Field(
+        description=(
+            "Matching enrollments with no certificate, no grade, and no activity in the course yet."
+        )
+    )
+
+
+class CourseRun(BaseModel):
+    """One course run under the contract, for the learner-progress module filter."""
+
+    courserun_id: str = Field(
+        description="The course run's ID, e.g. course-v1:MITxT+14.310x+2T2026."
+    )
+    courserun_title: str = Field(description="The course's title.")
+    courserun_start_on: UtcDatetime | None = Field(
+        description="When the course run starts. Empty if no start date is set."
+    )
+    courserun_end_on: UtcDatetime | None = Field(
+        description="When the course run ends. Empty for self-paced courses."
+    )
+
+
+class CourseRunsResponse(BaseModel):
+    """The org envelope (``organization_id``, ``as_of``, ``total_count``, ``data``),
+    matching ``LearnerProgressResponse``'s shape."""
+
+    organization_id: str = Field(description="The organization's ID.")
+    as_of: UtcDatetime | None = Field(
+        description="When the data was last updated. Empty before the first update."
+    )
+    total_count: int = Field(description="Course runs under the contract, across all pages.")
+    data: list[CourseRun] = Field(description="This page of course runs.")
 
 
 class LearnerProgressResponse(BaseModel):
@@ -165,6 +258,19 @@ class LearnerProgressResponse(BaseModel):
         description=(
             "How many of those enrollments have progress hidden because the learner hasn't "
             "agreed to share it."
+        )
+    )
+    completion_status_counts: CompletionStatusCounts = Field(
+        description=(
+            "How many of those enrollments are in each stage of completion. Enrollments with "
+            "hidden progress aren't counted in any stage."
+        )
+    )
+    needs_attention_count: int = Field(
+        description=(
+            "How many of those enrollments need attention: the learner never started, or their "
+            "last recorded activity was at least 30 days ago. Enrollments with hidden progress "
+            "aren't counted."
         )
     )
     data: list[LearnerProgress] = Field(description="This page of enrollments.")

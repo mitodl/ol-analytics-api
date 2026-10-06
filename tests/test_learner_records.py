@@ -311,6 +311,87 @@ def test_models_keep_outcomes_when_shared():
     assert (enrollment.completion_status, enrollment.grade) == ("passed", 0.8)
 
 
+def test_models_keep_activity_when_shared():
+    enrollment = Enrollment(
+        **_enrollment_row(
+            outcomes_shared=1,
+            completion_status="in_progress",
+            last_active_on=datetime.date(2026, 8, 11),
+            days_active=34,
+            videos_watched=212,
+            problems_attempted=88,
+            chatbot_interactions=14,
+        )
+    )
+    assert (
+        enrollment.last_active_on,
+        enrollment.days_active,
+        enrollment.videos_watched,
+        enrollment.problems_attempted,
+        enrollment.chatbot_interactions,
+    ) == (datetime.date(2026, 8, 11), 34, 212, 88, 14)
+
+
+async def test_enrollments_project_the_activity_columns(app, monkeypatch):
+    pool = _FakePool()
+    await _get(
+        app, f"/organizations/{ORG_ID}/enrollments", _partner_token(ORG_ID), pool, monkeypatch
+    )
+    query, _ = pool.page_call()
+    assert "videos_played AS videos_watched" in query
+    assert "NULL AS days_active" not in query
+    # Activity alone is enough to count as started.
+    assert "WHEN grade_value > 0 OR last_active_on IS NOT NULL THEN 'in_progress'" in query
+
+
+async def test_default_learners_project_the_activity_columns(app, monkeypatch):
+    pool = _FakePool()
+    await _get(app, f"/organizations/{ORG_ID}/learners", _partner_token(ORG_ID), pool, monkeypatch)
+    query, _ = pool.page_call()
+    assert "NULL AS last_active_on" not in query
+    assert "NULL AS courses_in_progress" not in query
+    assert "last_active_on, courses_in_progress, record_updated_on FROM" in query
+
+
+async def test_recomputed_learners_count_in_progress_with_the_enrollment_status(app, monkeypatch):
+    pool = _FakePool()
+    await _get(
+        app,
+        f"/organizations/{ORG_ID}/learners?contract_id=42",
+        _partner_token(ORG_ID),
+        pool,
+        monkeypatch,
+    )
+    query, _ = pool.page_call()
+    # Activity counts active enrollments only, as mv_b2b_learner does.
+    assert (
+        "MAX(CASE WHEN enrollment_is_active = TRUE THEN last_active_on END) AS last_active_on"
+    ) in query
+    assert (
+        "COUNT(DISTINCT CASE WHEN enrollment_is_active = TRUE"
+        f" AND {queries._COMPLETION_STATUS} = 'in_progress'"  # noqa: SLF001
+        " THEN courserun_pk END) AS courses_in_progress"
+    ) in query
+    assert "COALESCE(e.courses_in_progress, 0) AS courses_in_progress" in query
+
+
+async def test_include_inactive_learners_count_activity_on_every_enrollment(app, monkeypatch):
+    pool = _FakePool()
+    await _get(
+        app,
+        f"/organizations/{ORG_ID}/learners?include_inactive=true",
+        _partner_token(ORG_ID),
+        pool,
+        monkeypatch,
+    )
+    query, _ = pool.page_call()
+    assert "MAX(last_active_on) AS last_active_on" in query
+    assert (
+        f"COUNT(DISTINCT CASE WHEN {queries._COMPLETION_STATUS} = 'in_progress'"  # noqa: SLF001
+        " THEN courserun_pk END) AS courses_in_progress"
+    ) in query
+
+
 async def test_default_learners_read_the_precomputed_rollup(app, monkeypatch):
     pool = _FakePool()
     await _get(app, f"/organizations/{ORG_ID}/learners", _partner_token(ORG_ID), pool, monkeypatch)
@@ -366,6 +447,17 @@ async def test_include_inactive_learners_keep_every_roster_member(app, monkeypat
     assert params == (ORG_ID, ORG_ID, 100, 0)
 
 
+@pytest.mark.parametrize(
+    "path",
+    ["enrollments", "learners", "learners?contract_id=42", "learners?include_inactive=true"],
+)
+async def test_blank_names_read_as_null(app, monkeypatch, path):
+    pool = _FakePool()
+    await _get(app, f"/organizations/{ORG_ID}/{path}", _partner_token(ORG_ID), pool, monkeypatch)
+    query, _ = pool.page_call()
+    assert "NULLIF(TRIM(full_name), '')" in query
+
+
 async def test_recomputed_learners_report_the_staler_view(app, monkeypatch):
     older = datetime.datetime(2026, 8, 12, 6, 0)  # noqa: DTZ001
     pool = _FakePool(as_of_by_mv={queries.ENROLLMENT_MV: older})
@@ -411,6 +503,22 @@ async def test_enrollment_filters_are_bound_in_order(app, monkeypatch):
     )
     # The count binds the same filters without paging.
     assert pool.count_call()[1] == params[:-2]
+
+
+async def test_updated_before_bounds_the_window_exclusively(app, monkeypatch):
+    pool = _FakePool()
+    await _get(
+        app,
+        f"/organizations/{ORG_ID}/enrollments"
+        "?updated_since=2026-08-12T00:00:00Z&updated_before=2026-08-13T00:00:00Z",
+        _partner_token(ORG_ID),
+        pool,
+        monkeypatch,
+    )
+    query, params = pool.page_call()
+    assert "record_updated_on >= %s" in query
+    assert "record_updated_on < %s" in query
+    assert params == (ORG_ID, "2026-08-12T00:00:00", "2026-08-13T00:00:00", 100, 0)
 
 
 async def test_omitted_list_filters_add_no_predicate(app, monkeypatch):
@@ -465,6 +573,25 @@ def test_cursor_value_is_a_prefix_of_stored_values_in_the_same_second():
     assert bound == "2026-08-12T06:15:00"
     for stored in ("2026-08-12T06:15:00", "2026-08-12T06:15:00.000", "2026-08-12T06:15:00.000000"):
         assert stored >= bound
+
+
+def test_round_up_cursor_value_never_excludes_a_row_before_the_requested_instant():
+    # A row stored earlier in the same second as a fractional exclusive bound
+    # must still satisfy `< bound`. Flooring 06:15:00.500 to "...:00" would put
+    # a row stored at "...:00.250" (which precedes .500) on the wrong side of
+    # `<`, silently dropping it rather than re-sending it in the next window.
+    bound = queries._cursor_value(  # noqa: SLF001
+        datetime.datetime(2026, 8, 12, 6, 15, 0, 500000, tzinfo=datetime.UTC), round_up=True
+    )
+    assert bound == "2026-08-12T06:15:01"
+    assert bound > "2026-08-12T06:15:00.250000"
+
+
+def test_round_up_cursor_value_is_unchanged_on_a_whole_second():
+    bound = queries._cursor_value(  # noqa: SLF001
+        datetime.datetime(2026, 8, 12, 6, 15, 0, tzinfo=datetime.UTC), round_up=True
+    )
+    assert bound == "2026-08-12T06:15:00"
 
 
 def test_tenant_never_imports_the_anonymization_module():
@@ -558,6 +685,34 @@ async def test_courses_contract_filter_is_bound(app, monkeypatch):
     assert "sso_organization_id = %s AND contract_id = %s" in query
     assert params == (ORG_ID, 42, 100, 0)
     assert pool.count_call()[1] == (ORG_ID, 42)
+
+
+async def test_courses_filters_are_bound_in_order(app, monkeypatch):
+    pool = _FakePool()
+    await _get(
+        app,
+        f"/organizations/{ORG_ID}/courses"
+        "?contract_is_active=true&courserun_id=course-v1:MITxT%2B14.310x%2B2T2026"
+        "&courserun_starts_after=2026-01-01T00:00:00Z&courserun_starts_before=2026-04-01T00:00:00Z",
+        _partner_token(ORG_ID),
+        pool,
+        monkeypatch,
+    )
+    query, params = pool.page_call()
+    assert "b2b_contract_is_active = %s" in query
+    assert "courserun_readable_id = %s" in query
+    assert "courserun_start_on >= %s" in query
+    assert "courserun_start_on < %s" in query
+    assert params == (
+        ORG_ID,
+        True,
+        "course-v1:MITxT+14.310x+2T2026",
+        "2026-01-01T00:00:00",
+        "2026-04-01T00:00:00",
+        100,
+        0,
+    )
+    assert pool.count_call()[1] == params[:-2]
 
 
 def test_the_error_code_enum_matches_the_published_contract():

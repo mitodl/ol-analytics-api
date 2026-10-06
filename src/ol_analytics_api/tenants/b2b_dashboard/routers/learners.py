@@ -28,6 +28,9 @@ from ol_analytics_api.tenants.b2b_dashboard.auth import (
 )
 from ol_analytics_api.tenants.b2b_dashboard.config import settings
 from ol_analytics_api.tenants.b2b_dashboard.learner_models import (
+    CompletionStatusCounts,
+    CourseRun,
+    CourseRunsResponse,
     LearnerProgress,
     LearnerProgressResponse,
 )
@@ -42,6 +45,13 @@ router = APIRouter(
 )
 
 
+# CompletionStatus plus `unknown` for the withheld rows. A docstring here would
+# render into the published spec as the parameter's description, so this stays a
+# comment: needing attention is deliberately not a member, because it cuts
+# across these four instead of partitioning them (a stale `in_progress` row is
+# both). Folding it in would break the "exactly one bucket per row" property
+# CompletionStatusCounts rests on, so it is the separate `needs_attention`
+# filter below.
 class CompletionStatusFilter(StrEnum):
     NOT_STARTED = "not_started"
     IN_PROGRESS = "in_progress"
@@ -73,22 +83,54 @@ async def learner_progress(  # noqa: PLR0913
             default_factory=list,
         ),
     ],
+    courserun_readable_id: Annotated[
+        str | None,
+        Query(
+            min_length=1,
+            description="Exact match. Narrows to one course run, e.g. the module filter.",
+        ),
+    ] = None,
+    needs_attention: Annotated[
+        bool | None,
+        Query(
+            description=(
+                "Keep only the learners who need attention, or only those who don't. "
+                "Cuts the same rows `needs_attention_count` counts. Rows with withheld "
+                "outcomes match neither, so omit this to see them."
+            )
+        ),
+    ] = None,
     include_inactive: Annotated[
         bool, Query(description="Include deactivated enrollments (unenrolled, refunded).")
     ] = False,
     sort: learner_queries.SortKey = learner_queries.SortKey.FULL_NAME,
     descending: bool = False,
 ) -> LearnerProgressResponse:
+    # Resolve the needs-attention cutoff on the cluster once, before either
+    # data query. The page and the count are two statements, so leaving
+    # CURRENT_DATE() in the SQL would let them evaluate it either side of
+    # midnight and disagree about which learners are quiet -- a row reading
+    # `false` while needs_attention_count counted it, and a `total_count` the
+    # page's own filter contradicts. Resolved per request and never cached:
+    # the failure this prevents is a date boundary, so a cached cutoff would
+    # be wrong for exactly as long as the cache held it. This is the one
+    # non-deterministic expression in the tenant's SQL.
+    cutoff = (await starrocks_pool.fetch_all(learner_queries.NEEDS_ATTENTION_CUTOFF_QUERY))[0][
+        "cutoff"
+    ]
     query = learner_queries.learner_progress(
         learner_queries.ProgressFilters(
             organization_id=organization_id,
             contract_id=contract_id,
             search=search,
             completion_statuses=tuple(status.value for status in completion_status or ()),
+            courserun_readable_id=courserun_readable_id,
+            needs_attention=needs_attention,
             include_inactive=include_inactive,
             sort=sort,
             descending=descending,
-        )
+        ),
+        cutoff,
     )
     # Freshness first, so a refresh landing mid-request labels newer rows with
     # the older as_of rather than the reverse.
@@ -103,5 +145,39 @@ async def learner_progress(  # noqa: PLR0913
         total_count=int(counts["total_count"]),
         # SUM over zero rows is NULL.
         outcomes_withheld_count=int(counts["outcomes_withheld_count"] or 0),
+        completion_status_counts=CompletionStatusCounts(
+            not_started=int(counts["not_started"] or 0),
+            in_progress=int(counts["in_progress"] or 0),
+            passed=int(counts["passed"] or 0),
+            certified=int(counts["certified"] or 0),
+        ),
+        needs_attention_count=int(counts["needs_attention_count"] or 0),
         data=[LearnerProgress(**row) for row in rows],
+    )
+
+
+@router.get(
+    "/course-runs",
+    response_model=CourseRunsResponse,
+    name="course_runs",
+    operation_id="learners_course_runs_retrieve",
+    summary="Course runs under the contract, for the learner-progress module filter",
+)
+async def course_runs(
+    *,
+    organization_id: str,
+    contract_id: int,
+    page: Annotated[Pagination, Depends(pagination)],
+) -> CourseRunsResponse:
+    query = learner_queries.course_runs(organization_id, contract_id)
+    as_of = await latest_refresh_timestamp(
+        settings.learner_records_schema, learner_queries.CONTRACT_COURSERUN_MV
+    )
+    rows = await starrocks_pool.fetch_all(query.page, (*query.params, page.limit, page.offset))
+    counts = (await starrocks_pool.fetch_all(query.count, query.params))[0]
+    return CourseRunsResponse(
+        organization_id=organization_id,
+        as_of=as_of,
+        total_count=int(counts["total_count"]),
+        data=[CourseRun(**row) for row in rows],
     )

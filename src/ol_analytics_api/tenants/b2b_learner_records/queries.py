@@ -20,8 +20,8 @@ deployment opts to fail open. When the field lands, the inner selects project
 it and this becomes ``COALESCE(<consent column>, <that literal>)``, so a
 recorded decision always wins and the setting only covers learners with none.
 
-Columns the warehouse doesn't carry yet (consent date, activity) are projected
-as NULL by the inner selects, so filling one in touches the inner select only.
+The consent date isn't in the warehouse yet, so the inner selects project it
+as NULL; filling it in touches the inner select only.
 """
 
 from __future__ import annotations
@@ -46,12 +46,13 @@ def _outcomes_shared() -> str:
 # An unrevoked certificate is certified without requiring is_passing: production
 # has enrollments with an unrevoked certificate and is_passing false
 # (ol-data-platform#2669). A revoked certificate falls through to the grade.
-# Until activity data lands, "in progress" can only mean a nonzero grade.
+# in_progress must match mv_b2b_learner.courses_in_progress: a nonzero grade or
+# any tracked activity (ol-data-platform#2693).
 _COMPLETION_STATUS = (
     "CASE"
     " WHEN certificate_is_revoked = FALSE THEN 'certified'"
     " WHEN is_passing = TRUE THEN 'passed'"
-    " WHEN grade_value > 0 THEN 'in_progress'"
+    " WHEN grade_value > 0 OR last_active_on IS NOT NULL THEN 'in_progress'"
     " ELSE 'not_started'"
     " END"
 )
@@ -76,9 +77,7 @@ _LEARNER_OUTCOMES = (
     "courses_certified",
     "certificates_earned",
 )
-_LEARNER_PENDING = (
-    " NULL AS outcomes_consent_on, NULL AS last_active_on, NULL AS courses_in_progress,"
-)
+_LEARNER_PENDING = " NULL AS outcomes_consent_on,"
 
 _ENROLLMENT_COLUMNS = (
     "learner_id",
@@ -109,20 +108,24 @@ _ENROLLMENT_OUTCOMES = (
     "problems_attempted",
     "chatbot_interactions",
 )
-_ENROLLMENT_PENDING = (
-    " NULL AS last_active_on, NULL AS days_active, NULL AS videos_watched,"
-    " NULL AS problems_attempted, NULL AS chatbot_interactions,"
-)
+
+# Upstream stores "" rather than NULL for learners who never set a name. Null
+# blank names so they sort with the missing ones instead of before every name.
+_BLANK_AS_NULL_NAME = "NULLIF(TRIM(full_name), '')"
 
 
 @dataclass(frozen=True)
 class RecordFilters:
     organization_id: uuid.UUID
     contract_id: int | None = None
+    contract_is_active: bool | None = None
     courserun_id: str | None = None
+    courserun_starts_after: datetime.datetime | None = None
+    courserun_starts_before: datetime.datetime | None = None
     learner_ids: tuple[uuid.UUID, ...] = ()
     completion_statuses: tuple[str, ...] = ()
     updated_since: datetime.datetime | None = None
+    updated_before: datetime.datetime | None = None
     include_inactive: bool = False
 
 
@@ -142,17 +145,32 @@ def _placeholders(count: int) -> str:
     return ", ".join(["%s"] * count)
 
 
-def _cursor_value(value: datetime.datetime) -> str:
-    """Render ``updated_since`` for comparison against ``record_updated_on``.
+def _cursor_value(value: datetime.datetime, *, round_up: bool = False) -> str:
+    """Render a datetime for comparison against an MV timestamp column.
 
-    The MVs store that cursor as a zone-less UTC ISO-8601 string, so the
-    comparison is lexicographic. Truncating to whole seconds makes the bound a
-    prefix of any stored value in the same second, whatever its fractional
-    precision, so a record at the boundary is re-sent rather than skipped.
+    The MVs store every MITx Online timestamp as a zone-less UTC ISO-8601
+    string, so the comparison is lexicographic and only whole-second precision
+    survives. For an inclusive lower bound (the default, ``round_up=False``),
+    truncating down makes the bound a prefix of any stored value in the same
+    second, so a record at the boundary is matched by ``>=`` rather than
+    skipped — the record may be re-sent by the next window too, which a
+    sync client tolerates, but it is never dropped.
+
+    ``round_up=True`` is the same trade for an exclusive upper bound: rounding
+    a fractional instant *down* would turn ``< bound`` into ``< floor(bound)``,
+    which excludes every record in that second, including ones genuinely
+    before the requested instant — a silent drop, not a re-send. Rounding up
+    to the next whole second instead means ``<`` matches everything through
+    that second, so the same record may be re-sent by the window that starts
+    there (its ``since`` floors to the same second), never lost between them.
     """
     if value.tzinfo is not None:
         value = value.astimezone(datetime.UTC).replace(tzinfo=None)
-    return value.replace(microsecond=0).isoformat()
+    if round_up and value.microsecond:
+        value = value.replace(microsecond=0) + datetime.timedelta(seconds=1)
+    else:
+        value = value.replace(microsecond=0)
+    return value.isoformat()
 
 
 def _assemble(  # noqa: PLR0913, PLR0917
@@ -186,15 +204,38 @@ def _assemble(  # noqa: PLR0913, PLR0917
     return RecordQuery(page, count, (*record_params, *predicate_params), sources)
 
 
+def _window_predicates(
+    column: str, since: datetime.datetime | None, before: datetime.datetime | None
+) -> tuple[list[str], list[Any]]:
+    """``[since, before)``: paired with a later window whose ``since`` is this
+    ``before``, a backfill can hand each window to one worker and know no row
+    is dropped between them. Both bounds round toward re-sending a row rather
+    than skipping it, so a row at a sub-second boundary can land in both
+    windows, never in neither. ``column`` is always one of this module's own
+    fixed identifiers, never caller input.
+    """
+    predicates: list[str] = []
+    params: list[Any] = []
+    if since is not None:
+        predicates.append(f"{column} >= %s")
+        params.append(_cursor_value(since))
+    if before is not None:
+        predicates.append(f"{column} < %s")
+        params.append(_cursor_value(before, round_up=True))
+    return predicates, params
+
+
 def _shared_predicates(filters: RecordFilters) -> tuple[list[str], list[Any]]:
     predicates: list[str] = []
     params: list[Any] = []
     if filters.learner_ids:
         predicates.append(f"learner_id IN ({_placeholders(len(filters.learner_ids))})")
         params.extend(str(learner_id) for learner_id in filters.learner_ids)
-    if filters.updated_since is not None:
-        predicates.append("record_updated_on >= %s")
-        params.append(_cursor_value(filters.updated_since))
+    window_predicates, window_params = _window_predicates(
+        "record_updated_on", filters.updated_since, filters.updated_before
+    )
+    predicates.extend(window_predicates)
+    params.extend(window_params)
     return predicates, params
 
 
@@ -211,14 +252,16 @@ def enrollments(schema: str, filters: RecordFilters) -> RecordQuery:
         scope.append("courserun_readable_id = %s")
         scope_params.append(filters.courserun_id)
     records = (
-        "SELECT user_pk, user_global_id AS learner_id, email, full_name,"  # noqa: S608
+        "SELECT user_pk, user_global_id AS learner_id, email,"  # noqa: S608
+        f" {_BLANK_AS_NULL_NAME} AS full_name,"
         " sso_organization_id AS organization_id, contract_id,"
         " b2b_contract_name AS contract_name, courserun_readable_id AS courserun_id,"
         " courserun_title, courserun_start_on, courserun_end_on,"
         " enrollment_created_on AS enrolled_on, enrollment_is_active, enrollment_mode,"
         f" enrollment_status, {_COMPLETION_STATUS} AS completion_status, is_passing,"
         " grade_value AS grade, letter_grade, certificate_issued_on, certificate_is_revoked,"
-        f"{_ENROLLMENT_PENDING} record_updated_on"
+        " last_active_on, days_active, videos_played AS videos_watched, problems_attempted,"
+        " chatbot_interactions, record_updated_on"
         f" FROM {table} WHERE {' AND '.join(scope)}"
     )
 
@@ -256,7 +299,8 @@ def learners(schema: str, filters: RecordFilters) -> RecordQuery:
 
     ``mv_b2b_learner`` precomputes it across all the organization's contracts,
     which serves the default request. ``courses_enrolled``, the enrolled_on
-    dates and ``both`` membership count active enrollments. Completions and the
+    dates, ``both`` membership, ``last_active_on`` and ``courses_in_progress``
+    count active enrollments. Completions and the
     cursor count every enrollment, so a learner whose seats were all reclaimed
     keeps a row with ``courses_enrolled = 0`` and the completions already sent.
     A ``contract_id`` or ``include_inactive`` request recomputes the rollup from
@@ -266,12 +310,13 @@ def learners(schema: str, filters: RecordFilters) -> RecordQuery:
     schema = validate_sql_identifier(schema)
     if filters.contract_id is None and not filters.include_inactive:
         records = (
-            "SELECT user_pk, user_global_id AS learner_id, email, full_name,"  # noqa: S608
+            "SELECT user_pk, user_global_id AS learner_id, email,"  # noqa: S608
+            f" {_BLANK_AS_NULL_NAME} AS full_name,"
             " sso_organization_id AS organization_id, organization_name, membership_source,"
             " is_organization_manager, first_enrolled_on, last_enrolled_on, courses_enrolled,"
             " courses_passed, courses_certified,"
             " courses_certified + program_certificates_earned AS certificates_earned,"
-            f"{_LEARNER_PENDING} record_updated_on"
+            f"{_LEARNER_PENDING} last_active_on, courses_in_progress, record_updated_on"
             f" FROM {schema}.{LEARNER_MV} WHERE sso_organization_id = %s"
         )
         record_params: list[Any] = [str(filters.organization_id)]
@@ -300,17 +345,22 @@ def _recomputed_learners(schema: str, filters: RecordFilters) -> tuple[str, list
         scope.append("contract_id = %s")
         params.append(filters.contract_id)
 
-    # The same definitions as mv_b2b_learner (ol-data-platform#2669). Only
-    # courses_enrolled and the enrolled_on dates look at enrollment_is_active, and
-    # only without include_inactive. Completions and the cursor span every
-    # enrollment, so a filtered request can't report fewer completions than the
-    # default one, and deactivation moves the cursor forward.
+    # The same definitions as mv_b2b_learner (ol-data-platform#2669, #2693).
+    # courses_enrolled, the enrolled_on dates, last_active_on and
+    # courses_in_progress look at enrollment_is_active, and only without
+    # include_inactive: they describe current engagement. Completions and the
+    # cursor span every enrollment, so a filtered request can't report fewer
+    # completions than the default one, and deactivation moves the cursor forward.
+    in_progress = f"{_COMPLETION_STATUS} = 'in_progress'"
     if filters.include_inactive:
         enrolled_run = "courserun_pk"
         enrolled_on = "enrollment_created_on"
+        active_on = "last_active_on"
     else:
         enrolled_run = "CASE WHEN enrollment_is_active = TRUE THEN courserun_pk END"
         enrolled_on = "CASE WHEN enrollment_is_active = TRUE THEN enrollment_created_on END"
+        active_on = "CASE WHEN enrollment_is_active = TRUE THEN last_active_on END"
+        in_progress = f"enrollment_is_active = TRUE AND {in_progress}"
 
     if filters.contract_id is not None:
         # Learners with any enrollment in the contract, active or not, as the
@@ -332,7 +382,8 @@ def _recomputed_learners(schema: str, filters: RecordFilters) -> tuple[str, list
 
     enrollment_rollup = (
         "SELECT user_pk, MAX(user_global_id) AS user_global_id, MAX(email) AS email,"  # noqa: S608
-        " MAX(full_name) AS full_name, MAX(sso_organization_id) AS sso_organization_id,"
+        f" MAX({_BLANK_AS_NULL_NAME}) AS full_name,"
+        " MAX(sso_organization_id) AS sso_organization_id,"
         " MAX(organization_name) AS organization_name,"
         f" MIN({enrolled_on}) AS first_enrolled_on,"
         f" MAX({enrolled_on}) AS last_enrolled_on,"
@@ -340,6 +391,8 @@ def _recomputed_learners(schema: str, filters: RecordFilters) -> tuple[str, list
         " COUNT(DISTINCT CASE WHEN is_passing = TRUE THEN courserun_pk END) AS courses_passed,"
         " COUNT(DISTINCT CASE WHEN certificate_is_revoked = FALSE THEN courserun_pk END)"
         " AS courses_certified,"
+        f" MAX({active_on}) AS last_active_on,"
+        f" COUNT(DISTINCT CASE WHEN {in_progress} THEN courserun_pk END) AS courses_in_progress,"
         " MAX(record_updated_on) AS record_updated_on"
         f" FROM {schema}.{ENROLLMENT_MV} WHERE {' AND '.join(scope)} GROUP BY user_pk"
     )
@@ -347,10 +400,15 @@ def _recomputed_learners(schema: str, filters: RecordFilters) -> tuple[str, list
     # least one enrollment counted by courses_enrolled, as in the view, so a
     # roster member whose only enrollment is inactive reads as `roster` by default
     # and as `both` under include_inactive.
+    # last_active_on comes from e alone. mv_b2b_learner rolls it up from the same
+    # enrollments as mv_b2b_learner_enrollment, active ones only, so under
+    # include_inactive e's value covers l's, and a learner with no enrollment is
+    # null in both. Under contract_id, l's value spans other contracts.
     records = (
         "SELECT COALESCE(l.user_pk, e.user_pk) AS user_pk,"  # noqa: S608
         " COALESCE(l.user_global_id, e.user_global_id) AS learner_id,"
-        " COALESCE(l.email, e.email) AS email, COALESCE(l.full_name, e.full_name) AS full_name,"
+        " COALESCE(l.email, e.email) AS email,"
+        " COALESCE(NULLIF(TRIM(l.full_name), ''), e.full_name) AS full_name,"
         " COALESCE(l.sso_organization_id, e.sso_organization_id) AS organization_id,"
         " COALESCE(l.organization_name, e.organization_name) AS organization_name,"
         " CASE WHEN l.membership_source IN ('roster', 'both') AND e.courses_enrolled > 0"
@@ -362,7 +420,9 @@ def _recomputed_learners(schema: str, filters: RecordFilters) -> tuple[str, list
         " COALESCE(e.courses_passed, 0) AS courses_passed,"
         " COALESCE(e.courses_certified, 0) AS courses_certified,"
         f" COALESCE(e.courses_certified, 0) + {program_certificates} AS certificates_earned,"
-        f"{_LEARNER_PENDING} {record_updated_on} AS record_updated_on"
+        f"{_LEARNER_PENDING} e.last_active_on,"
+        " COALESCE(e.courses_in_progress, 0) AS courses_in_progress,"
+        f" {record_updated_on} AS record_updated_on"
         f" FROM (SELECT * FROM {schema}.{LEARNER_MV} WHERE sso_organization_id = %s) l"
         f" {join} ({enrollment_rollup}) e ON l.user_pk = e.user_pk"
     )
@@ -374,6 +434,14 @@ def courses(schema: str, filters: RecordFilters) -> RecordQuery:
 
     Built without ``_assemble``: these rows carry no personal data, so there is
     no consent projection, and ``outcomes_withheld_count`` is always 0.
+
+    This MV carries no ``record_updated_on``, so ``courserun_starts_after``/
+    ``courserun_starts_before`` partition by when a run starts, not by when its
+    row last changed. ``courserun_start_on`` is nullable (unscheduled runs), and
+    SQL comparisons against NULL are never true, so a self-paced run with no
+    start date matches neither bound and falls outside every partition. A
+    partitioned backfill that wants full coverage still needs one unfiltered
+    pass (or a pass with neither bound set) to pick those up.
     """
     table = f"{validate_sql_identifier(schema)}.{CONTRACT_COURSERUN_MV}"
     scope = ["sso_organization_id = %s"]
@@ -381,6 +449,17 @@ def courses(schema: str, filters: RecordFilters) -> RecordQuery:
     if filters.contract_id is not None:
         scope.append("contract_id = %s")
         params.append(filters.contract_id)
+    if filters.contract_is_active is not None:
+        scope.append("b2b_contract_is_active = %s")
+        params.append(filters.contract_is_active)
+    if filters.courserun_id is not None:
+        scope.append("courserun_readable_id = %s")
+        params.append(filters.courserun_id)
+    window_scope, window_params = _window_predicates(
+        "courserun_start_on", filters.courserun_starts_after, filters.courserun_starts_before
+    )
+    scope.extend(window_scope)
+    params.extend(window_params)
     where = " AND ".join(scope)
     page = (
         "SELECT sso_organization_id AS organization_id, organization_name, contract_id,"  # noqa: S608

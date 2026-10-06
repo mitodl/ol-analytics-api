@@ -1,6 +1,6 @@
 [project]
 name = "ol-analytics-api"
-version = "2026.9.17.1"
+version = "2026.10.1.1"
 description = "Read-only FastAPI service serving aggregated B2B site-license analytics to MIT Learn from StarRocks materialized views."
 requires-python = ">=3.12"
 dependencies = [
@@ -72,9 +72,14 @@ mitol-django-apigateway = "0d"
 mitol-django-observability = "0d"
 mitol-django-scim = "0d"
 mitol-drf-lint = "0d"
+# prek is pinned exactly in the `prek` dependency group below; exempt it from the 7d
+# window rather than pin an older release.
+prek = "0d"
 
 [dependency-groups]
+prek = ["prek==0.5.3"]
 dev = [
+    { include-group = "prek" },
     "ruff>=0.8",
     "mypy>=1.13",
     "pytest>=8.3",
@@ -144,7 +149,7 @@ module = ["aiomysql", "aiomysql.*"]
 ignore_missing_imports = true
 
 [tool.bumpversion]
-current_version = "2026.9.17.1"
+current_version = "2026.10.1.1"
 commit = false
 tag = false
 parse = "(?P<release>(?:[1-9][0-9]{3})\\.(?:1[0-2]|[1-9])\\.(?:3[0-1]|[12][0-9]|[1-9]))\\.(?P<build>\\d+)"
