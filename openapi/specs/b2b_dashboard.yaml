@@ -1894,7 +1894,9 @@ components:
           - type: 'null'
           title: Needs Attention
           description: 'Whether this learner may need a nudge: they never started
-            the course, or their last recorded activity was at least 30 days ago.
+            the course, or they are still working through it and their last recorded
+            activity was at least 30 days ago. False while they are passing or hold
+            an unrevoked certificate, since going quiet after finishing is expected.
             Hidden if the learner hasn''t agreed to share their progress.'
       type: object
       required:
@@ -1949,8 +1951,10 @@ components:
           type: integer
           title: Needs Attention Count
           description: 'How many of those enrollments need attention: the learner
-            never started, or their last recorded activity was at least 30 days ago.
-            Enrollments with hidden progress aren''t counted.'
+            never started, or they are still working through the course and their
+            last recorded activity was at least 30 days ago. Learners who are passing
+            or hold an unrevoked certificate aren''t counted, nor are enrollments
+            with hidden progress.'
         data:
           items:
             $ref: '#/components/schemas/LearnerProgress'
