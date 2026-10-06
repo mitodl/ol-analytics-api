@@ -59,7 +59,7 @@ _MV_COLUMNS = (
 )
 
 
-def _enrollment(  # noqa: PLR0913
+def _enrollment(
     learner,
     *,
     contract_id=CONTRACT_ID,
