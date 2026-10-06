@@ -635,6 +635,98 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/analytics/organizations/{organization_id}/needs-attention:
+    get:
+      tags:
+      - needs-attention
+      summary: Learners who may need a nudge, counted once each, per contract
+      operationId: organizations_needs_attention_retrieve
+      parameters:
+      - name: organization_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Organization Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 100
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgAnalyticsResponse_ContractNeedsAttention_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/analytics/organizations/{organization_id}/contracts/{contract_id}/needs-attention:
+    get:
+      tags:
+      - needs-attention
+      summary: Learners who may need a nudge, counted once each, per contract
+      operationId: contracts_needs_attention_retrieve
+      parameters:
+      - name: organization_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Organization Id
+      - name: contract_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Contract Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 100
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgAnalyticsResponse_ContractNeedsAttention_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/analytics/admin/contract-health:
     get:
       tags:
@@ -1293,6 +1385,94 @@ components:
         ``monthly_active_learners`` across contracts can exceed the org''s own
 
         figure. Activity totals, being sums of events, do add up.'
+    ContractNeedsAttention:
+      properties:
+        contract_id:
+          type: integer
+          title: Contract Id
+          description: The contract's ID in MITx Online.
+        learners_considered:
+          type: integer
+          title: Learners Considered
+          description: Learners with an active enrollment under the contract. Deactivated
+            enrollments, such as after unenrolling or a refund, are left out. When
+            too few learners are in the group, the whole row is withheld to avoid
+            identifying them.
+        learners_needing_attention:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Learners Needing Attention
+          description: 'Of those learners, how many may need a nudge: they never started
+            a course, or their last recorded activity was at least 30 days ago. A
+            learner counts once however many of the contract''s courses they are behind
+            in. Learners who haven''t agreed to share their progress aren''t counted.
+            Withheld when too few learners are in the group to report without identifying
+            them.'
+        learners_outcomes_withheld:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Learners Outcomes Withheld
+          description: Of those learners, how many are left out of the count above
+            because they haven't agreed to share their progress. Withheld when too
+            few learners are in the group to report without identifying them.
+      type: object
+      required:
+      - contract_id
+      - learners_considered
+      - learners_needing_attention
+      - learners_outcomes_withheld
+      title: ContractNeedsAttention
+      description: 'Distinct learners needing attention — grain: org x contract.
+
+
+        The one model here that does not mirror a materialized view. It is computed
+
+        at query time by ``learner_queries.needs_attention_aggregate`` over
+
+        ``b2b_learner_records.mv_b2b_learner_enrollment``, which is what lets the
+
+        KPI tile and the learner directory beneath it share a single
+
+        needs-attention expression and a single per-request cutoff.
+
+
+        A column on ``mv_b2b_contract_utilization`` was the other candidate and was
+
+        not chosen (decided 2026-10-02). It would have restated the 30-day rule and
+
+        the completion-status CASE in dbt — two repos, two languages, no test that
+
+        can see both — and frozen the cutoff at MV-refresh time, so the tile and the
+
+        directory could disagree about the same learner for up to a refresh
+
+        interval. The rule has already changed once since it was written.
+
+
+        Served from its own endpoint rather than folded into ``ContractUtilization``
+
+        because the MV behind it refreshes on its own schedule. One ``as_of`` per
+
+        section is exactly what stops a lagging view from making another section
+
+        look fresher than it is, so a client renders this tile''s freshness from
+
+        this endpoint''s envelope, not from contract-utilization''s.
+
+
+        ``learners_considered`` is the primary cohort and gates the row. The other
+
+        two counts are secondary and nulled on their own terms. As on
+
+        ``ContractUtilization``, a published cohort beside a published subset of it
+
+        still leaves the complement derivable (42 considered and 40 needing
+
+        attention names 2 learners); that is the general across-column gap tracked
+
+        separately, not something specific to this model.'
     ContractUtilization:
       properties:
         organization_key:
@@ -2135,6 +2315,32 @@ components:
       - total_count
       - data
       title: OrgAnalyticsResponse[ContractMonthlyEngagementTrend]
+    OrgAnalyticsResponse_ContractNeedsAttention_:
+      properties:
+        organization_id:
+          type: string
+          title: Organization Id
+        as_of:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: As Of
+        total_count:
+          type: integer
+          title: Total Count
+        data:
+          items:
+            $ref: '#/components/schemas/ContractNeedsAttention'
+          type: array
+          title: Data
+      type: object
+      required:
+      - organization_id
+      - as_of
+      - total_count
+      - data
+      title: OrgAnalyticsResponse[ContractNeedsAttention]
     OrgAnalyticsResponse_ContractUtilization_:
       properties:
         organization_id:
