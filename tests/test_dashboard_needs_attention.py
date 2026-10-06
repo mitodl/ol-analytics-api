@@ -57,6 +57,7 @@ _MV_COLUMNS = (
     "is_passing INTEGER",
     "grade_value REAL",
     "last_active_on TEXT",
+    "outcomes_shared INTEGER",
 )
 
 
@@ -70,13 +71,15 @@ def _enrollment(
     passing=0,
     grade=None,
     last_active_on=None,
+    outcomes_shared=None,
 ):
     """One row of mv_b2b_learner_enrollment.
 
     ``revoked=1`` is the default because _COMPLETION_STATUS reads an
     *unrevoked* certificate as certified; 1 keeps a row out of that branch so
     the grade and activity columns decide its status, which is what these
-    tests vary.
+    tests vary. ``outcomes_shared=None`` is a learner with no recorded consent
+    decision, who follows ``consent_fail_open``.
     """
     return (
         organization_id,
@@ -87,6 +90,7 @@ def _enrollment(
         passing,
         grade,
         last_active_on,
+        outcomes_shared,
     )
 
 
@@ -213,6 +217,32 @@ def test_consent_gate_moves_learners_between_the_counts(monkeypatch):
 
     monkeypatch.setattr(settings, "consent_fail_open", True)
     assert aggregate() == [(CONTRACT_ID, 2, 2, 0)]
+    conn.close()
+
+
+def test_recorded_consent_decision_wins_over_the_fail_open_toggle(monkeypatch):
+    # Three quiet learners who differ only in the MV's recorded decision. A
+    # recorded decline is withheld even where the stack fails open (which is
+    # what Production runs), a recorded grant is counted even where it fails
+    # closed, and only the learner with no decision follows the toggle.
+    quiet = (_CUTOFF - datetime.timedelta(days=1)).isoformat()
+    conn = _db(
+        [
+            _enrollment("declined", grade=0.4, last_active_on=quiet, outcomes_shared=0),
+            _enrollment("granted", grade=0.4, last_active_on=quiet, outcomes_shared=1),
+            _enrollment("undecided", grade=0.4, last_active_on=quiet),
+        ]
+    )
+
+    def aggregate():
+        query = learner_queries.needs_attention_aggregate(ORG_ID, CONTRACT_ID, _CUTOFF)
+        return _run(conn, query.page, (*query.params, _NO_FLOOR, 100, 0)).fetchall()
+
+    monkeypatch.setattr(settings, "consent_fail_open", True)
+    assert aggregate() == [(CONTRACT_ID, 3, 2, 1)]
+
+    monkeypatch.setattr(settings, "consent_fail_open", False)
+    assert aggregate() == [(CONTRACT_ID, 3, 1, 2)]
     conn.close()
 
 

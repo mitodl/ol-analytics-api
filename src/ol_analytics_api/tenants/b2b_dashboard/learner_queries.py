@@ -372,7 +372,8 @@ def needs_attention_aggregate(
     scope.append("enrollment_is_active = TRUE")
     records = (
         "SELECT user_global_id AS learner_id, contract_id,"  # noqa: S608
-        f" {_COMPLETION_STATUS} AS completion_status, last_active_on"
+        f" {_COMPLETION_STATUS} AS completion_status, last_active_on,"
+        " outcomes_shared AS outcomes_decision"
         f" FROM {table} WHERE {' AND '.join(scope)}"
     )
 
