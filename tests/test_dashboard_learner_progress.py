@@ -241,9 +241,11 @@ async def test_needs_attention_count_reported_from_the_count_query(app):
 
     assert response.json()["needs_attention_count"] == 7
     count_query, _ = pool.count_call()
+    # Built from the production expression rather than a copy of it: what this
+    # pins is the aggregate's shape and its consent gate, not the rule inside.
+    # The rule is pinned by the sqlite tests below, which execute it.
     assert (
-        "SUM(CASE WHEN FALSE AND (COALESCE(completion_status = 'not_started'"
-        f" OR last_active_on <= {_CUTOFF_SQL}, FALSE))"
+        f"SUM(CASE WHEN FALSE AND ({_needs_attention_sql(_CUTOFF)})"
         " THEN 1 ELSE 0 END) AS needs_attention_count" in count_query
     )
 
@@ -305,6 +307,93 @@ def test_needs_attention_boundary_is_computed_from_real_rows():
     ]
 
 
+def test_needs_attention_excludes_learners_who_already_finished():
+    # The defect this rule was written against: staleness was unscoped, so a
+    # learner who earned a certificate and then stopped logging in -- the
+    # expected behaviour after finishing -- was flagged as needing a nudge, and
+    # the flag grew more certain the longer ago they finished. Observed on the
+    # learner directory as a row reading `Certificate` and `Needs attention`
+    # together, 62 days quiet, which is the staleness used here. Runs the real
+    # ._COMPLETION_STATUS and ._needs_attention in sqlite, so a reverted scope
+    # fails here rather than at a manager's filter.
+    today = datetime.date.today()  # noqa: DTZ011 - the boundary is date-only
+    cutoff = today - datetime.timedelta(days=30)
+    long_quiet = (today - datetime.timedelta(days=62)).isoformat()
+    needs_attention = _needs_attention_sql(cutoff)
+
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE enrollment (certificate_is_revoked INTEGER, is_passing INTEGER,"
+        " grade_value REAL, last_active_on TEXT)"
+    )
+    conn.executemany(
+        "INSERT INTO enrollment VALUES (?, ?, ?, ?)",
+        [
+            (0, 0, 0.9, long_quiet),  # unrevoked certificate, quiet 62 days
+            (1, 1, 0.9, long_quiet),  # passed, awaiting a certificate, quiet 62 days
+            (1, 0, 0.5, long_quiet),  # still in progress, quiet 62 days
+            (1, 0, None, None),  # never started
+        ],
+    )
+    rows = conn.execute(
+        "SELECT completion_status,"  # noqa: S608
+        f" ({needs_attention}) AS needs_attention FROM"
+        f" (SELECT *, {learner_queries._COMPLETION_STATUS} AS completion_status FROM enrollment)"  # noqa: SLF001
+    ).fetchall()
+    conn.close()
+
+    assert rows == [
+        # Currently certified. Quiet is the expected end of the course, not a lapse.
+        ("certified", 0),
+        # Currently passed. A missing certificate is certificate-issuing ops work,
+        # not a learner for a manager to chase.
+        ("passed", 0),
+        ("in_progress", 1),  # the only staleness a nudge would fix
+        ("not_started", 1),
+    ]
+
+
+def test_needs_attention_follows_current_status_not_history():
+    # The exclusion is scoped to the row's CURRENT status, which is not the
+    # same as "has finished at some point" -- Copilot's review of #87 caught
+    # the field descriptions overpromising the latter. _COMPLETION_STATUS
+    # re-derives the status on every read, so revoking a certificate drops the
+    # row through to the grade and activity that remain. A learner who once
+    # certified, whose certificate is revoked and who is not passing, is
+    # in_progress again and is flagged when quiet. That is intended: a revoked
+    # certificate means they are no longer finished.
+    today = datetime.date.today()  # noqa: DTZ011 - the boundary is date-only
+    cutoff = today - datetime.timedelta(days=30)
+    long_quiet = (today - datetime.timedelta(days=62)).isoformat()
+    needs_attention = _needs_attention_sql(cutoff)
+
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE enrollment (certificate_is_revoked INTEGER, is_passing INTEGER,"
+        " grade_value REAL, last_active_on TEXT)"
+    )
+    conn.executemany(
+        "INSERT INTO enrollment VALUES (?, ?, ?, ?)",
+        [
+            (0, 0, 0.9, long_quiet),  # certificate stands
+            (1, 1, 0.9, long_quiet),  # revoked, but still passing
+            (1, 0, 0.9, long_quiet),  # revoked and not passing: no longer finished
+        ],
+    )
+    rows = conn.execute(
+        "SELECT completion_status,"  # noqa: S608
+        f" ({needs_attention}) AS needs_attention FROM"
+        f" (SELECT *, {learner_queries._COMPLETION_STATUS} AS completion_status FROM enrollment)"  # noqa: SLF001
+    ).fetchall()
+    conn.close()
+
+    assert rows == [
+        ("certified", 0),
+        ("passed", 0),  # revocation alone doesn't re-flag a learner who passed
+        ("in_progress", 1),  # back to unfinished, and quiet, so flagged again
+    ]
+
+
 def test_needs_attention_count_respects_the_consent_gate(monkeypatch):
     # The same rows, but through the full SUM(CASE WHEN shared AND (...))
     # aggregate, with consent fail-closed (the default, so every row's
@@ -344,13 +433,18 @@ def test_needs_attention_count_respects_the_consent_gate(monkeypatch):
 
 
 def test_needs_attention_is_two_valued_so_the_filter_partitions_rows():
-    # A row with a grade but no tracked activity makes the staleness
-    # comparison NULL. Unguarded that is neither true nor false, so the row
-    # would fall out of `needs_attention=true` and `needs_attention=false`
-    # alike while still counting toward total_count, and would serialize as
-    # `needs_attention: null` on a row whose outcomes are shared. COALESCE in
-    # ._needs_attention settles it as false; this pins that every shared row
-    # lands in exactly one direction of the filter.
+    # An in_progress row with a grade but no tracked activity makes the
+    # staleness comparison NULL. Unguarded that is neither true nor false, so
+    # the row would fall out of `needs_attention=true` and
+    # `needs_attention=false` alike while still counting toward total_count,
+    # and would serialize as `needs_attention: null` on a row whose outcomes
+    # are shared. COALESCE in ._needs_attention settles it as false; this pins
+    # that every shared row lands in exactly one direction of the filter.
+    #
+    # Scoping staleness to in_progress narrows which rows can reach that NULL
+    # but does not remove it, so the terminal statuses are in here too: one
+    # short-circuits on `FALSE AND NULL` and one is stale on the other side of
+    # the scope, and neither may leak a NULL.
     today = datetime.date.today()  # noqa: DTZ011 - the boundary is date-only
     cutoff = today - datetime.timedelta(days=30)
     needs_attention = _needs_attention_sql(cutoff)
@@ -367,6 +461,8 @@ def test_needs_attention_is_two_valued_so_the_filter_partitions_rows():
             (1, 0, 0.5, None),  # graded, but no tracked activity at all
             (1, 0, 0.5, (today - datetime.timedelta(days=29)).isoformat()),  # active 29 days ago
             (1, 0, 0.5, cutoff.isoformat()),  # active exactly 30 days ago
+            (0, 0, 0.9, None),  # certified, no tracked activity at all
+            (1, 1, 0.9, cutoff.isoformat()),  # passed, quiet since the cutoff
         ],
     )
     records = (
@@ -389,8 +485,8 @@ def test_needs_attention_is_two_valued_so_the_filter_partitions_rows():
     conn.close()
 
     assert nulls == 0
-    # The two directions partition the four rows: none lost, none double-counted.
-    assert selected == (2, 2)
+    # The two directions partition all six rows: none lost, none double-counted.
+    assert selected == (2, 4)
     # And `true` selects exactly the rows needs_attention_count counts.
     assert selected[0] == counted
 
@@ -399,10 +495,9 @@ async def test_needs_attention_filter_is_consent_gated_in_both_directions(app):
     for value, negate in (("true", ""), ("false", "NOT ")):
         pool = _FakePool()
         await _get(app, pool, params={"needs_attention": value})
-        expected = (
-            f"(FALSE AND {negate}(COALESCE(completion_status = 'not_started'"
-            f" OR last_active_on <= {_CUTOFF_SQL}, FALSE)))"
-        )
+        # From the production expression, not a copy: this pins the gate and
+        # the negation, and the sqlite tests pin the rule they wrap.
+        expected = f"(FALSE AND {negate}({_needs_attention_sql(_CUTOFF)}))"
         # The `FALSE AND` is the consent gate: a withheld row matches neither
         # direction, so the filter can't reveal the outcome it withholds.
         assert expected in pool.page_call()[0]
