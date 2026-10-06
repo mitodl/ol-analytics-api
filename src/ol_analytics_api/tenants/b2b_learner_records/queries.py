@@ -398,17 +398,18 @@ def _recomputed_learners(schema: str, filters: RecordFilters) -> tuple[str, list
         )
         # mv_b2b_learner resolves every contract of the organization the learner
         # has a membership or any enrollment under, which is this rollup's scope.
-        # A decline in e wins over it: the two MVs refresh one after the other,
-        # so e can carry a decline l hasn't caught up with, and the counts here
-        # come from e.
+        # The two MVs refresh one after the other, so either can be ahead of the
+        # other. Where both have the learner the more conservative answer wins
+        # (a decline, then no decision), as the counts here come from e.
         decision = (
-            "CASE WHEN e.outcomes_decision = FALSE THEN FALSE"
-            " WHEN l.user_pk IS NOT NULL THEN l.outcomes_shared ELSE e.outcomes_decision END"
+            "CASE WHEN e.outcomes_decision = FALSE OR l.outcomes_shared = FALSE THEN FALSE"
+            " WHEN l.user_pk IS NULL THEN e.outcomes_decision"
+            " WHEN e.user_pk IS NULL THEN l.outcomes_shared"
+            " WHEN e.outcomes_decision IS NULL THEN NULL ELSE l.outcomes_shared END"
         )
         consent_on = (
-            "CASE WHEN e.outcomes_decision = FALSE THEN NULL"
-            " WHEN l.user_pk IS NOT NULL THEN l.outcomes_consent_on"
-            " WHEN e.outcomes_decision THEN e.outcomes_consent_on END"
+            f"CASE WHEN {decision} THEN CASE WHEN l.user_pk IS NOT NULL"
+            " THEN l.outcomes_consent_on ELSE e.outcomes_consent_on END END"
         )
 
     enrollment_rollup = (

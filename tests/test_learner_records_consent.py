@@ -278,3 +278,20 @@ def test_a_decline_the_learner_view_has_not_caught_up_with_still_withholds(conn)
     assert rows["stale"]["outcomes_shared"] == 0
     assert rows["stale"]["courses_passed"] is None
     assert rows["stale"]["outcomes_consent_on"] is None
+
+
+def test_a_missing_decision_the_learner_view_has_not_caught_up_with_is_undecided(conn, monkeypatch):
+    # The same skew with no decision in the enrollment view (e.g. a contract
+    # added since the learner view refreshed): the stale consent doesn't share.
+    _enroll(conn, "stale", 42, decision=None)
+    _roster(conn, "stale", decision=True, consent_on=CONSENT_ON)
+    rows, _ = _learners(conn, include_inactive=True)
+    assert rows["stale"]["outcomes_shared"] == 0
+    assert rows["stale"]["courses_passed"] is None
+    assert rows["stale"]["outcomes_consent_on"] is None
+
+    monkeypatch.setattr(settings, "consent_fail_open", True)
+    rows, _ = _learners(conn, include_inactive=True)
+    assert rows["stale"]["courses_passed"] == 1
+    # Shared by the deployment's default, so there is no consent date to report.
+    assert rows["stale"]["outcomes_consent_on"] is None
