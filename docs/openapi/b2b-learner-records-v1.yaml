@@ -16,11 +16,12 @@ info:
     Three things a reader needs that the schemas do not state:
 
     * **Consent gates outcomes, not identity.** Progress, completion and
-      activity fields are populated only where the learner has opted in to
-      sharing their course status. `outcomes_shared` says which. Identity and
-      enrollment facts are not consent-gated — the organization assigned the
-      seat. A recorded decision always decides it. With none recorded,
-      enforcement fails closed and the record reads `outcomes_shared: false`.
+      activity fields are populated only where the learner's course status
+      is shared. `outcomes_shared` says which. Identity and enrollment facts
+      are not consent-gated — the organization assigned the seat. A recorded
+      consent decision always decides it. With none recorded, the deployment's
+      default does: it fails closed unless the deployment is configured
+      otherwise, and the record then reads `outcomes_shared: false`.
     * **The same schemas are delivered two ways.** This REST API, and a
       per-organization bulk export written to S3 on each refresh. The export
       carries the same records under the same field names. It is readable
@@ -584,13 +585,16 @@ components:
         outcomes_shared:
           type: boolean
           description: >-
-            Whether this learner has opted in to sharing their course status.
-            False means every field below is null.
+            Whether this learner's course status is shared. A recorded consent
+            decision always decides it; with none recorded, the deployment's
+            default does. False means every field below is null.
           x-data-readiness: available
         outcomes_consent_on:
           type: [string, 'null']
           format: date-time
-          description: When consent was recorded. Null when `outcomes_shared` is false.
+          description: >-
+            When consent was recorded. Null when `outcomes_shared` is false, and
+            when it is true with no recorded decision.
           x-data-readiness: available
         last_active_on:
           type: [string, 'null']
@@ -722,7 +726,11 @@ components:
           x-data-readiness: available
         outcomes_shared:
           type: boolean
-          description: Whether the learner has opted in to sharing their course status. False means every field below is null.
+          description: >-
+            Whether the learner's course status is shared for this enrollment's
+            contract. A recorded consent decision always decides it; with none
+            recorded, the deployment's default does. False means every field
+            below is null.
           x-data-readiness: available
         completion_status:
           oneOf:

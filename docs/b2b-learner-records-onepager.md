@@ -51,13 +51,14 @@ floor protects small cohorts, not a small remainder: an organization holding
 both the aggregates and the records could subtract one from the other to learn
 a declining learner's outcome. See design §4.
 
-**Consent enforcement fails closed.** No recorded opt-in means no outcome data.
-Suppression is per-field rather than per-record, so a learner with no recorded
-decision reads `outcomes_shared: false` with outcomes null, which is a degraded
+**Consent enforcement fails closed by default.** A recorded decision always
+decides a record. With none recorded, the deployment's `consent_fail_open`
+setting does: unless a deployment turns it on, no recorded opt-in means no
+outcome data. Suppression is per-field rather than per-record, so a withheld
+learner reads `outcomes_shared: false` with outcomes null, which is a degraded
 response rather than an empty one. The decision is recorded per contract in
 MITx Online and reaches the service through the learner-records MVs
-(ol-data-platform#2785); a recorded decision always wins over the deployment's
-default. One upstream
+(ol-data-platform#2785). One upstream
 property is a hard requirement and cheap only if specified now: *withdrawal must
 be a retained state change, not a deleted row*. A deleted consent row is
 indistinguishable from one never granted and does not move the record's change
