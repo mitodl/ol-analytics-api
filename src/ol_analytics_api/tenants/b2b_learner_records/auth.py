@@ -3,9 +3,14 @@
 There is no user in this flow. MIT issues one Keycloak client-credentials
 client per contracted integration, and that client carries the organization
 UUIDs its contract covers as a hardcoded claim
-(docs/b2b-learner-records-provider-authorization.md). APISIX validates the
-token and forwards its claims in X-Userinfo, so authorization here is a set
-membership test: no call to MITx Online, no grant store.
+(docs/b2b-learner-records-provider-authorization.md). Authorization is
+therefore a set membership test over the token's own claims: no call to MITx
+Online, no grant store.
+
+Unlike b2b_dashboard, this tenant does not read X-Userinfo. It verifies the
+bearer token's signature itself (token.py), because a header rebuilt by
+APISIX only proves anything about traffic that went through APISIX, and
+these records name individual learners.
 """
 
 from __future__ import annotations
@@ -15,19 +20,21 @@ import uuid
 from typing import Annotated, Any
 
 import structlog
-from fastapi import Depends, HTTPException, Security, status
+from fastapi import Depends, Security, status
 from fastapi.openapi.models import OAuthFlowClientCredentials, OAuthFlows
 from fastapi.security import OAuth2
 
-from ol_analytics_api.core.auth.userinfo import get_userinfo
 from ol_analytics_api.tenants.b2b_learner_records.config import settings
+from ol_analytics_api.tenants.b2b_learner_records.errors import ApiError, ErrorCode
+from ol_analytics_api.tenants.b2b_learner_records.token import verified_claims
 
 ORGANIZATIONS_CLAIM = "learner_records_organizations"
 READ_SCOPE = "learner-records:read"
 
 # Declares the contract's security scheme in this tenant's OpenAPI, so generated
-# clients obtain and send a token. It enforces nothing: auto_error=False, and
-# the checks below read the claims APISIX forwards after validating the token.
+# clients obtain and send a token. It enforces nothing on its own
+# (auto_error=False); the token is verified by the TokenClaims dependency and
+# the checks below run against the verified payload.
 oauth2_client_credentials = OAuth2(
     flows=OAuthFlows(
         clientCredentials=OAuthFlowClientCredentials(
@@ -45,13 +52,13 @@ NO_GRANT_DETAIL = "No grant for the requested organization"
 
 log = structlog.get_logger(__name__)
 
-UserInfo = Annotated[dict[str, Any], Depends(get_userinfo)]
+TokenClaims = Annotated[dict[str, Any], Depends(verified_claims)]
 
 
-def _granted_organizations(userinfo: dict[str, Any]) -> set[uuid.UUID]:
+def _granted_organizations(claims: dict[str, Any]) -> set[uuid.UUID]:
     # Keycloak emits the claim as a JSON array only when the mapper's claim
     # type is JSON. Any other shape grants nothing rather than being guessed at.
-    claim = userinfo.get(ORGANIZATIONS_CLAIM)
+    claim = claims.get(ORGANIZATIONS_CLAIM)
     if not isinstance(claim, list):
         return set()
     granted = set()
@@ -63,21 +70,26 @@ def _granted_organizations(userinfo: dict[str, Any]) -> set[uuid.UUID]:
 
 def require_organization_grant(
     organization_id: uuid.UUID,
-    userinfo: UserInfo,
+    claims: TokenClaims,
     _token: Annotated[str | None, Security(oauth2_client_credentials, scopes=[READ_SCOPE])],
 ) -> None:
-    scopes = userinfo.get("scope")
+    scopes = claims.get("scope")
     if not isinstance(scopes, str) or READ_SCOPE not in scopes.split():
-        raise HTTPException(
+        raise ApiError(
             status_code=status.HTTP_403_FORBIDDEN,
+            code=ErrorCode.MISSING_SCOPE,
             detail=f"Token lacks the {READ_SCOPE} scope",
         )
-    if organization_id not in _granted_organizations(userinfo):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=NO_GRANT_DETAIL)
+    if organization_id not in _granted_organizations(claims):
+        raise ApiError(
+            status_code=status.HTTP_403_FORBIDDEN,
+            code=ErrorCode.NO_ORGANIZATION_ACCESS,
+            detail=NO_GRANT_DETAIL,
+        )
     # Every granted read discloses identifiable learner records, so record which
     # client read which organization. The access log has the path but not the client.
     log.info(
         "learner_records_access",
-        client_id=userinfo.get("azp") or userinfo.get("client_id"),
+        client_id=claims.get("azp") or claims.get("client_id"),
         organization_id=str(organization_id),
     )
