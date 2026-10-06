@@ -1,9 +1,15 @@
-"""Response schemas mirroring the 6 StarRocks B2B analytics materialized views.
+"""Response schemas for this tenant's aggregate endpoints.
 
-Column sets match the dbt models in `ol-data-platform`'s
+Six of them mirror a StarRocks B2B analytics materialized view, and their
+column sets match the dbt models in `ol-data-platform`'s
 `models/b2b_analytics/*.sql` (mitodl/ol-data-platform PR #2329) exactly.
 These are plain SQLModel (Pydantic) schemas, not ORM tables — StarRocks-side
 schema is owned by dbt, not by this service.
+
+``ContractNeedsAttention`` is the exception: it is aggregated at query time in
+this service rather than by dbt, for reasons its own docstring gives. What
+makes it belong in this module is the ``cohort_policy`` below, not the MV it
+doesn't have.
 
 Every row model declares a ``cohort_policy`` (see core.anonymization): the
 distinct-entity counts subject to the k-anonymity floor and the derived
@@ -130,6 +136,64 @@ class ContractUtilization(SQLModel):
     completion_rate_pct: float | None = Field(
         description=(
             f"Percentage of enrolled learners who earned a certificate. {_DERIVED_WITHHELD}"
+        )
+    )
+
+
+class ContractNeedsAttention(SQLModel):
+    """Distinct learners needing attention — grain: org x contract.
+
+    The one model here that does not mirror a materialized view. It is computed
+    at query time by ``learner_queries.needs_attention_aggregate`` over
+    ``b2b_learner_records.mv_b2b_learner_enrollment``, which is what lets the
+    KPI tile and the learner directory beneath it share a single
+    needs-attention expression and a single per-request cutoff.
+
+    A column on ``mv_b2b_contract_utilization`` was the other candidate and was
+    not chosen (decided 2026-10-02). It would have restated the 30-day rule and
+    the completion-status CASE in dbt — two repos, two languages, no test that
+    can see both — and frozen the cutoff at MV-refresh time, so the tile and the
+    directory could disagree about the same learner for up to a refresh
+    interval. The rule has already changed once since it was written.
+
+    Served from its own endpoint rather than folded into ``ContractUtilization``
+    because the MV behind it refreshes on its own schedule. One ``as_of`` per
+    section is exactly what stops a lagging view from making another section
+    look fresher than it is, so a client renders this tile's freshness from
+    this endpoint's envelope, not from contract-utilization's.
+
+    ``learners_considered`` is the primary cohort and gates the row. The other
+    two counts are secondary and nulled on their own terms. As on
+    ``ContractUtilization``, a published cohort beside a published subset of it
+    still leaves the complement derivable (42 considered and 40 needing
+    attention names 2 learners); that is the general across-column gap tracked
+    separately, not something specific to this model.
+    """
+
+    cohort_policy: ClassVar[CohortPolicy] = CohortPolicy(
+        primary="learners_considered",
+        secondary=("learners_needing_attention", "learners_outcomes_withheld"),
+    )
+
+    contract_id: int = Field(description="The contract's ID in MITx Online.")
+    learners_considered: int = Field(
+        description=(
+            "Learners with an active enrollment under the contract. Deactivated enrollments, "
+            f"such as after unenrolling or a refund, are left out. {_ROW_WITHHELD}"
+        )
+    )
+    learners_needing_attention: int | None = Field(
+        description=(
+            "Of those learners, how many may need a nudge: they never started a course, or "
+            "their last recorded activity was at least 30 days ago. A learner counts once "
+            "however many of the contract's courses they are behind in. Learners who haven't "
+            f"agreed to share their progress aren't counted. {_WITHHELD}"
+        )
+    )
+    learners_outcomes_withheld: int | None = Field(
+        description=(
+            "Of those learners, how many are left out of the count above because they haven't "
+            f"agreed to share their progress. {_WITHHELD}"
         )
     )
 
