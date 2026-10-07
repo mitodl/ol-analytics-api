@@ -338,6 +338,65 @@ async def test_content_engagement_floors_activity_cohorts_under_a_large_engaged_
     assert data["total_chatbot_interactions"] == 12
 
 
+async def test_monthly_trend_keeps_a_month_with_too_few_active_learners(app):
+    # Activity is course work, so a month can have enough certified or
+    # enrolling learners and too few active ones. The row is gated on
+    # contributing_learners, and monthly_active_learners is nulled like any
+    # other sub-floor cohort. A month with too few learners of any kind is
+    # still withheld whole.
+    quiet_month = {
+        "organization_key": "org-a",
+        "organization_name": "Org A",
+        "activity_year_and_month": "2026-07",
+        "monthly_active_learners": 3,
+        "new_enrollments": 0,
+        "enrolling_learners": 0,
+        "certificates_earned": 14,
+        "certified_learners": 12,
+        "total_videos_watched": 9,
+        "video_watchers": 3,
+        "total_problems_attempted": 0,
+        "problem_attempters": 0,
+        "total_chatbot_interactions": 0,
+        "chatbot_users": 0,
+        "contributing_learners": 13,
+    }
+    tiny_month = quiet_month | {
+        "activity_year_and_month": "2026-08",
+        "certificates_earned": 2,
+        "certified_learners": 2,
+        "contributing_learners": 4,
+    }
+    with (
+        patch(
+            "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
+            new=_fake_fetch_all([quiet_month, tiny_month]),
+        ),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/engagement-trend",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
+            )
+    assert response.status_code == 200
+    (data,) = response.json()["data"]
+    assert data["activity_year_and_month"] == "2026-07"
+    assert data["contributing_learners"] == 13
+    assert data["certified_learners"] == 12
+    assert data["certificates_earned"] == 14
+    assert data["monthly_active_learners"] is None
+    # The three video watchers are the three active learners.
+    assert data["video_watchers"] is None
+    assert data["total_videos_watched"] is None
+    # Nobody enrolled, which names no one.
+    assert data["enrolling_learners"] == 0
+    assert data["new_enrollments"] == 0
+
+
 async def test_monthly_trend_floors_event_counts_through_their_learner_cohorts(app):
     # An event count clears a learner floor on its own -- one learner
     # enrolling in twelve runs reads as new_enrollments == 12 -- so the floor
@@ -358,6 +417,7 @@ async def test_monthly_trend_floors_event_counts_through_their_learner_cohorts(a
         "problem_attempters": 2,
         "total_chatbot_interactions": 60,
         "chatbot_users": 15,
+        "contributing_learners": 45,
     }
     with (
         patch(
@@ -976,6 +1036,7 @@ async def test_contract_endpoint_suppresses_below_the_floor(app):
         "problem_attempters": 1,
         "total_chatbot_interactions": 60,
         "chatbot_users": 15,
+        "contributing_learners": 45,
     }
     with (
         patch(

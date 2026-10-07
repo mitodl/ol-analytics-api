@@ -43,8 +43,8 @@ _ROW_WITHHELD = (
 )
 _DERIVED_WITHHELD = "Withheld when the learner count it is based on is withheld."
 _ANY_ACTIVITY = (
-    "watched a video, attempted a problem, posted in a discussion, used the chatbot, moved "
-    "through course pages or earned a certificate"
+    "watched a video, attempted a problem, posted in a discussion, used the chatbot or moved "
+    "through course pages"
 )
 
 
@@ -286,30 +286,23 @@ class MonthlyEngagementTrend(SQLModel):
     Every aggregate here is floored through the cohort that contributes to it,
     which the view publishes alongside it (ol-data-platform PR #2520).
 
-    None of them is attributable to ``monthly_active_learners``. Each is a
-    plain SUM over the source report, so only the learners who did that
-    specific thing contribute — and clearing the primary floor says nothing
-    about whether that narrower cohort cleared it. A month with 40 active
-    learners can carry a chatbot total contributed by exactly one of them,
-    which is why each total is ``derived`` from its own cohort rather than
-    from the primary.
+    ``contributing_learners`` is the primary cohort and gates the row. It
+    counts every learner behind the month: active, enrolling or certified
+    (ol-data-platform PR #2881). Every other learner count in the row is a
+    subset of it.
 
-    How each cohort relates to the primary differs, and neither case makes
-    mapping to the primary safe:
+    ``monthly_active_learners`` is not the gate, because activity is course
+    work only. Enrolling or being issued a certificate does not make a learner
+    active, so ``enrolling_learners`` and ``certified_learners`` are not
+    subsets of it, and a month can have enough of either with too few active
+    learners. Gating on it would withhold those figures for no privacy
+    reason. It is a secondary count, nulled on its own terms.
 
-    - ``certified_learners``, ``video_watchers``, ``problem_attempters`` and
-      ``chatbot_users`` are strict *subsets*. ``active_count`` is 1 when any
-      of navigation, discussion, videos, problems, chatbot or certificate
-      activity is nonzero (organization_administration_report.sql), so each
-      of those actions sets it.
-    - ``enrolling_learners`` is *not* a subset. ``enrolled_count`` is absent
-      from that expression, so enrolling alone never sets ``active_count``
-      and a learner who only enrolled is counted here but not in the primary.
-      The row gate is unaffected — a month whose primary is sub-floor is
-      dropped whole, which over-suppresses a large enrollment cohort rather
-      than disclosing one — but the subset reasoning does not apply, and
-      ``new_enrollments`` is floored through ``enrolling_learners`` on its
-      own terms.
+    No total is attributable to the primary. Each is a SUM contributed by only
+    the learners who did that specific thing, and clearing the primary floor
+    says nothing about whether that narrower cohort cleared it. A month with
+    40 contributing learners can carry a chatbot total from exactly one of
+    them, which is why each total is ``derived`` from its own cohort.
 
     ``new_enrollments`` and ``certificates_earned`` are SUMs of
     per-learner-per-course-run markers, so they count *events*, not learners:
@@ -330,8 +323,9 @@ class MonthlyEngagementTrend(SQLModel):
     """
 
     cohort_policy: ClassVar[CohortPolicy] = CohortPolicy(
-        primary="monthly_active_learners",
+        primary="contributing_learners",
         secondary=(
+            "monthly_active_learners",
             "enrolling_learners",
             "certified_learners",
             "video_watchers",
@@ -367,9 +361,8 @@ class MonthlyEngagementTrend(SQLModel):
     activity_year_and_month: str = Field(description="The month, e.g. 2026-08.")
     monthly_active_learners: int | None = Field(
         description=(
-            f"Learners who did anything in a course this month: {_ANY_ACTIVITY}. Enrolling "
-            "alone doesn't count. If too few learners were active, the whole month is withheld "
-            "to avoid identifying them."
+            f"Learners who did course work this month: {_ANY_ACTIVITY}. Enrolling or earning "
+            f"a certificate alone doesn't count. {_WITHHELD}"
         )
     )
     new_enrollments: int | None = Field(
@@ -407,6 +400,12 @@ class MonthlyEngagementTrend(SQLModel):
     )
     chatbot_users: int | None = Field(
         description=f"Learners who used the chatbot this month. {_WITHHELD}"
+    )
+    contributing_learners: int = Field(
+        description=(
+            "Learners who did course work, enrolled or earned a certificate this month. "
+            f"{_ROW_WITHHELD}"
+        )
     )
 
 
@@ -472,12 +471,11 @@ class ContentEngagementDepth(SQLModel):
     publishes (ol-data-platform PR #2520): ``total_videos_watched`` is summed
     over ``video_watchers`` and ``total_problems_attempted`` over
     ``problem_attempters``, each a strict subset of ``engaged_learners``
-    because watching a video or attempting a problem is one of the activities
-    that sets ``active_count``. (Every cohort this view emits is such a
-    subset. That is a property of these particular cohorts, not a general
-    rule — see ``MonthlyEngagementTrend``, where ``enrolling_learners`` is
-    not a subset of its primary because enrolling does not set
-    ``active_count``.)
+    because watching a video or attempting a problem is tracked activity.
+    ``chatbot_users`` is one too. That is a property of these particular
+    cohorts, not a general rule: a certified learner need not be engaged,
+    and see ``MonthlyEngagementTrend``, where neither ``enrolling_learners``
+    nor ``certified_learners`` is a subset of ``monthly_active_learners``.
 
     The ``avg_*_per_engaged_learner`` columns are derived from *two* cohorts,
     which is why each names both. The denominator is ``engaged_learners`` —
@@ -489,13 +487,10 @@ class ContentEngagementDepth(SQLModel):
     contributing cohort is a single learner that total *is* that learner's
     value. Naming both cohorts nulls the average whenever either is sub-floor.
 
-    ``certificates_earned`` is the one column still floored as a count of
-    itself: it is ``sum(certificate_count)``, an event count, and this view
-    emits no certified-learner cohort to attribute it to (unlike
-    ``MonthlyEngagementTrend``, which has ``certified_learners``). Flooring an
-    event count is weaker than flooring a cohort — several certificates can
-    come from one learner — but strictly better than not flooring it. Emitting
-    the cohort from dbt would close this the same way #2520 closed the others.
+    ``certificates_earned`` is floored as a count of itself. Since
+    ol-data-platform PR #2881 it is one per enrolled learner holding an
+    unrevoked certificate for the run, so it is a learner cohort and the
+    floor on it is exact.
     """
 
     cohort_policy: ClassVar[CohortPolicy] = CohortPolicy(
