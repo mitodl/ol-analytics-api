@@ -107,6 +107,7 @@ Every collection returns the same envelope, with `data` typed to its record:
   "first_enrolled_on": "2026-02-03T14:22:11Z",
   "last_enrolled_on": "2026-05-19T09:04:52Z",
   "courses_enrolled": 4,
+  "outcomes_consent_status": "consented",
   "outcomes_shared": true,
   "outcomes_consent_on": "2026-02-03T14:20:04Z",
   "last_active_on": "2026-08-11",
@@ -135,6 +136,7 @@ Every collection returns the same envelope, with `data` typed to its record:
   "enrollment_is_active": true,
   "enrollment_mode": "verified",
   "enrollment_status": null,
+  "outcomes_consent_status": "consented",
   "outcomes_shared": true,
   "completion_status": "certified",
   "is_passing": true,
@@ -190,6 +192,10 @@ from `outcomes_consent_on` onward on a learner record, and from
 `completion_status` onward on an enrollment record, is `null`; identity,
 contract, course-run and enrollment facts are unaffected. That is also how a
 consent withdrawal arrives on the sync cursor.
+
+`outcomes_consent_status` is populated either way. It carries the learner's
+recorded decision (`consented`, `declined` or `not_recorded`), so an
+organization can tell a learner who has not answered from one who declined.
 
 ## Open questions
 

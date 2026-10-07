@@ -20,7 +20,9 @@ recorded, ol-data-platform#2785), which the inner selects project as
 answer, and a WHERE clause must never see that name mean both. The expression
 is ``COALESCE(outcomes_decision, <literal>)``, the literal chosen by
 ``consent_fail_open``: a recorded decision always wins, and the setting only
-covers learners with none (FALSE by default, which fails closed).
+covers learners with none (FALSE by default, which fails closed). Both it and
+``outcomes_consent_status``, the unresolved decision, come from core/consent.py,
+which the b2b_dashboard tenant shares.
 
 Consent is recorded per contract. An enrollment carries its own contract's
 decision. A learner rollup takes the decision for the contracts it counts
@@ -35,7 +37,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from ol_analytics_api.core.consent import outcomes_shared_sql
+from ol_analytics_api.core.consent import CONSENT_STATUS_SQL, outcomes_shared_sql
 from ol_analytics_api.core.db.identifiers import validate_sql_identifier
 from ol_analytics_api.tenants.b2b_learner_records.config import settings
 
@@ -200,6 +202,7 @@ def _assemble(  # noqa: PLR0913, PLR0917
     projection = ", ".join(
         [
             *columns,
+            f"{CONSENT_STATUS_SQL} AS outcomes_consent_status",
             f"{shared} AS outcomes_shared",
             *(f"CASE WHEN {shared} THEN {name} END AS {name}" for name in outcomes),
         ]

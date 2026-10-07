@@ -18,6 +18,9 @@ developer detail lives here instead:
   enrollment list on it, never on ``email``.
 - ``enrollment_is_active`` and the enrollment fields are not consent-gated;
   everything in ``_OUTCOME_FIELDS`` is.
+- ``outcomes_consent_status`` is the recorded decision for the contract before
+  ``consent_fail_open`` applies, so ``not_recorded`` can sit beside either
+  value of ``outcomes_shared``. It is not consent-gated.
 - ``completion_status``: an unrevoked certificate is ``certified``. A revoked
   certificate doesn't count, and the status then follows the grade, so it can
   read ``passed``, ``in_progress`` or ``not_started``. ``in_progress`` means a
@@ -59,6 +62,8 @@ from enum import StrEnum
 from typing import Annotated, Self
 
 from pydantic import AfterValidator, BaseModel, Field, model_validator
+
+from ol_analytics_api.core.consent import ConsentStatus
 
 
 def _assume_utc(value: datetime.datetime) -> datetime.datetime:
@@ -124,6 +129,12 @@ class LearnerProgress(BaseModel):
         description=(
             "The enrollment track, for example verified or audit. Audit enrollments don't earn "
             "certificates."
+        )
+    )
+    outcomes_consent_status: ConsentStatus = Field(
+        description=(
+            "What the learner answered when asked to share their progress: consented, "
+            "declined, or not recorded if they haven't answered yet. Always shown."
         )
     )
     outcomes_shared: bool = Field(

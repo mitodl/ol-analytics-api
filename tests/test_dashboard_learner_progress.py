@@ -58,6 +58,7 @@ def _row(**overrides):
         "enrollment_is_active": 1,
         "enrollment_mode": "verified",
         "outcomes_shared": 0,
+        "outcomes_consent_status": "not_recorded",
         "completion_status": None,
         "is_passing": None,
         "grade": None,
@@ -815,6 +816,12 @@ def test_recorded_decision_is_read_from_the_view(monkeypatch, fail_open, disclos
     assert {name for name, row in rows.items() if row["needs_attention"] is not None} == disclosed
     assert count["outcomes_withheld_count"] == 3 - len(disclosed)
     assert count["passed"] == len(disclosed)
+    # The recorded decision itself is reported whatever the default resolved to.
+    assert {name: row["outcomes_consent_status"] for name, row in rows.items()} == {
+        "consented": "consented",
+        "declined": "declined",
+        "undecided": "not_recorded",
+    }
 
     # Neither filter may say what a withheld row is withholding.
     assert set(run(completion_statuses=("passed",))[0]) == disclosed

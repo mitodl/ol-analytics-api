@@ -22,6 +22,8 @@ from typing import Annotated, Self
 
 from pydantic import AfterValidator, BaseModel, Field, model_validator
 
+from ol_analytics_api.core.consent import ConsentStatus
+
 
 def _assume_utc(value: datetime.datetime) -> datetime.datetime:
     # The MVs carry MITx Online timestamps as zone-less ISO-8601 strings in UTC,
@@ -142,6 +144,14 @@ class Learner(BaseModel):
     courses_enrolled: int = Field(
         description="Distinct course runs under the organization's contracts. Not consent-gated."
     )
+    outcomes_consent_status: ConsentStatus = Field(
+        description=(
+            "The learner's recorded decision, before the deployment's default: not_recorded "
+            "is a learner who has not answered, declined one who answered no or withdrew. "
+            "Across several contracts any decline reads declined, then any contract with no "
+            "decision reads not_recorded. Not consent-gated."
+        )
+    )
     outcomes_shared: bool = Field(
         description=(
             "Whether this learner's course status is shared. A recorded consent decision "
@@ -234,6 +244,13 @@ class Enrollment(BaseModel):
         description=("e.g. `verified`, `audit`. Determines whether the run is certificate-bearing.")
     )
     enrollment_status: str | None = Field(description="Deactivation reason where one was recorded.")
+    outcomes_consent_status: ConsentStatus = Field(
+        description=(
+            "The learner's recorded decision for this enrollment's contract, before the "
+            "deployment's default: not_recorded is a learner who has not answered, declined "
+            "one who answered no or withdrew. Not consent-gated."
+        )
+    )
     outcomes_shared: bool = Field(
         description=(
             "Whether the learner's course status is shared for this enrollment's contract. A "

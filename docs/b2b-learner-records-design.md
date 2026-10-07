@@ -288,6 +288,12 @@ the record reads `outcomes_shared: false` and its outcome columns are null.
 That is a degraded response rather than an empty one, which means partner
 integration can proceed against real records.
 
+`outcomes_consent_status` reports the recorded decision itself (`consented`,
+`declined`, `not_recorded`) and is not gated, so the organization can tell a
+learner who has not answered from one who declined whichever way the setting
+resolves them. MITx Online keeps one nullable boolean per (learner, contract),
+so a withdrawal reads `declined`.
+
 ### Why suppression rather than exclusion
 
 Excluding non-consenting learners entirely was the obvious first design, and it
@@ -321,7 +327,9 @@ That third point is the one that would have been expensive to discover late.
 3. **A change timestamp**, since `updated_since` sync is driven off it.
 4. **Three states distinguishable upstream** — `never_asked`, `declined`,
    `withdrawn` — even though all three render as `outcomes_shared: false`. The
-   organization needs the breakdown to run its own opt-in campaign.
+   organization needs the breakdown to run its own opt-in campaign. What
+   arrived distinguishes two: no decision and a decline, with a withdrawal
+   folded into the decline. `outcomes_consent_status` exposes those.
 5. **It has to reach the warehouse**, as a column on `bridge_user_organization`
    or a fact keyed on `(user_fk, organization_fk)`. The API cannot consult MITx
    Online per row.

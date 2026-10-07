@@ -37,7 +37,9 @@ Consent gates outcome fields, not the row. The MV carries the learner's
 recorded decision for the contract as a nullable ``outcomes_shared`` (null =
 none recorded), which ``records`` projects as ``outcomes_decision`` so the
 outer alias ``outcomes_shared`` only ever means the resolved answer. A recorded
-decision always wins; ``consent_fail_open`` covers learners with none.
+decision always wins; ``consent_fail_open`` covers learners with none. Both
+that and ``outcomes_consent_status``, the unresolved decision, come from
+core/consent.py, which the b2b_learner_records tenant shares.
 """
 
 from __future__ import annotations
@@ -47,7 +49,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from ol_analytics_api.core.consent import outcomes_shared_sql
+from ol_analytics_api.core.consent import CONSENT_STATUS_SQL, outcomes_shared_sql
 from ol_analytics_api.core.db.identifiers import validate_sql_identifier
 from ol_analytics_api.tenants.b2b_dashboard.config import settings
 
@@ -296,6 +298,7 @@ def learner_progress(filters: ProgressFilters, cutoff: datetime.date) -> Progres
     projection = ", ".join(
         [
             *_COLUMNS,
+            f"{CONSENT_STATUS_SQL} AS outcomes_consent_status",
             f"{shared} AS outcomes_shared",
             *(f"CASE WHEN {shared} THEN {name} END AS {name}" for name in _OUTCOMES),
             # Derived here rather than joining _OUTCOMES, which are columns:

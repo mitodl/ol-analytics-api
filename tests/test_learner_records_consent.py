@@ -203,6 +203,43 @@ def test_status_filter_follows_the_recorded_decision(conn, monkeypatch):
     assert set(unknown) == {("declined", 42), ("mixed", 43)}
 
 
+@pytest.mark.parametrize("fail_open", [False, True])
+def test_consent_status_reports_the_recorded_decision_whatever_the_default(
+    conn, monkeypatch, fail_open
+):
+    # outcomes_shared folds "no decision" into the deployment's default.
+    # outcomes_consent_status doesn't, so an organization can tell a learner
+    # who hasn't answered from one who declined.
+    monkeypatch.setattr(settings, "consent_fail_open", fail_open)
+
+    def statuses(rows):
+        return {key: row["outcomes_consent_status"] for key, row in rows.items()}
+
+    assert statuses(_enrollments(conn)[0]) == {
+        ("all_in", 42): "consented",
+        ("declined", 42): "declined",
+        ("undecided", 42): "not_recorded",
+        ("consented", 42): "consented",
+        ("consented", 43): "not_recorded",
+        ("mixed", 42): "consented",
+        ("mixed", 43): "declined",
+    }
+    organization_grain = {
+        "all_in": "consented",
+        "declined": "declined",
+        "undecided": "not_recorded",
+        "consented": "not_recorded",
+        "mixed": "declined",
+    }
+    assert statuses(_learners(conn)[0]) == organization_grain
+    assert statuses(_learners(conn, include_inactive=True)[0]) == organization_grain
+    assert statuses(_learners(conn, contract_id=42)[0]) == {
+        **organization_grain,
+        "consented": "consented",
+        "mixed": "consented",
+    }
+
+
 @pytest.mark.parametrize("include_inactive", [False, True])
 def test_learners_take_the_organization_decision(conn, monkeypatch, include_inactive):
     # The precomputed rollup and the include_inactive recompute both span every
