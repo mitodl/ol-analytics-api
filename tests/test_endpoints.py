@@ -385,7 +385,9 @@ async def test_monthly_trend_keeps_a_month_with_too_few_active_learners(app):
     assert response.status_code == 200
     (data,) = response.json()["data"]
     assert data["activity_year_and_month"] == "2026-07"
-    assert data["contributing_learners"] == 13
+    # The gate itself is not returned: 13 next to 12 certified and a withheld
+    # active count would bound that count from below.
+    assert "contributing_learners" not in data
     assert data["certified_learners"] == 12
     assert data["certificates_earned"] == 14
     assert data["monthly_active_learners"] is None
@@ -1063,6 +1065,7 @@ async def test_contract_endpoint_suppresses_below_the_floor(app):
     # Contract identity is never suppressed — it is not a cohort.
     assert data["contract_id"] == 101
     assert data["monthly_active_learners"] == 40
+    assert "contributing_learners" not in data
 
 
 async def test_contract_endpoint_rejects_a_non_numeric_contract_id(app):

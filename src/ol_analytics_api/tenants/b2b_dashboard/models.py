@@ -289,7 +289,7 @@ class MonthlyEngagementTrend(SQLModel):
     ``contributing_learners`` is the primary cohort and gates the row. It
     counts every learner behind the month: active, enrolling or certified
     (ol-data-platform PR #2881). Every other learner count in the row is a
-    subset of it.
+    subset of it. It is selected for the gate and excluded from the response.
 
     ``monthly_active_learners`` is not the gate, because activity is course
     work only. Enrolling or being issued a certificate does not make a learner
@@ -401,11 +401,12 @@ class MonthlyEngagementTrend(SQLModel):
     chatbot_users: int | None = Field(
         description=f"Learners who used the chatbot this month. {_WITHHELD}"
     )
+    # Selected so the row can be gated on it, never returned. Next to the other
+    # counts it would pin a withheld one: 16 contributing with 12 certified
+    # published and the active count withheld means exactly 4 were active.
     contributing_learners: int = Field(
-        description=(
-            "Learners who did course work, enrolled or earned a certificate this month. "
-            f"{_ROW_WITHHELD}"
-        )
+        exclude=True,
+        description="Learners who did course work, enrolled or earned a certificate this month.",
     )
 
 
@@ -489,8 +490,8 @@ class ContentEngagementDepth(SQLModel):
 
     ``certificates_earned`` is floored as a count of itself. Since
     ol-data-platform PR #2881 it is one per enrolled learner holding an
-    unrevoked certificate for the run, so it is a learner cohort and the
-    floor on it is exact.
+    unrevoked certificate for the run, so it counts learners as long as a
+    course run belongs to one contract (the dbt bridge does not test that).
     """
 
     cohort_policy: ClassVar[CohortPolicy] = CohortPolicy(
