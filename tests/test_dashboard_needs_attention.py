@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from ol_analytics_api.core.anonymization import suppress_small_cohorts
 from ol_analytics_api.core.db.identifiers import validate_sql_identifier
 from ol_analytics_api.core.db.refresh_metadata import _clear_cache
 from ol_analytics_api.main import create_app
@@ -535,3 +536,26 @@ def test_every_field_is_described_in_the_published_schema():
     for name, field in ContractNeedsAttention.model_fields.items():
         assert field.description, f"{name} has no description"
         assert properties[name].get("description") == field.description
+
+
+def test_a_small_complement_withholds_the_needs_attention_count():
+    # 42 considered and 40 needing attention names the 2 who do not, so the 40
+    # goes. A count whose complement clears the floor is kept.
+    policy = ContractNeedsAttention.cohort_policy
+    rows = [
+        {
+            "contract_id": 101,
+            "learners_considered": 42,
+            "learners_needing_attention": 40,
+            "learners_outcomes_withheld": 0,
+        },
+        {
+            "contract_id": 102,
+            "learners_considered": 42,
+            "learners_needing_attention": 20,
+            "learners_outcomes_withheld": 0,
+        },
+    ]
+    worst, typical = suppress_small_cohorts(rows, policy, 5)
+    assert worst["learners_needing_attention"] is None
+    assert typical["learners_needing_attention"] == 20

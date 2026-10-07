@@ -174,16 +174,22 @@ class ContractNeedsAttention(SQLModel):
     this endpoint's envelope, not from contract-utilization's.
 
     ``learners_considered`` is the primary cohort and gates the row. The other
-    two counts are secondary and nulled on their own terms. As on
-    ``ContractUtilization``, a published cohort beside a published subset of it
-    still leaves the complement derivable (42 considered and 40 needing
-    attention names 2 learners); that is the general across-column gap tracked
-    separately, not something specific to this model.
+    two counts are secondary, nulled on their own terms and when their
+    complement within ``learners_considered`` is under the floor: 42 considered
+    and 40 needing attention names the 2 who do not, so the 40 is withheld. A
+    client has to render that as withheld, not as nobody needing attention.
     """
 
     cohort_policy: ClassVar[CohortPolicy] = CohortPolicy(
         primary="learners_considered",
         secondary=("learners_needing_attention", "learners_outcomes_withheld"),
+        # All three are COUNT(DISTINCT learner_id) over the same rows of one
+        # subquery (learner_queries.needs_attention_aggregate), the two
+        # secondaries under a CASE, so each is a subset of the considered.
+        contained_in={
+            "learners_needing_attention": "learners_considered",
+            "learners_outcomes_withheld": "learners_considered",
+        },
     )
 
     contract_id: int = Field(description="The contract's ID in MITx Online.")
