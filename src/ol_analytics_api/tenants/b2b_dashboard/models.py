@@ -312,14 +312,14 @@ class MonthlyEngagementTrend(SQLModel):
     and ``certified_learners``, the distinct-learner counts they are actually
     attributable to, which do carry the floor.
 
-    ``monthly_active_learners`` is Optional even though it is the primary —
+    ``contributing_learners`` is Optional even though it is the primary —
     everywhere else the primary gates the row (below floor, the row is dropped
     whole, never nulled) rather than being nulled itself. The org grain is the
-    exception: it is also this endpoint's ``_FinerGrain.guarded_cohorts``
-    target, so a month whose contract-level breakdown hides anything gets its
-    org-level ``monthly_active_learners`` blanked post hoc, after its own row
-    gate already passed. See ``routers.organizations`` and
-    ``ContractMonthlyEngagementTrend``.
+    exception: every cohort column is this endpoint's
+    ``_FinerGrain.guarded_cohorts`` target, so a month whose contract-level
+    breakdown hides anything gets its org-level learner counts blanked post
+    hoc, after its own row gate already passed. See ``routers.organizations``
+    and ``ContractMonthlyEngagementTrend``.
     """
 
     cohort_policy: ClassVar[CohortPolicy] = CohortPolicy(
@@ -339,21 +339,22 @@ class MonthlyEngagementTrend(SQLModel):
             "total_problems_attempted": ("problem_attempters",),
             "total_chatbot_interactions": ("chatbot_users",),
         },
-        # Earning a certificate, watching a video, attempting a problem and
-        # using the chatbot each set `active_count`, so all four cohorts are
-        # subsets of the month's active learners and their complements are
-        # real: 42 active of whom 40 used the chatbot names the 2 who did not.
+        # Watching a video, attempting a problem and using the chatbot are
+        # tracked activity, so those three cohorts are subsets of the month's
+        # active learners and their complements are real: 42 active of whom 40
+        # used the chatbot names the 2 who did not.
         contained_in={
-            "certified_learners": "monthly_active_learners",
             "video_watchers": "monthly_active_learners",
             "problem_attempters": "monthly_active_learners",
             "chatbot_users": "monthly_active_learners",
         },
-        # Enrolling does not set `active_count`, so a learner who only enrolled
-        # is counted here and not in the primary. `monthly_active_learners -
-        # enrolling_learners` is therefore not a complement — it can even go
-        # negative — and reading it as one would suppress on noise.
-        uncontained=("enrolling_learners",),
+        # Enrolling and being issued a certificate are not activity, so
+        # neither cohort sits inside the active one, and the difference from
+        # it can go negative. All three sit inside `contributing_learners`,
+        # but that count is never returned, so a caller has no container to
+        # subtract them from and the complement rule would suppress on a
+        # number nobody can see.
+        uncontained=("monthly_active_learners", "enrolling_learners", "certified_learners"),
     )
 
     organization_key: str = Field(description="Internal identifier for the organization.")
@@ -404,7 +405,9 @@ class MonthlyEngagementTrend(SQLModel):
     # Selected so the row can be gated on it, never returned. Next to the other
     # counts it would pin a withheld one: 16 contributing with 12 certified
     # published and the active count withheld means exactly 4 were active.
-    contributing_learners: int = Field(
+    # Nullable because the cross-grain guard blanks every cohort column,
+    # this one included, for a month a contract row hides something in.
+    contributing_learners: int | None = Field(
         exclude=True,
         description="Learners who did course work, enrolled or earned a certificate this month.",
     )

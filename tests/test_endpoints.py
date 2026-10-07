@@ -472,6 +472,7 @@ def _trend_row(month="2026-07"):
         "problem_attempters": 6,
         "total_chatbot_interactions": 60,
         "chatbot_users": 15,
+        "contributing_learners": 45,
     }
 
 
@@ -482,6 +483,9 @@ def _contract_trend_row(contract, *, active, chatbot_users, chatbot_total, month
         "contract_id": contract,
         "b2b_contract_name": contract,
         "monthly_active_learners": active,
+        # The row gate. These contracts have no learner who only enrolled or
+        # was certified, so it equals the active count.
+        "contributing_learners": active,
         "chatbot_users": chatbot_users,
         "total_chatbot_interactions": chatbot_total,
     }
