@@ -9,7 +9,14 @@ import pytest
 from sqlmodel import SQLModel
 
 from ol_analytics_api.core.anonymization import CohortPolicy
-from ol_analytics_api.core.db.query import build_count, fetch_and_suppress, fetch_visible_count
+from ol_analytics_api.core.db.query import (
+    build_count,
+    build_grain_scan,
+    cohort_policy_of,
+    fetch_and_suppress,
+    fetch_grain_scan,
+    fetch_visible_count,
+)
 
 
 class _PolicylessRow(SQLModel):
@@ -100,3 +107,48 @@ async def test_count_alias_matches_the_column_fetch_visible_count_reads():
         new=AsyncMock(return_value=[{alias: 7}]),
     ):
         assert await fetch_visible_count(query, ()) == 7
+
+
+def test_build_grain_scan_projects_the_finer_model_and_takes_no_offset():
+    # Not build_select: these rows never reach a caller. The guard suppresses
+    # them itself, so it needs every column the finer cohort policy names, and
+    # it needs them all at once — a coarse row can be reconstructed from finer
+    # rows the caller reads on any page of the finer endpoint.
+    query = build_grain_scan(
+        "b2b_analytics",
+        "mv_b2b_contract_monthly_engagement_trend",
+        _PolicyRow,
+        filter_columns=("sso_organization_id",),
+    )
+
+    assert query == (
+        "SELECT enrolled_learners "
+        "FROM b2b_analytics.mv_b2b_contract_monthly_engagement_trend "
+        "WHERE sso_organization_id = %s LIMIT %s"
+    )
+    assert "OFFSET" not in query
+
+
+def test_build_grain_scan_requires_a_filter_column():
+    # Unfiltered, the scan would read every org's contract rows and blank this
+    # org's totals on another org's suppression.
+    with pytest.raises(ValueError, match="at least one filter column"):
+        build_grain_scan("b2b_analytics", "mv_thing", _PolicyRow, filter_columns=())
+
+
+async def test_fetch_grain_scan_returns_rows_unsuppressed():
+    # Deliberately raw: the caller suppresses them with the finer grain's own
+    # policy and keeps only which columns came back NULL. Nothing from here is
+    # allowed to reach a response.
+    row = {"enrolled_learners": 2}
+    with patch(
+        "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
+        new=AsyncMock(return_value=[row]),
+    ):
+        assert await fetch_grain_scan("SELECT ...", ()) == [row]
+
+
+def test_cohort_policy_of_gates_on_the_declaration():
+    assert cohort_policy_of(_PolicyRow).primary == "enrolled_learners"
+    with pytest.raises(TypeError, match="cohort_policy"):
+        cohort_policy_of(_PolicylessRow)
