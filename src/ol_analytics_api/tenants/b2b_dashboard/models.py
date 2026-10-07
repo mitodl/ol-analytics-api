@@ -298,6 +298,11 @@ class MonthlyEngagementTrend(SQLModel):
     learners. Gating on it would withhold those figures for no privacy
     reason. It is a secondary count, nulled on its own terms.
 
+    The active, enrolling and certified counts are ``uncontained``. None of
+    them sits inside another, and their one container, the primary, is never
+    returned, so a caller has nothing to subtract them from and the complement
+    rule would suppress on a number nobody can see.
+
     No total is attributable to the primary. Each is a SUM contributed by only
     the learners who did that specific thing, and clearing the primary floor
     says nothing about whether that narrower cohort cleared it. A month with

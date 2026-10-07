@@ -263,7 +263,18 @@ def hidden_additive_columns(
     floor nulled it or the view never had a value. The caller cannot tell those
     apart either, so both leave a hole in the sum that the coarse row would
     fill in.
+
+    A withheld secondary cohort that no derived column is computed over is
+    reported too, under its own name. A cohort with a derived total takes that
+    total down with it and is caught above, but one with none (the trend's
+    ``monthly_active_learners``) can be withheld in a row that publishes every
+    total, and disjoint finer rows would then hand it back as
+    ``coarse - sum(visible finer)``. Its name is not an additive column, so it
+    blanks no total; it makes the key non-empty, which is what blanks the
+    coarse grain's ``guarded_cohorts``.
     """
+    with_derived = {cohort for cohorts in policy.derived.values() for cohort in cohorts}
+    bare_cohorts = tuple(cohort for cohort in policy.secondary if cohort not in with_derived)
     hidden: dict[Any, set[str]] = {}
     for row in finer_rows:
         # One row at a time: suppress_small_cohorts returns only survivors, with
@@ -274,7 +285,11 @@ def hidden_additive_columns(
         columns = (
             set(additive_columns)  # dropped whole: every additive column is gone
             if not kept
-            else {column for column in additive_columns if kept[0].get(column) is None}
+            else {
+                column
+                for column in (*additive_columns, *bare_cohorts)
+                if kept[0].get(column) is None
+            }
         )
         if columns:
             hidden.setdefault(row.get(key_column), set()).update(columns)
