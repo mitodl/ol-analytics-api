@@ -35,6 +35,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+from ol_analytics_api.core.consent import outcomes_shared_sql
 from ol_analytics_api.core.db.identifiers import validate_sql_identifier
 from ol_analytics_api.tenants.b2b_learner_records.config import settings
 
@@ -44,7 +45,7 @@ CONTRACT_COURSERUN_MV = "mv_b2b_contract_courserun"
 
 
 def _outcomes_shared() -> str:
-    return f"COALESCE(outcomes_decision, {'TRUE' if settings.consent_fail_open else 'FALSE'})"
+    return outcomes_shared_sql(fail_open=settings.consent_fail_open)
 
 
 # Any recorded decline withholds, then any contract with no decision leaves it
