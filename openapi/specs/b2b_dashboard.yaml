@@ -1051,13 +1051,21 @@ components:
         value. Naming both cohorts nulls the average whenever either is sub-floor.
 
 
-        ``certificates_earned`` is floored as a count of itself. Since
+        ``certificates_earned`` counts learners. Since ol-data-platform PR #2881
 
-        ol-data-platform PR #2881 it is one per enrolled learner holding an
+        it is one per enrolled learner holding an unrevoked certificate for the
 
-        unrevoked certificate for the run, so it counts learners as long as a
+        run, read off the same enrollment rows as ``total_enrolled_learners``, so
 
-        course run belongs to one contract (the dbt bridge does not test that).'
+        it is a subset of that count and carries the complement rule. That holds
+
+        as long as a course run belongs to one contract (the dbt bridge does not
+
+        test that). If a run were bridged twice the SUM would double while the
+
+        distinct enrollment count did not, and a count above its container fails
+
+        closed.'
     ContractContentEngagementDepth:
       properties:
         organization_key:

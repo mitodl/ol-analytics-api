@@ -338,6 +338,58 @@ async def test_content_engagement_floors_activity_cohorts_under_a_large_engaged_
     assert data["total_chatbot_interactions"] == 12
 
 
+@pytest.mark.parametrize(
+    "path",
+    ["content-engagement", "contracts/101/content-engagement"],
+)
+async def test_content_engagement_withholds_certificates_that_name_the_uncertified(app, path):
+    # certificates_earned is one per enrolled learner holding a certificate, so
+    # 40 of 42 enrolled names the 2 who do not hold one. Both grains share the
+    # policy.
+    row = {
+        "organization_key": "org-a",
+        "organization_name": "Org A",
+        "contract_pk": "contract-101",
+        "contract_id": 101,
+        "b2b_contract_name": "Contract 101",
+        "courserun_readable_id": "course-v1:MITx+6.00+2026",
+        "courserun_title": "Intro",
+        "total_enrolled_learners": 42,
+        "engaged_learners": 30,
+        "engagement_rate_pct": 71.4,
+        "total_videos_watched": 300,
+        "video_watchers": 20,
+        "avg_videos_per_engaged_learner": 10.0,
+        "total_problems_attempted": 400,
+        "problem_attempters": 20,
+        "avg_problems_per_engaged_learner": 13.3,
+        "total_chatbot_interactions": 12,
+        "chatbot_users": 8,
+        "chatbot_adoption_pct": 19.0,
+        "certificates_earned": 40,
+    }
+    with (
+        patch(
+            "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
+            new=_fake_fetch_all([row]),
+        ),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/{path}",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
+            )
+    assert response.status_code == 200
+    (data,) = response.json()["data"]
+    assert data["certificates_earned"] is None
+    assert data["total_enrolled_learners"] == 42
+    assert data["engaged_learners"] == 30
+
+
 async def test_monthly_trend_keeps_a_month_with_too_few_active_learners(app):
     # Activity is course work, so a month can have enough certified or
     # enrolling learners and too few active ones. The row is gated on
