@@ -78,8 +78,14 @@ prek = "0d"
 
 [dependency-groups]
 prek = ["prek==0.5.3"]
+# scriv sits in its own group so the release task can install it without the
+# rest of the dev toolchain (see pre_commit_hooks under [tool.bumpversion]).
+release = [
+    "scriv>=1.8.0",
+]
 dev = [
     { include-group = "prek" },
+    { include-group = "release" },
     "ruff>=0.8",
     "mypy>=1.13",
     "pytest>=8.3",
@@ -148,12 +154,30 @@ plugins = ["pydantic.mypy"]
 module = ["aiomysql", "aiomysql.*"]
 ignore_missing_imports = true
 
+[tool.scriv]
+format = "md"
+fragment_directory = "changelog.d"
+changelog = "CHANGELOG.md"
+version = "literal: pyproject.toml: project.version"
+categories = ["Added", "Changed", "Deprecated", "Removed", "Fixed", "Security"]
+md_header_level = "2"
+entry_title_template = "{{ version }} ({{ date.strftime('%Y-%m-%d') }})"
+
 [tool.bumpversion]
 current_version = "2026.10.7.1"
 commit = false
 tag = false
 parse = "(?P<release>(?:[1-9][0-9]{3})\\.(?:1[0-2]|[1-9])\\.(?:3[0-1]|[12][0-9]|[1-9]))\\.(?P<build>\\d+)"
 serialize = ["{release}.{build}"]
+# The ol-concourse release job runs `bump-my-version bump --no-commit` in the
+# mitodl/ol-concourse-dsl image, which ships uv but not scriv, then the release
+# resource commits the tree with `git add -u`. Pre-commit hooks still run under
+# --no-commit, after pyproject.toml carries the new version, so scriv reads it
+# from there. `git add -u` stages only tracked files, so CHANGELOG.md has to
+# exist on main before a release rather than be created by one.
+pre_commit_hooks = [
+    "uv run --frozen --only-group release bin/collect-changelog",
+]
 
 [tool.bumpversion.parts.release]
 calver_format = "{YYYY}.{MM}.{DD}"

@@ -247,6 +247,25 @@ twice, a fixing pass and then a pass that must converge. If hooks only need to r
 files, `autofix-ci[bot]` pushes one commit to the pull request and the check re-runs. A fix
 under `.github/` is refused, so run prek locally for those.
 
+## Changelog
+
+A change that someone deploying or consuming the API would notice should carry
+a changelog fragment:
+
+```bash
+uv run scriv create
+```
+
+This writes a file under `changelog.d/` with a commented-out section per
+category (Added, Changed, Deprecated, Removed, Fixed, Security). Uncomment the
+one that fits, write the entry, and commit it with the change.
+
+Nothing else needs doing at release time. The Concourse release job runs
+bump-my-version, whose `pre_commit_hooks` run `bin/collect-changelog`, which
+folds every fragment into `CHANGELOG.md` under the new version and deletes the
+fragments in the same release commit. A release with no fragments still goes
+out, with no changelog entry.
+
 ## The published API contract
 
 Each tenant's OpenAPI document is committed under `openapi/specs/<tenant>.yaml`
