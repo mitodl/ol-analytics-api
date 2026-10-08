@@ -6,6 +6,37 @@ the switch to scriv were reconstructed from the git history.
 
 <!-- scriv-insert-here -->
 
+<a id='changelog-2026.10.7.1'></a>
+## 2026.10.7.1 (2026-10-07)
+
+### Added
+
+- `b2b_dashboard`: distinct-learner needs-attention count per contract, at `/organizations/{org}/needs-attention` and `/organizations/{org}/contracts/{id}/needs-attention` ([#89](https://github.com/mitodl/ol-analytics-api/pull/89))
+
+### Changed
+
+- CI runs the prek hooks through autofix.ci, with prek pinned in a `prek` dependency group ([#88](https://github.com/mitodl/ol-analytics-api/pull/88))
+- Lockfile maintenance ([#90](https://github.com/mitodl/ol-analytics-api/pull/90))
+
+### Fixed
+
+- `b2b_dashboard`: `needs_attention` no longer flags learners who have passed or been certified ([#87](https://github.com/mitodl/ol-analytics-api/pull/87))
+
+### Security
+
+- `b2b_learner_records`: the tenant verifies the bearer JWT against the realm JWKS and no longer reads `X-Userinfo` ([#69](https://github.com/mitodl/ol-analytics-api/pull/69))
+
+<a id='changelog-2026.10.1.1'></a>
+## 2026.10.1.1 (2026-10-01)
+
+### Added
+
+- `b2b_dashboard`: `needs_attention` query param and per-row field on learner-progress ([#84](https://github.com/mitodl/ol-analytics-api/pull/84))
+
+### Changed
+
+- `astral-sh/setup-uv` action updated to v10.1.0 ([#76](https://github.com/mitodl/ol-analytics-api/pull/76))
+
 <a id='changelog-2026.9.30.1'></a>
 ## 2026.9.30.1 (2026-09-30)
 
