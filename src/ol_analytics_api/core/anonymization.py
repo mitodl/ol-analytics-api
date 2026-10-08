@@ -93,7 +93,7 @@ class CohortPolicy:
         land here: counts that are not subsets of anything in the row (a
         monthly ``enrolling_learners``, where enrolling does not itself make a
         learner active), and columns that count *events* rather than entities
-        (``certificates_earned`` as ``sum(certificate_count)``), where
+        (a SUM of certificates where one learner can hold several), where
         ``container - count`` can go negative and means nothing either way.
 
     Every ``secondary`` count must appear in exactly one of ``contained_in``

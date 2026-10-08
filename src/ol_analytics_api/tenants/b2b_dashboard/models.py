@@ -496,10 +496,14 @@ class ContentEngagementDepth(SQLModel):
     contributing cohort is a single learner that total *is* that learner's
     value. Naming both cohorts nulls the average whenever either is sub-floor.
 
-    ``certificates_earned`` is floored as a count of itself. Since
-    ol-data-platform PR #2881 it is one per enrolled learner holding an
-    unrevoked certificate for the run, so it counts learners as long as a
-    course run belongs to one contract (the dbt bridge does not test that).
+    ``certificates_earned`` counts learners. Since ol-data-platform PR #2881
+    it is one per enrolled learner holding an unrevoked certificate for the
+    run, read off the same enrollment rows as ``total_enrolled_learners``, so
+    it is a subset of that count and carries the complement rule. That holds
+    as long as a course run belongs to one contract (the dbt bridge does not
+    test that). If a run were bridged twice the SUM would double while the
+    distinct enrollment count did not, and a count above its container fails
+    closed.
     """
 
     cohort_policy: ClassVar[CohortPolicy] = CohortPolicy(
@@ -530,13 +534,10 @@ class ContentEngagementDepth(SQLModel):
             "video_watchers": "engaged_learners",
             "problem_attempters": "engaged_learners",
             "chatbot_users": "engaged_learners",
+            # Not inside the engaged learners: a certificate does not need a
+            # day of tracked activity in the run.
+            "certificates_earned": "total_enrolled_learners",
         },
-        # `sum(certificate_count)` counts certificates, not learners: one
-        # learner can hold several, so it is not a subset of any cohort here
-        # and can exceed one. It stays floored as a count of itself (see
-        # above); a complement rule over it would be arithmetic on two
-        # different units.
-        uncontained=("certificates_earned",),
     )
 
     organization_key: str = Field(description="Internal identifier for the organization.")
