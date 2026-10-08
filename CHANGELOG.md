@@ -6,6 +6,13 @@ the switch to scriv were reconstructed from the git history.
 
 <!-- scriv-insert-here -->
 
+<a id='changelog-2026.10.8.1'></a>
+## 2026.10.8.1 (2026-10-08)
+
+### Added
+
+- Changelog fragments with scriv. A change worth noting adds a fragment under `changelog.d/`, and the release job collects whatever fragments are present into `CHANGELOG.md` during the version bump.
+
 <a id='changelog-2026.10.7.1'></a>
 ## 2026.10.7.1 (2026-10-07)
 
