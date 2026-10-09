@@ -26,7 +26,10 @@ from fastapi.security import OAuth2
 
 from ol_analytics_api.tenants.b2b_learner_records.config import settings
 from ol_analytics_api.tenants.b2b_learner_records.errors import ApiError, ErrorCode
-from ol_analytics_api.tenants.b2b_learner_records.token import verified_claims
+from ol_analytics_api.tenants.b2b_learner_records.token import (
+    CONTRACT_END_DATE_CLAIM,
+    verified_claims,
+)
 
 ORGANIZATIONS_CLAIM = "learner_records_organizations"
 READ_SCOPE = "learner-records:read"
@@ -88,8 +91,11 @@ def require_organization_grant(
         )
     # Every granted read discloses identifiable learner records, so record which
     # client read which organization. The access log has the path but not the client.
+    # The end date rides along so an alert can warn MIT ahead of a lapse; token.py
+    # refuses the credential once it passes.
     log.info(
         "learner_records_access",
         client_id=claims.get("azp") or claims.get("client_id"),
         organization_id=str(organization_id),
+        contract_end_date=claims.get(CONTRACT_END_DATE_CLAIM),
     )
