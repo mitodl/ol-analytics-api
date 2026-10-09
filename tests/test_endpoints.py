@@ -338,6 +338,119 @@ async def test_content_engagement_floors_activity_cohorts_under_a_large_engaged_
     assert data["total_chatbot_interactions"] == 12
 
 
+@pytest.mark.parametrize(
+    "path",
+    ["content-engagement", "contracts/101/content-engagement"],
+)
+async def test_content_engagement_withholds_certificates_that_name_the_uncertified(app, path):
+    # certificates_earned is one per enrolled learner holding a certificate, so
+    # 40 of 42 enrolled names the 2 who do not hold one. Both grains share the
+    # policy.
+    row = {
+        "organization_key": "org-a",
+        "organization_name": "Org A",
+        "contract_pk": "contract-101",
+        "contract_id": 101,
+        "b2b_contract_name": "Contract 101",
+        "courserun_readable_id": "course-v1:MITx+6.00+2026",
+        "courserun_title": "Intro",
+        "total_enrolled_learners": 42,
+        "engaged_learners": 30,
+        "engagement_rate_pct": 71.4,
+        "total_videos_watched": 300,
+        "video_watchers": 20,
+        "avg_videos_per_engaged_learner": 10.0,
+        "total_problems_attempted": 400,
+        "problem_attempters": 20,
+        "avg_problems_per_engaged_learner": 13.3,
+        "total_chatbot_interactions": 12,
+        "chatbot_users": 8,
+        "chatbot_adoption_pct": 19.0,
+        "certificates_earned": 40,
+    }
+    with (
+        patch(
+            "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
+            new=_fake_fetch_all([row]),
+        ),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/{path}",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
+            )
+    assert response.status_code == 200
+    (data,) = response.json()["data"]
+    assert data["certificates_earned"] is None
+    assert data["total_enrolled_learners"] == 42
+    assert data["engaged_learners"] == 30
+
+
+async def test_monthly_trend_keeps_a_month_with_too_few_active_learners(app):
+    # Activity is course work, so a month can have enough certified or
+    # enrolling learners and too few active ones. The row is gated on
+    # contributing_learners, and monthly_active_learners is nulled like any
+    # other sub-floor cohort. A month with too few learners of any kind is
+    # still withheld whole.
+    quiet_month = {
+        "organization_key": "org-a",
+        "organization_name": "Org A",
+        "activity_year_and_month": "2026-07",
+        "monthly_active_learners": 3,
+        "new_enrollments": 0,
+        "enrolling_learners": 0,
+        "certificates_earned": 14,
+        "certified_learners": 12,
+        "total_videos_watched": 9,
+        "video_watchers": 3,
+        "total_problems_attempted": 0,
+        "problem_attempters": 0,
+        "total_chatbot_interactions": 0,
+        "chatbot_users": 0,
+        "contributing_learners": 13,
+    }
+    tiny_month = quiet_month | {
+        "activity_year_and_month": "2026-08",
+        "certificates_earned": 2,
+        "certified_learners": 2,
+        "contributing_learners": 4,
+    }
+    with (
+        patch(
+            "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
+            new=_fake_fetch_all([quiet_month, tiny_month]),
+        ),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/engagement-trend",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
+            )
+    assert response.status_code == 200
+    (data,) = response.json()["data"]
+    assert data["activity_year_and_month"] == "2026-07"
+    # The gate itself is not returned: 13 next to 12 certified and a withheld
+    # active count would bound that count from below.
+    assert "contributing_learners" not in data
+    assert data["certified_learners"] == 12
+    assert data["certificates_earned"] == 14
+    assert data["monthly_active_learners"] is None
+    # The three video watchers are the three active learners.
+    assert data["video_watchers"] is None
+    assert data["total_videos_watched"] is None
+    # Nobody enrolled, which names no one.
+    assert data["enrolling_learners"] == 0
+    assert data["new_enrollments"] == 0
+
+
 async def test_monthly_trend_floors_event_counts_through_their_learner_cohorts(app):
     # An event count clears a learner floor on its own -- one learner
     # enrolling in twelve runs reads as new_enrollments == 12 -- so the floor
@@ -358,6 +471,7 @@ async def test_monthly_trend_floors_event_counts_through_their_learner_cohorts(a
         "problem_attempters": 2,
         "total_chatbot_interactions": 60,
         "chatbot_users": 15,
+        "contributing_learners": 45,
     }
     with (
         patch(
@@ -410,6 +524,7 @@ def _trend_row(month="2026-07"):
         "problem_attempters": 6,
         "total_chatbot_interactions": 60,
         "chatbot_users": 15,
+        "contributing_learners": 45,
     }
 
 
@@ -420,6 +535,9 @@ def _contract_trend_row(contract, *, active, chatbot_users, chatbot_total, month
         "contract_id": contract,
         "b2b_contract_name": contract,
         "monthly_active_learners": active,
+        # The row gate. These contracts have no learner who only enrolled or
+        # was certified, so it equals the active count.
+        "contributing_learners": active,
         "chatbot_users": chatbot_users,
         "total_chatbot_interactions": chatbot_total,
     }
@@ -515,6 +633,38 @@ async def test_org_trend_blanks_the_headline_count_disjoint_contracts_would_reve
     assert response.status_code == 200
     (data,) = response.json()["data"]
     assert data["monthly_active_learners"] is None
+
+
+async def test_org_trend_blanks_the_active_count_a_published_contract_row_withholds(app):
+    # C1 clears the row gate on its certified learners, with 3 active learners
+    # who only moved through course pages, so it publishes every total and
+    # withholds only its active count. C2 shares no learners with it. Left
+    # alone, the org's `28 - 25` hands back C1's withheld 3.
+    quiet = {
+        "monthly_active_learners": 3,
+        "contributing_learners": 13,
+        "certified_learners": 10,
+        "certificates_earned": 10,
+        "enrolling_learners": 0,
+        "new_enrollments": 0,
+        "video_watchers": 0,
+        "total_videos_watched": 0,
+        "problem_attempters": 0,
+        "total_problems_attempted": 0,
+    }
+    finer = [
+        _contract_trend_row("C1", active=3, chatbot_users=0, chatbot_total=0) | quiet,
+        _contract_trend_row("C2", active=25, chatbot_users=20, chatbot_total=500),
+    ]
+    org_row = _trend_row() | {"monthly_active_learners": 28}
+    response = await _get_trend(app, _fake_fetch_all([org_row], finer_rows=finer))
+
+    assert response.status_code == 200
+    (data,) = response.json()["data"]
+    assert data["monthly_active_learners"] is None
+    # No contract total is withheld, so the org totals stay.
+    assert data["total_videos_watched"] == 500
+    assert data["certificates_earned"] == 30
 
 
 async def test_org_trend_untouched_when_the_contract_grain_publishes_in_full(app):
@@ -976,6 +1126,7 @@ async def test_contract_endpoint_suppresses_below_the_floor(app):
         "problem_attempters": 1,
         "total_chatbot_interactions": 60,
         "chatbot_users": 15,
+        "contributing_learners": 45,
     }
     with (
         patch(
@@ -1002,6 +1153,7 @@ async def test_contract_endpoint_suppresses_below_the_floor(app):
     # Contract identity is never suppressed — it is not a cohort.
     assert data["contract_id"] == 101
     assert data["monthly_active_learners"] == 40
+    assert "contributing_learners" not in data
 
 
 async def test_contract_endpoint_rejects_a_non_numeric_contract_id(app):

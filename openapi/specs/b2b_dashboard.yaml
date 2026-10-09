@@ -912,9 +912,9 @@ components:
           - type: 'null'
           title: Engaged Learners
           description: 'Enrolled learners who did anything in the course: watched
-            a video, attempted a problem, posted in a discussion, used the chatbot,
-            moved through course pages or earned a certificate. Withheld when too
-            few learners are in the group to report without identifying them.'
+            a video, attempted a problem, posted in a discussion, used the chatbot
+            or moved through course pages. Withheld when too few learners are in the
+            group to report without identifying them.'
         engagement_rate_pct:
           anyOf:
           - type: number
@@ -1034,17 +1034,15 @@ components:
 
         ``problem_attempters``, each a strict subset of ``engaged_learners``
 
-        because watching a video or attempting a problem is one of the activities
+        because watching a video or attempting a problem is tracked activity.
 
-        that sets ``active_count``. (Every cohort this view emits is such a
+        ``chatbot_users`` is one too. That is a property of these particular
 
-        subset. That is a property of these particular cohorts, not a general
+        cohorts, not a general rule: a certified learner need not be engaged,
 
-        rule — see ``MonthlyEngagementTrend``, where ``enrolling_learners`` is
+        and see ``MonthlyEngagementTrend``, where neither ``enrolling_learners``
 
-        not a subset of its primary because enrolling does not set
-
-        ``active_count``.)
+        nor ``certified_learners`` is a subset of ``monthly_active_learners``.
 
 
         The ``avg_*_per_engaged_learner`` columns are derived from *two* cohorts,
@@ -1066,19 +1064,21 @@ components:
         value. Naming both cohorts nulls the average whenever either is sub-floor.
 
 
-        ``certificates_earned`` is the one column still floored as a count of
+        ``certificates_earned`` counts learners. Since ol-data-platform PR #2881
 
-        itself: it is ``sum(certificate_count)``, an event count, and this view
+        it is one per enrolled learner holding an unrevoked certificate for the
 
-        emits no certified-learner cohort to attribute it to (unlike
+        run, read off the same enrollment rows as ``total_enrolled_learners``, so
 
-        ``MonthlyEngagementTrend``, which has ``certified_learners``). Flooring an
+        it is a subset of that count and carries the complement rule. That holds
 
-        event count is weaker than flooring a cohort — several certificates can
+        as long as a course run belongs to one contract (the dbt bridge does not
 
-        come from one learner — but strictly better than not flooring it. Emitting
+        test that). If a run were bridged twice the SUM would double while the
 
-        the cohort from dbt would close this the same way #2520 closed the others.'
+        distinct enrollment count did not, and a count above its container fails
+
+        closed.'
     ContractContentEngagementDepth:
       properties:
         organization_key:
@@ -1109,9 +1109,9 @@ components:
           - type: 'null'
           title: Engaged Learners
           description: 'Enrolled learners who did anything in the course: watched
-            a video, attempted a problem, posted in a discussion, used the chatbot,
-            moved through course pages or earned a certificate. Withheld when too
-            few learners are in the group to report without identifying them.'
+            a video, attempted a problem, posted in a discussion, used the chatbot
+            or moved through course pages. Withheld when too few learners are in the
+            group to report without identifying them.'
         engagement_rate_pct:
           anyOf:
           - type: number
@@ -1272,11 +1272,11 @@ components:
           - type: integer
           - type: 'null'
           title: Monthly Active Learners
-          description: 'Learners who did anything in a course this month: watched
-            a video, attempted a problem, posted in a discussion, used the chatbot,
-            moved through course pages or earned a certificate. Enrolling alone doesn''t
-            count. If too few learners were active, the whole month is withheld to
-            avoid identifying them.'
+          description: 'Learners who did course work this month: watched a video,
+            attempted a problem, posted in a discussion, used the chatbot or moved
+            through course pages. Enrolling or earning a certificate alone doesn''t
+            count. Withheld when too few learners are in the group to report without
+            identifying them.'
         new_enrollments:
           anyOf:
           - type: integer
@@ -2169,11 +2169,11 @@ components:
           - type: integer
           - type: 'null'
           title: Monthly Active Learners
-          description: 'Learners who did anything in a course this month: watched
-            a video, attempted a problem, posted in a discussion, used the chatbot,
-            moved through course pages or earned a certificate. Enrolling alone doesn''t
-            count. If too few learners were active, the whole month is withheld to
-            avoid identifying them.'
+          description: 'Learners who did course work this month: watched a video,
+            attempted a problem, posted in a discussion, used the chatbot or moved
+            through course pages. Enrolling or earning a certificate alone doesn''t
+            count. Withheld when too few learners are in the group to report without
+            identifying them.'
         new_enrollments:
           anyOf:
           - type: integer
@@ -2262,41 +2262,86 @@ components:
       - total_chatbot_interactions
       - chatbot_users
       title: MonthlyEngagementTrend
-      description: "mv_b2b_monthly_engagement_trend — grain: org x year_month.\n\n\
-        Every aggregate here is floored through the cohort that contributes to it,\n\
-        which the view publishes alongside it (ol-data-platform PR #2520).\n\nNone\
-        \ of them is attributable to ``monthly_active_learners``. Each is a\nplain\
-        \ SUM over the source report, so only the learners who did that\nspecific\
-        \ thing contribute — and clearing the primary floor says nothing\nabout whether\
-        \ that narrower cohort cleared it. A month with 40 active\nlearners can carry\
-        \ a chatbot total contributed by exactly one of them,\nwhich is why each total\
-        \ is ``derived`` from its own cohort rather than\nfrom the primary.\n\nHow\
-        \ each cohort relates to the primary differs, and neither case makes\nmapping\
-        \ to the primary safe:\n\n- ``certified_learners``, ``video_watchers``, ``problem_attempters``\
-        \ and\n  ``chatbot_users`` are strict *subsets*. ``active_count`` is 1 when\
-        \ any\n  of navigation, discussion, videos, problems, chatbot or certificate\n\
-        \  activity is nonzero (organization_administration_report.sql), so each\n\
-        \  of those actions sets it.\n- ``enrolling_learners`` is *not* a subset.\
-        \ ``enrolled_count`` is absent\n  from that expression, so enrolling alone\
-        \ never sets ``active_count``\n  and a learner who only enrolled is counted\
-        \ here but not in the primary.\n  The row gate is unaffected — a month whose\
-        \ primary is sub-floor is\n  dropped whole, which over-suppresses a large\
-        \ enrollment cohort rather\n  than disclosing one — but the subset reasoning\
-        \ does not apply, and\n  ``new_enrollments`` is floored through ``enrolling_learners``\
-        \ on its\n  own terms.\n\n``new_enrollments`` and ``certificates_earned``\
-        \ are SUMs of\nper-learner-per-course-run markers, so they count *events*,\
-        \ not learners:\none learner enrolling in six runs reads as ``new_enrollments\
-        \ == 6`` and\nwould clear a floor of 5 on its own. Flooring them directly\
-        \ is therefore\nthe wrong instrument — they are ``derived`` from ``enrolling_learners``\n\
-        and ``certified_learners``, the distinct-learner counts they are actually\n\
-        attributable to, which do carry the floor.\n\n``monthly_active_learners``\
-        \ is Optional even though it is the primary —\neverywhere else the primary\
-        \ gates the row (below floor, the row is dropped\nwhole, never nulled) rather\
-        \ than being nulled itself. The org grain is the\nexception: it is also this\
-        \ endpoint's ``_FinerGrain.guarded_cohorts``\ntarget, so a month whose contract-level\
-        \ breakdown hides anything gets its\norg-level ``monthly_active_learners``\
-        \ blanked post hoc, after its own row\ngate already passed. See ``routers.organizations``\
-        \ and\n``ContractMonthlyEngagementTrend``."
+      description: 'mv_b2b_monthly_engagement_trend — grain: org x year_month.
+
+
+        Every aggregate here is floored through the cohort that contributes to it,
+
+        which the view publishes alongside it (ol-data-platform PR #2520).
+
+
+        ``contributing_learners`` is the primary cohort and gates the row. It
+
+        counts every learner behind the month: active, enrolling or certified
+
+        (ol-data-platform PR #2881). Every other learner count in the row is a
+
+        subset of it. It is selected for the gate and excluded from the response.
+
+
+        ``monthly_active_learners`` is not the gate, because activity is course
+
+        work only. Enrolling or being issued a certificate does not make a learner
+
+        active, so ``enrolling_learners`` and ``certified_learners`` are not
+
+        subsets of it, and a month can have enough of either with too few active
+
+        learners. Gating on it would withhold those figures for no privacy
+
+        reason. It is a secondary count, nulled on its own terms.
+
+
+        The active, enrolling and certified counts are ``uncontained``. None of
+
+        them sits inside another, and their one container, the primary, is never
+
+        returned, so a caller has nothing to subtract them from and the complement
+
+        rule would suppress on a number nobody can see.
+
+
+        No total is attributable to the primary. Each is a SUM contributed by only
+
+        the learners who did that specific thing, and clearing the primary floor
+
+        says nothing about whether that narrower cohort cleared it. A month with
+
+        40 contributing learners can carry a chatbot total from exactly one of
+
+        them, which is why each total is ``derived`` from its own cohort.
+
+
+        ``new_enrollments`` and ``certificates_earned`` are SUMs of
+
+        per-learner-per-course-run markers, so they count *events*, not learners:
+
+        one learner enrolling in six runs reads as ``new_enrollments == 6`` and
+
+        would clear a floor of 5 on its own. Flooring them directly is therefore
+
+        the wrong instrument — they are ``derived`` from ``enrolling_learners``
+
+        and ``certified_learners``, the distinct-learner counts they are actually
+
+        attributable to, which do carry the floor.
+
+
+        ``contributing_learners`` is Optional even though it is the primary —
+
+        everywhere else the primary gates the row (below floor, the row is dropped
+
+        whole, never nulled) rather than being nulled itself. The org grain is the
+
+        exception: every cohort column is this endpoint''s
+
+        ``_FinerGrain.guarded_cohorts`` target, so a month whose contract-level
+
+        breakdown hides anything gets its org-level learner counts blanked post
+
+        hoc, after its own row gate already passed. See ``routers.organizations``
+
+        and ``ContractMonthlyEngagementTrend``.'
     OrgAnalyticsResponse_ContentEngagementDepth_:
       properties:
         organization_id:
