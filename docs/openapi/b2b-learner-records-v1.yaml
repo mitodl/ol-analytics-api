@@ -16,11 +16,14 @@ info:
     Three things a reader needs that the schemas do not state:
 
     * **Consent gates outcomes, not identity.** Progress, completion and
-      activity fields are populated only where the learner has opted in to
-      sharing their course status. `outcomes_shared` says which. Identity and
-      enrollment facts are not consent-gated — the organization assigned the
-      seat. Enforcement fails closed, so every record reads
-      `outcomes_shared: false` until the upstream consent field ships.
+      activity fields are populated only where the learner's course status
+      is shared. `outcomes_shared` says which. Identity and enrollment facts
+      are not consent-gated — the organization assigned the seat. A recorded
+      consent decision always decides it. With none recorded, the deployment's
+      default does: it fails closed unless the deployment is configured
+      otherwise, and the record then reads `outcomes_shared: false`.
+      `outcomes_consent_status` carries the recorded decision itself, so a
+      learner who has not answered can be told from one who declined.
     * **The same schemas are delivered two ways.** This REST API, and a
       per-organization bulk export written to S3 on each refresh. The export
       carries the same records under the same field names. It is readable
@@ -120,6 +123,7 @@ paths:
                         first_enrolled_on: '2026-02-03T14:22:11Z'
                         last_enrolled_on: '2026-05-19T09:04:52Z'
                         courses_enrolled: 4
+                        outcomes_consent_status: consented
                         outcomes_shared: true
                         outcomes_consent_on: '2026-02-03T14:20:04Z'
                         last_active_on: '2026-08-11'
@@ -138,6 +142,7 @@ paths:
                         first_enrolled_on: '2026-03-11T10:02:44Z'
                         last_enrolled_on: '2026-03-11T10:02:44Z'
                         courses_enrolled: 2
+                        outcomes_consent_status: declined
                         outcomes_shared: false
                         outcomes_consent_on: null
                         last_active_on: null
@@ -205,6 +210,7 @@ paths:
                         enrollment_is_active: true
                         enrollment_mode: verified
                         enrollment_status: null
+                        outcomes_consent_status: consented
                         outcomes_shared: true
                         completion_status: certified
                         is_passing: true
@@ -231,6 +237,7 @@ paths:
                         enrollment_is_active: true
                         enrollment_mode: verified
                         enrollment_status: null
+                        outcomes_consent_status: declined
                         outcomes_shared: false
                         completion_status: null
                         is_passing: null
@@ -439,8 +446,8 @@ components:
       description: >-
         Return only records changed at or after this instant. Pass the previous
         sync's `as_of`. A record's change time is the latest of its enrollment,
-        grade, certificate, organization membership and (once it exists)
-        consent changes. Activity doesn't move it. Deactivated enrollments and
+        grade, certificate, organization membership and consent changes.
+        Activity doesn't move it. Deactivated enrollments and
         learners no longer in the organization are changes too, but
         `include_inactive` still filters them, so pass
         `include_inactive=true` when syncing.
@@ -522,6 +529,7 @@ components:
         - first_enrolled_on
         - last_enrolled_on
         - courses_enrolled
+        - outcomes_consent_status
         - outcomes_shared
         - outcomes_consent_on
         - last_active_on
@@ -581,17 +589,27 @@ components:
           minimum: 0
           description: Distinct course runs under the organization's contracts. Not consent-gated.
           x-data-readiness: derived
+        outcomes_consent_status:
+          $ref: '#/components/schemas/ConsentStatus'
+          description: >-
+            The learner's recorded decision, before the deployment's default.
+            Across several contracts any decline reads `declined`, then any
+            contract with no decision reads `not_recorded`. Not consent-gated.
+          x-data-readiness: available
         outcomes_shared:
           type: boolean
           description: >-
-            Whether this learner has opted in to sharing their course status.
-            False means every field below is null.
-          x-data-readiness: pending-model
+            Whether this learner's course status is shared. A recorded consent
+            decision always decides it; with none recorded, the deployment's
+            default does. False means every field below is null.
+          x-data-readiness: available
         outcomes_consent_on:
           type: [string, 'null']
           format: date-time
-          description: When consent was recorded. Null when `outcomes_shared` is false.
-          x-data-readiness: pending-model
+          description: >-
+            When consent was recorded. Null when `outcomes_shared` is false, and
+            when it is true with no recorded decision.
+          x-data-readiness: available
         last_active_on:
           type: [string, 'null']
           format: date
@@ -650,6 +668,7 @@ components:
         - enrollment_is_active
         - enrollment_mode
         - enrollment_status
+        - outcomes_consent_status
         - outcomes_shared
         - completion_status
         - is_passing
@@ -720,10 +739,20 @@ components:
           type: [string, 'null']
           description: Deactivation reason where one was recorded.
           x-data-readiness: available
+        outcomes_consent_status:
+          $ref: '#/components/schemas/ConsentStatus'
+          description: >-
+            The learner's recorded decision for this enrollment's contract,
+            before the deployment's default. Not consent-gated.
+          x-data-readiness: available
         outcomes_shared:
           type: boolean
-          description: Whether the learner has opted in to sharing their course status. False means every field below is null.
-          x-data-readiness: pending-model
+          description: >-
+            Whether the learner's course status is shared for this enrollment's
+            contract. A recorded consent decision always decides it; with none
+            recorded, the deployment's default does. False means every field
+            below is null.
+          x-data-readiness: available
         completion_status:
           oneOf:
             - $ref: '#/components/schemas/CompletionStatus'
@@ -900,6 +929,15 @@ components:
         schedule after grading, and audit-mode enrollments never certify.
       enum: [not_started, in_progress, passed, certified]
       x-data-readiness: derived
+
+    ConsentStatus:
+      type: string
+      description: >-
+        The learner's recorded data-sharing decision. `not_recorded` is a
+        learner who has not answered. `declined` covers a learner who answered
+        no and one who consented and later withdrew.
+      enum: [consented, declined, not_recorded]
+      x-data-readiness: available
 
     Error:
       type: object

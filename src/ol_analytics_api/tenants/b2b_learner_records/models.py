@@ -9,9 +9,8 @@ outcome fields unless ``outcomes_shared`` is true. The queries already project
 NULL for them (see queries._outcomes_shared). This is a second check, so a
 query change that projects a raw outcome column still can't disclose it.
 
-The consent date isn't in the warehouse yet, so it is projected as NULL and
-ships null until the upstream model lands. It has no default, so the generated
-schema lists it as required and nullable, as the contract does.
+``outcomes_consent_on`` has no default, so the generated schema lists it as
+required and nullable, as the contract does.
 """
 
 from __future__ import annotations
@@ -22,6 +21,8 @@ from enum import StrEnum
 from typing import Annotated, Self
 
 from pydantic import AfterValidator, BaseModel, Field, model_validator
+
+from ol_analytics_api.core.consent import ConsentStatus
 
 
 def _assume_utc(value: datetime.datetime) -> datetime.datetime:
@@ -143,14 +144,26 @@ class Learner(BaseModel):
     courses_enrolled: int = Field(
         description="Distinct course runs under the organization's contracts. Not consent-gated."
     )
+    outcomes_consent_status: ConsentStatus = Field(
+        description=(
+            "The learner's recorded decision, before the deployment's default: not_recorded "
+            "is a learner who has not answered, declined one who answered no or withdrew. "
+            "Across several contracts any decline reads declined, then any contract with no "
+            "decision reads not_recorded. Not consent-gated."
+        )
+    )
     outcomes_shared: bool = Field(
         description=(
-            "Whether this learner has opted in to sharing their course status. False means "
-            "every field below is null."
+            "Whether this learner's course status is shared. A recorded consent decision "
+            "always decides it; with none recorded, the deployment's default does. False "
+            "means every field below is null."
         )
     )
     outcomes_consent_on: UtcDatetime | None = Field(
-        description="When consent was recorded. Null when outcomes_shared is false."
+        description=(
+            "When consent was recorded. Null when outcomes_shared is false, and when it is "
+            "true with no recorded decision."
+        )
     )
     last_active_on: datetime.date | None = Field(
         description=(
@@ -231,10 +244,18 @@ class Enrollment(BaseModel):
         description=("e.g. `verified`, `audit`. Determines whether the run is certificate-bearing.")
     )
     enrollment_status: str | None = Field(description="Deactivation reason where one was recorded.")
+    outcomes_consent_status: ConsentStatus = Field(
+        description=(
+            "The learner's recorded decision for this enrollment's contract, before the "
+            "deployment's default: not_recorded is a learner who has not answered, declined "
+            "one who answered no or withdrew. Not consent-gated."
+        )
+    )
     outcomes_shared: bool = Field(
         description=(
-            "Whether the learner has opted in to sharing their course status. False means "
-            "every field below is null."
+            "Whether the learner's course status is shared for this enrollment's contract. A "
+            "recorded consent decision always decides it; with none recorded, the "
+            "deployment's default does. False means every field below is null."
         )
     )
     completion_status: CompletionStatus | None = Field(

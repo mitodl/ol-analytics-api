@@ -343,6 +343,19 @@ components:
       - certified
       - unknown
       title: CompletionStatusFilter
+    ConsentStatus:
+      type: string
+      enum:
+      - consented
+      - declined
+      - not_recorded
+      title: ConsentStatus
+      description: '``not_recorded`` = the learner has not answered. ``declined``
+        covers a
+
+        learner who answered no and one who consented and later withdrew: MITx
+
+        Online keeps one nullable boolean per (learner, contract).'
     CourseRun:
       properties:
         organization_id:
@@ -508,11 +521,17 @@ components:
           - type: 'null'
           title: Enrollment Status
           description: Deactivation reason where one was recorded.
+        outcomes_consent_status:
+          $ref: '#/components/schemas/ConsentStatus'
+          description: 'The learner''s recorded decision for this enrollment''s contract,
+            before the deployment''s default: not_recorded is a learner who has not
+            answered, declined one who answered no or withdrew. Not consent-gated.'
         outcomes_shared:
           type: boolean
           title: Outcomes Shared
-          description: Whether the learner has opted in to sharing their course status.
-            False means every field below is null.
+          description: Whether the learner's course status is shared for this enrollment's
+            contract. A recorded consent decision always decides it; with none recorded,
+            the deployment's default does. False means every field below is null.
         completion_status:
           anyOf:
           - $ref: '#/components/schemas/CompletionStatus'
@@ -609,6 +628,7 @@ components:
       - enrollment_is_active
       - enrollment_mode
       - enrollment_status
+      - outcomes_consent_status
       - outcomes_shared
       - completion_status
       - is_passing
@@ -688,18 +708,26 @@ components:
           title: Courses Enrolled
           description: Distinct course runs under the organization's contracts. Not
             consent-gated.
+        outcomes_consent_status:
+          $ref: '#/components/schemas/ConsentStatus'
+          description: 'The learner''s recorded decision, before the deployment''s
+            default: not_recorded is a learner who has not answered, declined one
+            who answered no or withdrew. Across several contracts any decline reads
+            declined, then any contract with no decision reads not_recorded. Not consent-gated.'
         outcomes_shared:
           type: boolean
           title: Outcomes Shared
-          description: Whether this learner has opted in to sharing their course status.
-            False means every field below is null.
+          description: Whether this learner's course status is shared. A recorded
+            consent decision always decides it; with none recorded, the deployment's
+            default does. False means every field below is null.
         outcomes_consent_on:
           anyOf:
           - type: string
             format: date-time
           - type: 'null'
           title: Outcomes Consent On
-          description: When consent was recorded. Null when outcomes_shared is false.
+          description: When consent was recorded. Null when outcomes_shared is false,
+            and when it is true with no recorded decision.
         last_active_on:
           anyOf:
           - type: string
@@ -753,6 +781,7 @@ components:
       - first_enrolled_on
       - last_enrolled_on
       - courses_enrolled
+      - outcomes_consent_status
       - outcomes_shared
       - outcomes_consent_on
       - last_active_on

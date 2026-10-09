@@ -869,6 +869,19 @@ components:
       - certified
       - unknown
       title: CompletionStatusFilter
+    ConsentStatus:
+      type: string
+      enum:
+      - consented
+      - declined
+      - not_recorded
+      title: ConsentStatus
+      description: '``not_recorded`` = the learner has not answered. ``declined``
+        covers a
+
+        learner who answered no and one who consented and later withdrew: MITx
+
+        Online keeps one nullable boolean per (learner, contract).'
     ContentEngagementDepth:
       properties:
         organization_key:
@@ -1861,6 +1874,11 @@ components:
           title: Enrollment Mode
           description: The enrollment track, for example verified or audit. Audit
             enrollments don't earn certificates.
+        outcomes_consent_status:
+          $ref: '#/components/schemas/ConsentStatus'
+          description: 'What the learner answered when asked to share their progress:
+            consented, declined, or not recorded if they haven''t answered yet. Always
+            shown.'
         outcomes_shared:
           type: boolean
           title: Outcomes Shared
@@ -1942,6 +1960,7 @@ components:
       - enrolled_on
       - enrollment_is_active
       - enrollment_mode
+      - outcomes_consent_status
       - outcomes_shared
       - completion_status
       - is_passing
