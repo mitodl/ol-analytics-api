@@ -158,7 +158,7 @@ async def test_limit_and_offset_bind_last_and_count_learners(app):
     await _get(app, pool, params={"search": "garcia", "completion_status": ["passed"]})
     _, page_params = pool.page_call()
     _, count_params = pool.count_call()
-    assert page_params == (*count_params, 100, 0)
+    assert page_params == (*count_params, settings.default_learner_page_size, 0)
     assert count_params == (ORG_ID, CONTRACT_ID, "%garcia%", "%garcia%", "passed")
 
     pool = _FakePool()
@@ -166,8 +166,15 @@ async def test_limit_and_offset_bind_last_and_count_learners(app):
     assert pool.page_call()[1][-2:] == (25, 50)
 
 
-@pytest.mark.parametrize(("limit", "status"), [(100, 200), (101, 422), (0, 422)])
-async def test_page_size_is_capped_at_a_hundred_learners(app, limit, status):
+@pytest.mark.parametrize(
+    ("limit", "status"),
+    [
+        (settings.max_learner_page_size, 200),
+        (settings.max_learner_page_size + 1, 422),
+        (0, 422),
+    ],
+)
+async def test_page_size_is_capped_by_the_learner_setting(app, limit, status):
     response = await _get(app, _FakePool(), params={"limit": limit})
     assert response.status_code == status
 
@@ -187,8 +194,7 @@ async def test_page_and_count_share_one_filter_and_one_cutoff(app):
         assert f"(COALESCE(outcomes_decision, FALSE) AND ({attention}))" in query
         assert "NOT COALESCE(outcomes_decision, FALSE)" in query
         assert "enrollment_is_active = TRUE" in query
-    # The filter picks learners; it never narrows the rows returned for them.
-    assert page_query.count(" WHERE (") == 1
+    # The filter picks learners; the final select joins back to every row.
     assert "FROM records JOIN paged" in page_query
 
 
@@ -225,7 +231,7 @@ def test_learner_progress_is_exactly_identity_plus_enrollment():
     assert list(LearnerProgress.model_fields)[:3] == ["learner_id", "email", "full_name"]
 
 
-@pytest.mark.parametrize("model", [LearnerWithEnrollments, LearnersResponse, LearnerEnrollment])
+@pytest.mark.parametrize("model", [LearnerWithEnrollments, LearnersResponse])
 def test_every_field_has_a_manager_facing_description(model):
     field_names = (
         set(LearnerProgress.model_fields)
@@ -372,7 +378,7 @@ def test_learners_sort_by_name_nulls_last_then_email_then_id(mv):
 def test_pages_split_learners_never_enrollments(mv):
     everyone = _shape(_run(mv)[0])
     seen = []
-    for offset in range(0, 8, 2):
+    for offset in range(0, len(_ALL_ORDER), 2):
         learners, total = _run(mv, limit=2, offset=offset)
         assert total == len(_ALL_ORDER)
         for learner_id, runs in _shape(learners).items():

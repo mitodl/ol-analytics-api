@@ -1,4 +1,6 @@
-"""SQL for the contract-scoped learner-progress endpoint.
+"""SQL for the contract-scoped learner endpoints: ``learner_progress`` (one row
+per enrollment), ``learners`` (paged by learner), the needs-attention
+aggregate and the course-runs list.
 
 These rows identify individual learners, so they do not go through
 core/db/query.py's anonymization chokepoint: a k-anonymity floor would
@@ -28,10 +30,12 @@ SELECT list, which precedes the WHERE clause the existing parameters bind to;
 binding it would mean prepending it to a tuple the page and count queries
 share.
 
-Each query is two layers, as in the b2b_learner_records tenant. The inner
-``records`` select scopes to the organization and contract and derives
+``learner_progress`` is two layers, as in the b2b_learner_records tenant. The
+inner ``records`` select scopes to the organization and contract and derives
 ``completion_status``; the outer select applies consent, search and the status
-filter, so the page and its count always share one WHERE clause.
+filter, so the page and its count always share one WHERE clause. ``learners``
+builds on the same ``records`` and the same WHERE clause and adds a paging
+layer over learners; its docstring describes it.
 
 Consent gates outcome fields, not the row. The MV carries the learner's
 recorded decision for the contract as a nullable ``outcomes_shared`` (null =
@@ -293,8 +297,8 @@ def _where(
     *,
     search: str | None,
     completion_statuses: tuple[str, ...],
-    courserun_readable_id: str | None,
     needs_attention: bool | None,
+    courserun_readable_id: str | None = None,
 ) -> tuple[str, tuple[Any, ...]]:
     """The filter over ``records`` as `` WHERE ...`` (or empty), and its params.
 
@@ -408,9 +412,12 @@ def learners(filters: LearnerFilters, cutoff: datetime.date) -> ProgressQuery:
     """Learners with at least one enrollment matching every filter, paged by
     learner, each with ALL of their active enrollments.
 
-    The filter runs only inside ``paged``, which picks the page of learners.
+    In the page statement the filter runs only inside the ``matched``
+    subquery, which ``paged`` orders and limits to pick the page of learners.
     The final select joins that page back to the unfiltered ``records``, so a
-    matched learner's other enrollments come back too. ``_where`` tests one
+    matched learner's other enrollments come back too. The count applies the
+    same filter to ``records`` directly, so ``total_count`` counts exactly the
+    learners the pages walk through. ``_where`` tests one
     row at a time, so filters combine on a single enrollment: a learner with
     one passed enrollment and a different quiet one does not match
     ``passed`` plus ``needs_attention``.
@@ -425,8 +432,9 @@ def learners(filters: LearnerFilters, cutoff: datetime.date) -> ProgressQuery:
     and is read once: a LIMITed CTE read twice could be evaluated twice and
     pick different learners. Its columns are renamed ``page_*`` so the
     projection's unqualified ``learner_id``, ``email`` and ``full_name`` stay
-    unambiguous after the join. ``matched`` groups before ``paged`` orders, so
-    the ORDER BY reads plain columns rather than aggregate aliases.
+    unambiguous after the join. The ``matched`` subquery groups before
+    ``paged`` orders, so the ORDER BY reads plain columns rather than
+    aggregate aliases.
     """
     records = _records(
         filters.organization_id, filters.contract_id, include_inactive=False, cutoff=cutoff
@@ -435,7 +443,6 @@ def learners(filters: LearnerFilters, cutoff: datetime.date) -> ProgressQuery:
         records,
         search=filters.search,
         completion_statuses=filters.completion_statuses,
-        courserun_readable_id=None,
         needs_attention=filters.needs_attention,
     )
     page = (
