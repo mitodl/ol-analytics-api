@@ -254,10 +254,13 @@ def test_native_fastapi_telemetry_is_off_on_every_app():
     """
     app = create_app()
     assert app.state.tenant_apps
+    # Assert on the config, not on NativeTelemetry.enabled(): that also reports
+    # False whenever no global tracer provider has been set, which depends on
+    # which tests ran first.
     for fastapi_app in (app, *app.state.tenant_apps.values()):
         config = fastapi_app._telemetry  # noqa: SLF001
-        assert config["auto_configure"] is False
-        assert fastapi_app._native_telemetry.enabled() is False  # noqa: SLF001
+        for setting in ("tracing", "metrics", "logs", "auto_configure"):
+            assert config[setting] is False, setting
 
 
 def test_init_sentry_with_empty_dsn_does_not_raise():

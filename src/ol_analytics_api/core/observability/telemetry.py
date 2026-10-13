@@ -71,8 +71,8 @@ _MANUALLY_INSTRUMENTED = frozenset({"fastapi"})
 #   docstring).
 # - tracing stands down only on an app whose own middleware stack contains
 #   contrib's OpenTelemetryMiddleware. That is the root app alone, so each
-#   tenant sub-app starts a second SERVER span plus dependency, endpoint and
-#   serialization spans inside the root's: the redundant nesting
+#   tenant sub-app starts a second SERVER span of its own, plus dependency,
+#   endpoint and serialization spans under it: the redundant per-tenant spans
 #   instrument_fastapi_app() exists to avoid.
 NATIVE_TELEMETRY_DISABLED: TelemetryConfig = {
     "tracing": False,
