@@ -20,6 +20,7 @@ import logging
 import os
 
 from fastapi import FastAPI
+from fastapi.telemetry import TelemetryConfig
 from opentelemetry import trace
 from opentelemetry.baggage.propagation import W3CBaggagePropagator
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
@@ -56,6 +57,29 @@ _tracing_enabled = False
 #
 # instrument_app() takes the app instance, so it is immune to all of this.
 _MANUALLY_INSTRUMENTED = frozenset({"fastapi"})
+
+# Pass as `telemetry=` to every FastAPI() in this service, root and tenants.
+#
+# FastAPI 0.142 ships its own OpenTelemetry support, on by default, and it
+# overlaps everything configure_opentelemetry() already does:
+#
+# - auto_configure reads the same OTEL_EXPORTER_OTLP_* variables at lifespan
+#   startup and adds its own BatchSpanProcessor to the provider built here,
+#   without checking for an existing exporter, so every span is exported twice.
+#   It also creates metrics and logs pipelines posting to /v1/metrics and
+#   /v1/logs, which this service deliberately does not run (see the module
+#   docstring).
+# - tracing stands down only on an app whose own middleware stack contains
+#   contrib's OpenTelemetryMiddleware. That is the root app alone, so each
+#   tenant sub-app starts a second SERVER span of its own, plus dependency,
+#   endpoint and serialization spans under it: the redundant per-tenant spans
+#   instrument_fastapi_app() exists to avoid.
+NATIVE_TELEMETRY_DISABLED: TelemetryConfig = {
+    "tracing": False,
+    "metrics": False,
+    "logs": False,
+    "auto_configure": False,
+}
 
 
 def _get_resource(service_name: str, service_version: str, environment: str) -> Resource:

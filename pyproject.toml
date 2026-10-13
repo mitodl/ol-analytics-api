@@ -4,7 +4,7 @@ version = "2026.10.8.1"
 description = "Read-only FastAPI service serving aggregated B2B site-license analytics to MIT Learn from StarRocks materialized views."
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi>=0.115",
+    "fastapi>=0.142.2",
     "sqlmodel>=0.0.22",
     "aiomysql>=0.2.0",
     "pydantic-settings>=2.6",

@@ -49,6 +49,7 @@ from ol_analytics_api.core.observability.logging import configure_structlog
 from ol_analytics_api.core.observability.middleware import add_request_logging
 from ol_analytics_api.core.observability.sentry import init_sentry
 from ol_analytics_api.core.observability.telemetry import (
+    NATIVE_TELEMETRY_DISABLED,
     configure_opentelemetry,
     instrument_fastapi_app,
 )
@@ -224,6 +225,7 @@ def create_app() -> FastAPI:
         title="OL Analytics API",
         description="Multi-tenant read-only analytics gateway over StarRocks.",
         lifespan=lifespan,
+        telemetry=NATIVE_TELEMETRY_DISABLED,
     )
 
     add_request_logging(app)
