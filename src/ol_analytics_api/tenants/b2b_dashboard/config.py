@@ -67,6 +67,12 @@ class B2BDashboardSettings(BaseSettings):
     # request can pull an unbounded result (see the DoS-surface task).
     default_page_size: int = 100
     max_page_size: int = 1000
+    # The learner-paged endpoint (/learners) counts learners, not rows, and
+    # each learner expands to one row per enrollment, so a page of N learners
+    # is N times the contract's runs per learner in rows. The lower cap keeps a
+    # page near max_page_size's row count.
+    default_learner_page_size: int = 100
+    max_learner_page_size: int = 100
 
     # Whether a learner with no recorded consent decision shares their outcomes
     # on the learner-progress endpoint. A recorded decision always wins

@@ -216,12 +216,40 @@ class ProgressFilters:
 
 
 @dataclass(frozen=True)
+class LearnerFilters:
+    """``learners``' filters. Fewer than ``ProgressFilters``: the grid has one
+    order, by name, and reads active enrollments only."""
+
+    organization_id: str
+    contract_id: int
+    search: str | None = None
+    completion_statuses: tuple[str, ...] = ()
+    needs_attention: bool | None = None
+
+
+@dataclass(frozen=True)
 class ProgressQuery:
     """``params`` binds ``count``; ``page`` takes ``params`` plus LIMIT and OFFSET."""
 
     page: str
     count: str
     params: tuple[Any, ...]
+
+
+@dataclass(frozen=True)
+class _Records:
+    """The inner ``records`` select, with the consent and needs-attention
+    expressions read over it.
+
+    Built once per query, so the row-level endpoint and the learner-level one
+    compose the same select, the same consent rule and the same cutoff, and
+    cannot drift apart. ``params`` binds ``select``.
+    """
+
+    select: str
+    params: tuple[Any, ...]
+    shared: str
+    needs_attention: str
 
 
 def _outcomes_shared() -> str:
@@ -235,15 +263,16 @@ def _contains_pattern(term: str) -> str:
     return f"%{escaped}%"
 
 
-def learner_progress(filters: ProgressFilters, cutoff: datetime.date) -> ProgressQuery:
+def _records(
+    organization_id: str, contract_id: int, *, include_inactive: bool, cutoff: datetime.date
+) -> _Records:
     table = f"{validate_sql_identifier(settings.learner_records_schema)}.{ENROLLMENT_MV}"
     # The org predicate stays next to the contract one: contract ids are
     # globally unique but not secret.
     scope = ["sso_organization_id = %s", "contract_id = %s"]
-    params: list[Any] = [filters.organization_id, filters.contract_id]
-    if not filters.include_inactive:
+    if not include_inactive:
         scope.append("enrollment_is_active = TRUE")
-    records = (
+    select = (
         "SELECT user_pk, courserun_pk, user_global_id AS learner_id, email,"  # noqa: S608
         f" {_BLANK_AS_NULL_NAME} AS full_name,"
         " courserun_readable_id, courserun_title, courserun_start_on, courserun_end_on,"
@@ -253,49 +282,63 @@ def learner_progress(filters: ProgressFilters, cutoff: datetime.date) -> Progres
         " outcomes_shared AS outcomes_decision"
         f" FROM {table} WHERE {' AND '.join(scope)}"
     )
-
-    shared = _outcomes_shared()
     # One expression, one cutoff, for the row field, the filter and the count.
-    needs_attention = _needs_attention(cutoff)
+    return _Records(
+        select, (organization_id, contract_id), _outcomes_shared(), _needs_attention(cutoff)
+    )
+
+
+def _where(
+    records: _Records,
+    *,
+    search: str | None,
+    completion_statuses: tuple[str, ...],
+    courserun_readable_id: str | None,
+    needs_attention: bool | None,
+) -> tuple[str, tuple[Any, ...]]:
+    """The filter over ``records`` as `` WHERE ...`` (or empty), and its params.
+
+    Every predicate tests one row, so filters combine on a single enrollment.
+    """
+    shared = records.shared
     predicates: list[str] = []
-    if filters.search:
-        pattern = _contains_pattern(filters.search)
+    params: list[Any] = []
+    if search:
+        pattern = _contains_pattern(search)
         predicates.append("(LOWER(email) LIKE %s OR LOWER(full_name) LIKE %s)")
         params.extend([pattern, pattern])
-    if filters.courserun_readable_id:
+    if courserun_readable_id:
         predicates.append("courserun_readable_id = %s")
-        params.append(filters.courserun_readable_id)
-    if filters.completion_statuses:
+        params.append(courserun_readable_id)
+    if completion_statuses:
         # Status values match only rows whose outcomes are shared; `unknown`
         # selects the withheld ones. Otherwise a status filter would reveal the
         # status it is withholding.
-        known = [value for value in filters.completion_statuses if value != "unknown"]
+        known = [value for value in completion_statuses if value != "unknown"]
         alternatives = []
         if known:
             alternatives.append(
                 f"({shared} AND completion_status IN ({', '.join(['%s'] * len(known))}))"
             )
             params.extend(known)
-        if "unknown" in filters.completion_statuses:
+        if "unknown" in completion_statuses:
             alternatives.append(f"NOT {shared}")
         predicates.append(f"({' OR '.join(alternatives)})")
-    if filters.needs_attention is not None:
+    if needs_attention is not None:
         # Consent-gated like the status filter, and for the same reason: a
         # withheld row matches neither direction, so filtering can't reveal the
         # outcome the row is withholding. There is no `unknown` escape hatch
         # here as there is for status -- a bool has no third member -- so
         # withheld rows are reachable only by leaving this filter off.
-        negate = "" if filters.needs_attention else "NOT "
-        predicates.append(f"({shared} AND {negate}({needs_attention}))")
+        negate = "" if needs_attention else "NOT "
+        predicates.append(f"({shared} AND {negate}({records.needs_attention}))")
     where = f" WHERE {' AND '.join(predicates)}" if predicates else ""
+    return where, tuple(params)
 
-    direction = "DESC" if filters.descending else "ASC"
-    # Nulls last either way (full_name is often null, and `records` nulls blank
-    # ones), then a unique tie-break so LIMIT/OFFSET paging is deterministic.
-    order_by = (
-        f"{filters.sort.value} IS NULL, {filters.sort.value} {direction}, user_pk, courserun_pk"
-    )
-    projection = ", ".join(
+
+def _projection(records: _Records) -> str:
+    shared = records.shared
+    return ", ".join(
         [
             *_COLUMNS,
             f"{CONSENT_STATUS_SQL} AS outcomes_consent_status",
@@ -306,11 +349,35 @@ def learner_progress(filters: ProgressFilters, cutoff: datetime.date) -> Progres
             # resolves in this outer select. Same expression and same cutoff
             # as the filter and the count, so the three cannot disagree about
             # which learners are quiet.
-            f"CASE WHEN {shared} THEN {needs_attention} END AS needs_attention",
+            f"CASE WHEN {shared} THEN {records.needs_attention} END AS needs_attention",
         ]
     )
+
+
+def learner_progress(filters: ProgressFilters, cutoff: datetime.date) -> ProgressQuery:
+    records = _records(
+        filters.organization_id,
+        filters.contract_id,
+        include_inactive=filters.include_inactive,
+        cutoff=cutoff,
+    )
+    where, where_params = _where(
+        records,
+        search=filters.search,
+        completion_statuses=filters.completion_statuses,
+        courserun_readable_id=filters.courserun_readable_id,
+        needs_attention=filters.needs_attention,
+    )
+    shared = records.shared
+
+    direction = "DESC" if filters.descending else "ASC"
+    # Nulls last either way (full_name is often null, and `records` nulls blank
+    # ones), then a unique tie-break so LIMIT/OFFSET paging is deterministic.
+    order_by = (
+        f"{filters.sort.value} IS NULL, {filters.sort.value} {direction}, user_pk, courserun_pk"
+    )
     page = (
-        f"SELECT {projection} FROM ({records}) records{where}"  # noqa: S608
+        f"SELECT {_projection(records)} FROM ({records.select}) records{where}"  # noqa: S608
         f" ORDER BY {order_by} LIMIT %s OFFSET %s"
     )
     status_sums = ", ".join(
@@ -321,11 +388,72 @@ def learner_progress(filters: ProgressFilters, cutoff: datetime.date) -> Progres
         "SELECT COUNT(*) AS total_count,"  # noqa: S608
         f" SUM(CASE WHEN {shared} THEN 0 ELSE 1 END) AS outcomes_withheld_count,"
         f" {status_sums},"
-        f" SUM(CASE WHEN {shared} AND ({needs_attention}) THEN 1 ELSE 0 END)"
+        f" SUM(CASE WHEN {shared} AND ({records.needs_attention}) THEN 1 ELSE 0 END)"
         " AS needs_attention_count"
-        f" FROM ({records}) records{where}"
+        f" FROM ({records.select}) records{where}"
     )
-    return ProgressQuery(page, count, tuple(params))
+    return ProgressQuery(page, count, (*records.params, *where_params))
+
+
+# Each learner's sort key, nulls last: a blank name is already NULL in
+# `records`, and MIN skips NULLs, so a learner sorts as nameless only when
+# every row is. learner_id is the unique tie-break that makes paging
+# deterministic.
+_LEARNER_ORDER = (
+    "page_full_name IS NULL, page_full_name, page_email IS NULL, page_email, page_learner_id"
+)
+
+
+def learners(filters: LearnerFilters, cutoff: datetime.date) -> ProgressQuery:
+    """Learners with at least one enrollment matching every filter, paged by
+    learner, each with ALL of their active enrollments.
+
+    The filter runs only inside ``paged``, which picks the page of learners.
+    The final select joins that page back to the unfiltered ``records``, so a
+    matched learner's other enrollments come back too. ``_where`` tests one
+    row at a time, so filters combine on a single enrollment: a learner with
+    one passed enrollment and a different quiet one does not match
+    ``passed`` plus ``needs_attention``.
+
+    Revealing those other enrollments discloses nothing the filter didn't:
+    consent is recorded per learner per contract, so all of a learner's rows
+    share it, and the projection gates their outcomes exactly as on the
+    row-level endpoint.
+
+    ``records`` is one CTE, so its params bind once and the page still takes
+    ``params`` plus LIMIT and OFFSET. ``paged`` is the only place with a LIMIT
+    and is read once: a LIMITed CTE read twice could be evaluated twice and
+    pick different learners. Its columns are renamed ``page_*`` so the
+    projection's unqualified ``learner_id``, ``email`` and ``full_name`` stay
+    unambiguous after the join. ``matched`` groups before ``paged`` orders, so
+    the ORDER BY reads plain columns rather than aggregate aliases.
+    """
+    records = _records(
+        filters.organization_id, filters.contract_id, include_inactive=False, cutoff=cutoff
+    )
+    where, where_params = _where(
+        records,
+        search=filters.search,
+        completion_statuses=filters.completion_statuses,
+        courserun_readable_id=None,
+        needs_attention=filters.needs_attention,
+    )
+    page = (
+        f"WITH records AS ({records.select}),"  # noqa: S608
+        " paged AS ("
+        "SELECT page_learner_id, page_full_name, page_email FROM ("
+        "SELECT learner_id AS page_learner_id, MIN(full_name) AS page_full_name,"
+        f" MIN(email) AS page_email FROM records{where} GROUP BY learner_id) matched"
+        f" ORDER BY {_LEARNER_ORDER} LIMIT %s OFFSET %s)"
+        f" SELECT {_projection(records)}"
+        " FROM records JOIN paged ON records.learner_id = paged.page_learner_id"
+        f" ORDER BY {_LEARNER_ORDER}, courserun_readable_id, courserun_pk"
+    )
+    count = (
+        "SELECT COUNT(DISTINCT learner_id) AS total_count"  # noqa: S608
+        f" FROM ({records.select}) records{where}"
+    )
+    return ProgressQuery(page, count, (*records.params, *where_params))
 
 
 @dataclass(frozen=True)
