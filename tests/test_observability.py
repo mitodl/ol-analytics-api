@@ -246,6 +246,20 @@ def test_tenant_apps_are_not_separately_instrumented(monkeypatch):
         assert getattr(tenant_app, "_is_instrumented_by_opentelemetry", False) is False
 
 
+def test_native_fastapi_telemetry_is_off_on_every_app():
+    """FastAPI's built-in OpenTelemetry support is on by default and overlaps
+    configure_opentelemetry(): it exports every span a second time and starts
+    a second SERVER span on each tenant (see NATIVE_TELEMETRY_DISABLED). A
+    FastAPI() added without the opt-out brings that back, so check them all.
+    """
+    app = create_app()
+    assert app.state.tenant_apps
+    for fastapi_app in (app, *app.state.tenant_apps.values()):
+        config = fastapi_app._telemetry  # noqa: SLF001
+        assert config["auto_configure"] is False
+        assert fastapi_app._native_telemetry.enabled() is False  # noqa: SLF001
+
+
 def test_init_sentry_with_empty_dsn_does_not_raise():
     # sentry-sdk treats an empty DSN as "disabled" — this should be a safe no-op,
     # matching how every other service here calls init_sentry() unconditionally.
