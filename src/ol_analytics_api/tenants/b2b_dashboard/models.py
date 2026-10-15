@@ -158,14 +158,15 @@ class ContractNeedsAttention(SQLModel):
     at query time by ``learner_queries.needs_attention_aggregate`` over
     ``b2b_learner_records.mv_b2b_learner_enrollment``, which is what lets the
     KPI tile and the learner directory beneath it share a single
-    needs-attention expression and a single per-request cutoff.
+    needs-attention expression and a single per-request date.
 
-    A column on ``mv_b2b_contract_utilization`` was the other candidate and was
-    not chosen (decided 2026-10-02). It would have restated the 30-day rule and
-    the completion-status CASE in dbt — two repos, two languages, no test that
-    can see both — and frozen the cutoff at MV-refresh time, so the tile and the
-    directory could disagree about the same learner for up to a refresh
-    interval. The rule has already changed once since it was written.
+    A count column on ``mv_b2b_contract_utilization`` was the other candidate
+    and was not chosen (decided 2026-10-02): it would have frozen the cutoff at
+    MV-refresh time, so the tile and the directory could disagree about the
+    same learner for up to a refresh interval. The rule itself has since moved
+    to dbt in a form that avoids that. The MV publishes a per-enrollment
+    ``needs_attention_since`` date and this query compares it to today, so
+    the rule lives in one repo and the comparison still happens per request.
 
     Served from its own endpoint rather than folded into ``ContractUtilization``
     because the MV behind it refreshes on its own schedule. One ``as_of`` per

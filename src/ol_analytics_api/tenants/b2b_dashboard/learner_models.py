@@ -51,13 +51,13 @@ developer detail lives here instead:
   counted either.
 - ``needs_attention`` is the per-row form of that same rule, built from the
   one ``learner_queries._needs_attention`` expression the count is built on,
-  against a cutoff the router resolves on the cluster once per request. So a
-  row and the count it is summarized by apply the same rule on the same date,
-  even though they arrive on separate round trips. Read it rather than
-  recomputing it client-side: the cutoff is 30 days before the StarRocks
-  cluster's today, which a browser's own "today" can be a day off from. It is
-  consent-gated, so it is NULL exactly when the other outcome fields are; it
-  is never NULL otherwise, not even on a row with no ``last_active_on``.
+  against the UTC date the router resolves on the cluster once per request. So
+  a row and the count it is summarized by apply the same rule on the same
+  date, even though they arrive on separate round trips. Read it rather than
+  recomputing it client-side: the rule compares against the UTC date, which a
+  browser's own "today" can be a day off from. It is consent-gated, so it is
+  NULL exactly when the other outcome fields are; it is never NULL otherwise,
+  not even on a row with no ``last_active_on``.
 """
 
 from __future__ import annotations

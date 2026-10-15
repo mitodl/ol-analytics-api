@@ -59,20 +59,6 @@ _ROLLUP_DECISION = (
 )
 
 
-# An unrevoked certificate is certified without requiring is_passing: production
-# has enrollments with an unrevoked certificate and is_passing false
-# (ol-data-platform#2669). A revoked certificate falls through to the grade.
-# in_progress must match mv_b2b_learner.courses_in_progress: a nonzero grade or
-# any tracked activity (ol-data-platform#2693).
-_COMPLETION_STATUS = (
-    "CASE"
-    " WHEN certificate_is_revoked = FALSE THEN 'certified'"
-    " WHEN is_passing = TRUE THEN 'passed'"
-    " WHEN grade_value > 0 OR last_active_on IS NOT NULL THEN 'in_progress'"
-    " ELSE 'not_started'"
-    " END"
-)
-
 _LEARNER_COLUMNS = (
     "learner_id",
     "email",
@@ -274,7 +260,7 @@ def enrollments(schema: str, filters: RecordFilters) -> RecordQuery:
         " b2b_contract_name AS contract_name, courserun_readable_id AS courserun_id,"
         " courserun_title, courserun_start_on, courserun_end_on,"
         " enrollment_created_on AS enrolled_on, enrollment_is_active, enrollment_mode,"
-        f" enrollment_status, {_COMPLETION_STATUS} AS completion_status, is_passing,"
+        " enrollment_status, completion_status, is_passing,"
         " grade_value AS grade, letter_grade, certificate_issued_on, certificate_is_revoked,"
         " last_active_on, days_active, videos_played AS videos_watched, problems_attempted,"
         " chatbot_interactions, outcomes_shared AS outcomes_decision, record_updated_on"
@@ -362,13 +348,15 @@ def _recomputed_learners(schema: str, filters: RecordFilters) -> tuple[str, list
         scope.append("contract_id = %s")
         params.append(filters.contract_id)
 
-    # The same definitions as mv_b2b_learner (ol-data-platform#2669, #2693).
+    # The same counts as mv_b2b_learner, over the same flags: both views take
+    # is_passing, is_certified and is_in_progress from ol-data-platform's
+    # afact_learner_courserun_progress, so no business rule is restated here.
     # courses_enrolled, the enrolled_on dates, last_active_on and
     # courses_in_progress look at enrollment_is_active, and only without
     # include_inactive: they describe current engagement. Completions and the
     # cursor span every enrollment, so a filtered request can't report fewer
     # completions than the default one, and deactivation moves the cursor forward.
-    in_progress = f"{_COMPLETION_STATUS} = 'in_progress'"
+    in_progress = "is_in_progress = TRUE"
     if filters.include_inactive:
         enrolled_run = "courserun_pk"
         enrolled_on = "enrollment_created_on"
@@ -425,7 +413,7 @@ def _recomputed_learners(schema: str, filters: RecordFilters) -> tuple[str, list
         f" MAX({enrolled_on}) AS last_enrolled_on,"
         f" COUNT(DISTINCT {enrolled_run}) AS courses_enrolled,"
         " COUNT(DISTINCT CASE WHEN is_passing = TRUE THEN courserun_pk END) AS courses_passed,"
-        " COUNT(DISTINCT CASE WHEN certificate_is_revoked = FALSE THEN courserun_pk END)"
+        " COUNT(DISTINCT CASE WHEN is_certified = TRUE THEN courserun_pk END)"
         " AS courses_certified,"
         f" MAX({active_on}) AS last_active_on,"
         f" COUNT(DISTINCT CASE WHEN {in_progress} THEN courserun_pk END) AS courses_in_progress,"

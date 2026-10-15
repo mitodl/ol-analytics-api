@@ -346,8 +346,10 @@ async def test_enrollments_project_the_activity_columns(app, monkeypatch):
     query, _ = pool.page_call()
     assert "videos_played AS videos_watched" in query
     assert "NULL AS days_active" not in query
-    # Activity alone is enough to count as started.
-    assert "WHEN grade_value > 0 OR last_active_on IS NOT NULL THEN 'in_progress'" in query
+    # The status is the view's column, defined in ol-data-platform's
+    # afact_learner_courserun_progress, not a CASE restated here.
+    assert " enrollment_status, completion_status, is_passing," in query
+    assert "certificate_is_revoked = FALSE" not in query
 
 
 async def test_default_learners_project_the_activity_columns(app, monkeypatch):
@@ -359,7 +361,7 @@ async def test_default_learners_project_the_activity_columns(app, monkeypatch):
     assert "last_active_on, courses_in_progress, record_updated_on FROM" in query
 
 
-async def test_recomputed_learners_count_in_progress_with_the_enrollment_status(app, monkeypatch):
+async def test_recomputed_learners_count_the_views_flags(app, monkeypatch):
     pool = _FakePool()
     await _get(
         app,
@@ -374,11 +376,15 @@ async def test_recomputed_learners_count_in_progress_with_the_enrollment_status(
         "MAX(CASE WHEN enrollment_is_active = TRUE THEN last_active_on END) AS last_active_on"
     ) in query
     assert (
-        "COUNT(DISTINCT CASE WHEN enrollment_is_active = TRUE"
-        f" AND {queries._COMPLETION_STATUS} = 'in_progress'"  # noqa: SLF001
+        "COUNT(DISTINCT CASE WHEN enrollment_is_active = TRUE AND is_in_progress = TRUE"
         " THEN courserun_pk END) AS courses_in_progress"
     ) in query
     assert "COALESCE(e.courses_in_progress, 0) AS courses_in_progress" in query
+    # The flags mv_b2b_learner counts, so the two rollups cannot apply
+    # different rules to the same enrollments.
+    assert (
+        "COUNT(DISTINCT CASE WHEN is_certified = TRUE THEN courserun_pk END) AS courses_certified"
+    ) in query
 
 
 async def test_include_inactive_learners_count_activity_on_every_enrollment(app, monkeypatch):
@@ -393,8 +399,8 @@ async def test_include_inactive_learners_count_activity_on_every_enrollment(app,
     query, _ = pool.page_call()
     assert "MAX(last_active_on) AS last_active_on" in query
     assert (
-        f"COUNT(DISTINCT CASE WHEN {queries._COMPLETION_STATUS} = 'in_progress'"  # noqa: SLF001
-        " THEN courserun_pk END) AS courses_in_progress"
+        "COUNT(DISTINCT CASE WHEN is_in_progress = TRUE THEN courserun_pk END)"
+        " AS courses_in_progress"
     ) in query
 
 
