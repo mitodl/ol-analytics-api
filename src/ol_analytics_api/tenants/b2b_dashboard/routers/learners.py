@@ -1,7 +1,9 @@
-"""Contract-scoped learner progress: one row per learner per course run.
+"""Contract-scoped learner progress, as one row per learner per course run
+(``/learner-progress``) or one row per learner with all of their enrollments
+(``/learners``).
 
-The only endpoint in this tenant that returns individual learners, so it waives
-the k-anonymity floor every other endpoint applies. An org manager is viewing
+The only endpoints in this tenant that return individual learners, so they
+waive the k-anonymity floor every other endpoint applies. An org manager is viewing
 learners on seats their own organization purchased and assigned. Authorization
 is the same as the contract endpoints: ``require_org_manager``, then
 ``require_contract_in_org``.
@@ -14,6 +16,7 @@ Mounted at /api/v1/analytics by tenants/b2b_dashboard/app.py.
 
 from __future__ import annotations
 
+import datetime
 from enum import StrEnum
 from typing import Annotated
 
@@ -33,8 +36,14 @@ from ol_analytics_api.tenants.b2b_dashboard.learner_models import (
     CourseRunsResponse,
     LearnerProgress,
     LearnerProgressResponse,
+    LearnersResponse,
+    LearnerWithEnrollments,
 )
-from ol_analytics_api.tenants.b2b_dashboard.pagination import Pagination, pagination
+from ol_analytics_api.tenants.b2b_dashboard.pagination import (
+    Pagination,
+    learner_pagination,
+    pagination,
+)
 
 router = APIRouter(
     prefix="/organizations/{organization_id}/contracts/{contract_id}",
@@ -63,6 +72,45 @@ class CompletionStatusFilter(StrEnum):
     UNKNOWN = "unknown"
 
 
+SearchParam = Annotated[
+    str | None,
+    Query(min_length=1, max_length=254, description="Case-insensitive match on email or name."),
+]
+CompletionStatusParam = Annotated[
+    list[CompletionStatusFilter],
+    Query(
+        description="Repeat for several. `unknown` selects rows with withheld outcomes.",
+        default_factory=list,
+    ),
+]
+
+
+async def _needs_attention_cutoff() -> datetime.date:
+    """Resolve the needs-attention cutoff on the cluster, once, before either
+    data query.
+
+    The page and the count are two statements, so leaving CURRENT_DATE() in
+    the SQL would let them evaluate it either side of midnight and disagree
+    about which learners are quiet -- a row reading `false` while
+    needs_attention_count counted it, and a `total_count` the page's own
+    filter contradicts. Resolved per request and never cached: the failure
+    this prevents is a date boundary, so a cached cutoff would be wrong for
+    exactly as long as the cache held it. This is the one non-deterministic
+    expression in the tenant's SQL.
+    """
+    rows = await starrocks_pool.fetch_all(learner_queries.NEEDS_ATTENTION_CUTOFF_QUERY)
+    cutoff: datetime.date = rows[0]["cutoff"]
+    return cutoff
+
+
+async def _enrollment_as_of() -> datetime.datetime | None:
+    # Read before the data queries, so a refresh landing mid-request labels
+    # newer rows with the older as_of rather than the reverse.
+    return await latest_refresh_timestamp(
+        settings.learner_records_schema, learner_queries.ENROLLMENT_MV
+    )
+
+
 @router.get(
     "/learner-progress",
     response_model=LearnerProgressResponse,
@@ -75,17 +123,8 @@ async def learner_progress(  # noqa: PLR0913
     organization_id: str,
     contract_id: int,
     page: Annotated[Pagination, Depends(pagination)],
-    search: Annotated[
-        str | None,
-        Query(min_length=1, max_length=254, description="Case-insensitive match on email or name."),
-    ] = None,
-    completion_status: Annotated[
-        list[CompletionStatusFilter],
-        Query(
-            description="Repeat for several. `unknown` selects rows with withheld outcomes.",
-            default_factory=list,
-        ),
-    ],
+    search: SearchParam = None,
+    completion_status: CompletionStatusParam,
     courserun_readable_id: Annotated[
         str | None,
         Query(
@@ -109,24 +148,13 @@ async def learner_progress(  # noqa: PLR0913
     sort: learner_queries.SortKey = learner_queries.SortKey.FULL_NAME,
     descending: bool = False,
 ) -> LearnerProgressResponse:
-    # Resolve the needs-attention cutoff on the cluster once, before either
-    # data query. The page and the count are two statements, so leaving
-    # CURRENT_DATE() in the SQL would let them evaluate it either side of
-    # midnight and disagree about which learners are quiet -- a row reading
-    # `false` while needs_attention_count counted it, and a `total_count` the
-    # page's own filter contradicts. Resolved per request and never cached:
-    # the failure this prevents is a date boundary, so a cached cutoff would
-    # be wrong for exactly as long as the cache held it. This is the one
-    # non-deterministic expression in the tenant's SQL.
-    cutoff = (await starrocks_pool.fetch_all(learner_queries.NEEDS_ATTENTION_CUTOFF_QUERY))[0][
-        "cutoff"
-    ]
+    cutoff = await _needs_attention_cutoff()
     query = learner_queries.learner_progress(
         learner_queries.ProgressFilters(
             organization_id=organization_id,
             contract_id=contract_id,
             search=search,
-            completion_statuses=tuple(status.value for status in completion_status or ()),
+            completion_statuses=tuple(status.value for status in completion_status),
             courserun_readable_id=courserun_readable_id,
             needs_attention=needs_attention,
             include_inactive=include_inactive,
@@ -135,11 +163,7 @@ async def learner_progress(  # noqa: PLR0913
         ),
         cutoff,
     )
-    # Freshness first, so a refresh landing mid-request labels newer rows with
-    # the older as_of rather than the reverse.
-    as_of = await latest_refresh_timestamp(
-        settings.learner_records_schema, learner_queries.ENROLLMENT_MV
-    )
+    as_of = await _enrollment_as_of()
     rows = await starrocks_pool.fetch_all(query.page, (*query.params, page.limit, page.offset))
     counts = (await starrocks_pool.fetch_all(query.count, query.params))[0]
     return LearnerProgressResponse(
@@ -156,6 +180,57 @@ async def learner_progress(  # noqa: PLR0913
         ),
         needs_attention_count=int(counts["needs_attention_count"] or 0),
         data=[LearnerProgress(**row) for row in rows],
+    )
+
+
+@router.get(
+    "/learners",
+    response_model=LearnersResponse,
+    name="learners",
+    operation_id="learners_list",
+    summary="Each learner under the contract with all of their enrollments, paged by learner",
+    description=(
+        "A learner is listed when at least one of their active enrollments matches every "
+        "filter at once. Their other active enrollments are returned too, whether or not they "
+        "match. `limit` and `offset` count learners, not enrollments."
+    ),
+)
+async def learners(  # noqa: PLR0913
+    *,
+    organization_id: str,
+    contract_id: int,
+    page: Annotated[Pagination, Depends(learner_pagination)],
+    search: SearchParam = None,
+    completion_status: CompletionStatusParam,
+    needs_attention: Annotated[
+        bool | None,
+        Query(
+            description=(
+                "Keep only learners with an enrollment that needs attention, or with one that "
+                "doesn't. Rows with withheld outcomes match neither, so omit this to see them."
+            )
+        ),
+    ] = None,
+) -> LearnersResponse:
+    cutoff = await _needs_attention_cutoff()
+    query = learner_queries.learners(
+        learner_queries.LearnerFilters(
+            organization_id=organization_id,
+            contract_id=contract_id,
+            search=search,
+            completion_statuses=tuple(status.value for status in completion_status),
+            needs_attention=needs_attention,
+        ),
+        cutoff,
+    )
+    as_of = await _enrollment_as_of()
+    rows = await starrocks_pool.fetch_all(query.page, (*query.params, page.limit, page.offset))
+    counts = (await starrocks_pool.fetch_all(query.count, query.params))[0]
+    return LearnersResponse(
+        organization_id=organization_id,
+        as_of=as_of,
+        total_count=int(counts["total_count"]),
+        data=LearnerWithEnrollments.from_rows(rows),
     )
 
 

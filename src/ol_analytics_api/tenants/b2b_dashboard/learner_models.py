@@ -1,4 +1,9 @@
-"""Response schemas for the learner-progress endpoint.
+"""Response schemas for the learner-progress and learners endpoints.
+
+``LearnerProgress`` is one enrollment row, and is ``LearnerIdentity`` plus
+``LearnerEnrollment``. ``LearnerWithEnrollments`` carries the identity once and
+nests a ``LearnerEnrollment`` per course run, so both endpoints share one set
+of field definitions and one consent validator.
 
 Kept apart from models.py, where every row model declares a ``cohort_policy``.
 These rows identify individual learners, so no floor applies and nothing here
@@ -58,8 +63,9 @@ developer detail lives here instead:
 from __future__ import annotations
 
 import datetime
+from collections.abc import Iterable, Mapping
 from enum import StrEnum
-from typing import Annotated, Self
+from typing import Annotated, Any, Self
 
 from pydantic import AfterValidator, BaseModel, Field, model_validator
 
@@ -98,8 +104,8 @@ class CompletionStatus(StrEnum):
     CERTIFIED = "certified"
 
 
-class LearnerProgress(BaseModel):
-    """One learner's enrollment in one course run under the contract."""
+class LearnerIdentity(BaseModel):
+    """Who the learner is. Shared by a per-enrollment row and a per-learner one."""
 
     learner_id: str = Field(
         description="The learner's account ID. It stays the same if their email address changes."
@@ -108,6 +114,15 @@ class LearnerProgress(BaseModel):
         description="The learner's email address. It may differ from the one they enrolled with."
     )
     full_name: str | None = Field(description="The learner's name, if they've provided one.")
+
+
+class LearnerEnrollment(BaseModel):
+    """One enrollment in one course run under the contract.
+
+    Holds the ``_gate_outcomes`` validator, so every model built from it gates
+    outcomes the same way.
+    """
+
     courserun_readable_id: str = Field(
         description="The course run's ID, e.g. course-v1:MITxT+14.310x+2T2026."
     )
@@ -191,6 +206,40 @@ class LearnerProgress(BaseModel):
             for name in _OUTCOME_FIELDS:
                 setattr(self, name, None)
         return self
+
+
+# LearnerEnrollment is listed first so that, with Pydantic collecting fields in
+# reversed MRO order, the identity fields still come first and the published
+# schema keeps its field order.
+class LearnerProgress(LearnerEnrollment, LearnerIdentity):
+    """One learner's enrollment in one course run under the contract."""
+
+
+class LearnerWithEnrollments(LearnerIdentity):
+    """One learner under the contract, with all of their active enrollments."""
+
+    enrollments: list[LearnerEnrollment] = Field(
+        description=(
+            "Every course the learner is enrolled in under the contract, including the ones "
+            "that didn't match the filters."
+        )
+    )
+
+    @classmethod
+    def from_rows(cls, rows: Iterable[Mapping[str, Any]]) -> list[Self]:
+        """Nest flat enrollment rows into learners, in the order rows arrive.
+
+        Keyed by ``learner_id`` rather than grouped by adjacency, so a change
+        to the query's ordering can't emit one learner twice. The learner's
+        name and email come from their first row.
+        """
+        learners: dict[str, Self] = {}
+        for row in rows:
+            learner = learners.get(row["learner_id"])
+            if learner is None:
+                learner = learners[row["learner_id"]] = cls(**row, enrollments=[])
+            learner.enrollments.append(LearnerEnrollment(**row))
+        return list(learners.values())
 
 
 class CompletionStatusCounts(BaseModel):
@@ -295,3 +344,20 @@ class LearnerProgressResponse(BaseModel):
         )
     )
     data: list[LearnerProgress] = Field(description="This page of enrollments.")
+
+
+class LearnersResponse(BaseModel):
+    """The org envelope (``organization_id``, ``as_of``, ``total_count``,
+    ``data``), paged by learner. ``total_count`` counts learners, not
+    enrollments, and the envelope carries no other counts."""
+
+    organization_id: str = Field(description="The organization's ID.")
+    as_of: UtcDatetime | None = Field(
+        description="When the data was last updated. Empty before the first update."
+    )
+    total_count: int = Field(
+        description=(
+            "Learners with at least one enrollment that matches the filters, across all pages."
+        )
+    )
+    data: list[LearnerWithEnrollments] = Field(description="This page of learners.")
