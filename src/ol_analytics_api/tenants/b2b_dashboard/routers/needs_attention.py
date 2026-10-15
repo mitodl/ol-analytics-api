@@ -5,7 +5,8 @@ Seat utilization, Active learners and Completion rate. Those three come from
 ``mv_b2b_contract_utilization``; this one is aggregated here instead, over the
 learner-grain MV the learner directory reads, so that the tile and the
 directory share one needs-attention predicate and one date. See
-``models.ContractNeedsAttention`` for why that was preferred to a dbt column.
+``models.ContractNeedsAttention`` for why that was preferred to a count column
+in dbt.
 
 Two routes, because the dashboard renders a card group per contract on both
 views: the org route returns one row per contract the organization holds, and

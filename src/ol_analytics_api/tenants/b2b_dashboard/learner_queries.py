@@ -28,12 +28,11 @@ is the justification for each ``# noqa: S608`` below.
 
 The one spliced value is today's UTC date, and it is not caller-supplied: the
 router reads it from StarRocks with ``UTC_TODAY_QUERY``, and ``_date_literal``
-narrows it to a
-``datetime.date`` before rendering, so the text it produces can only ever be
-``'YYYY-MM-DD'``. It is spliced rather than bound because it appears in the
-SELECT list, which precedes the WHERE clause the existing parameters bind to;
-binding it would mean prepending it to a tuple the page and count queries
-share.
+narrows it to a ``datetime.date`` before rendering, so the text it produces can
+only ever be ``'YYYY-MM-DD'``. It is spliced rather than bound because it
+appears in the SELECT list, which precedes the WHERE clause the existing
+parameters bind to; binding it would mean prepending it to a tuple the page and
+count queries share.
 
 ``learner_progress`` is two layers, as in the b2b_learner_records tenant. The
 inner ``records`` select scopes to the organization and contract and renames
