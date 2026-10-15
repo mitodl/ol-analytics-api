@@ -189,6 +189,7 @@ class LearnerFilters:
     contract_id: int
     search: str | None = None
     completion_statuses: tuple[str, ...] = ()
+    courserun_readable_ids: tuple[str, ...] = ()
     needs_attention: bool | None = None
 
 
@@ -259,7 +260,7 @@ def _where(
     search: str | None,
     completion_statuses: tuple[str, ...],
     needs_attention: bool | None,
-    courserun_readable_id: str | None = None,
+    courserun_readable_ids: tuple[str, ...] = (),
 ) -> tuple[str, tuple[Any, ...]]:
     """The filter over ``records`` as `` WHERE ...`` (or empty), and its params.
 
@@ -272,9 +273,15 @@ def _where(
         pattern = _contains_pattern(search)
         predicates.append("(LOWER(email) LIKE %s OR LOWER(full_name) LIKE %s)")
         params.extend([pattern, pattern])
-    if courserun_readable_id:
-        predicates.append("courserun_readable_id = %s")
-        params.append(courserun_readable_id)
+    if courserun_readable_ids:
+        marks = ", ".join(["%s"] * len(courserun_readable_ids))
+        # `=` for one run keeps /learner-progress's single-value SQL unchanged.
+        predicates.append(
+            "courserun_readable_id = %s"
+            if len(courserun_readable_ids) == 1
+            else f"courserun_readable_id IN ({marks})"
+        )
+        params.extend(courserun_readable_ids)
     if completion_statuses:
         # Status values match only rows whose outcomes are shared; `unknown`
         # selects the withheld ones. Otherwise a status filter would reveal the
@@ -330,7 +337,9 @@ def learner_progress(filters: ProgressFilters, today: datetime.date) -> Progress
         records,
         search=filters.search,
         completion_statuses=filters.completion_statuses,
-        courserun_readable_id=filters.courserun_readable_id,
+        courserun_readable_ids=(
+            (filters.courserun_readable_id,) if filters.courserun_readable_id else ()
+        ),
         needs_attention=filters.needs_attention,
     )
     shared = records.shared
@@ -404,6 +413,7 @@ def learners(filters: LearnerFilters, today: datetime.date) -> ProgressQuery:
         records,
         search=filters.search,
         completion_statuses=filters.completion_statuses,
+        courserun_readable_ids=filters.courserun_readable_ids,
         needs_attention=filters.needs_attention,
     )
     page = (

@@ -84,6 +84,19 @@ CompletionStatusParam = Annotated[
     ),
 ]
 
+MAX_COURSERUN_FILTERS = 50
+CourserunListParam = Annotated[
+    list[Annotated[str, Query(min_length=1)]],
+    Query(
+        max_length=MAX_COURSERUN_FILTERS,
+        description=(
+            "Repeat for several modules; they OR together and AND with the other filters. "
+            f"At most {MAX_COURSERUN_FILTERS}."
+        ),
+        default_factory=list,
+    ),
+]
+
 
 async def _utc_today() -> datetime.date:
     """Resolve today's UTC date on the cluster, once, before either data query.
@@ -191,7 +204,9 @@ async def learner_progress(  # noqa: PLR0913
     description=(
         "A learner is listed when at least one of their active enrollments matches every "
         "filter at once. Their other active enrollments are returned too, whether or not they "
-        "match. `limit` and `offset` count learners, not enrollments."
+        "match. `limit` and `offset` count learners, not enrollments. `completion_status`, "
+        "`courserun_readable_id` and `needs_attention` narrow together: several values of "
+        "one filter OR, and different filters AND on a single enrollment."
     ),
 )
 async def learners(  # noqa: PLR0913
@@ -201,6 +216,7 @@ async def learners(  # noqa: PLR0913
     page: Annotated[Pagination, Depends(learner_pagination)],
     search: SearchParam = None,
     completion_status: CompletionStatusParam,
+    courserun_readable_id: CourserunListParam,
     needs_attention: Annotated[
         bool | None,
         Query(
@@ -218,6 +234,7 @@ async def learners(  # noqa: PLR0913
             contract_id=contract_id,
             search=search,
             completion_statuses=tuple(status.value for status in completion_status),
+            courserun_readable_ids=tuple(courserun_readable_id),
             needs_attention=needs_attention,
         ),
         today,

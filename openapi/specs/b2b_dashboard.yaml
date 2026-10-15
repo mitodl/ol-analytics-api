@@ -592,9 +592,12 @@ paths:
       - learners
       summary: Each learner under the contract with all of their enrollments, paged
         by learner
-      description: A learner is listed when at least one of their active enrollments
+      description: 'A learner is listed when at least one of their active enrollments
         matches every filter at once. Their other active enrollments are returned
         too, whether or not they match. `limit` and `offset` count learners, not enrollments.
+        `completion_status`, `courserun_readable_id` and `needs_attention` narrow
+        together: several values of one filter OR, and different filters AND on a
+        single enrollment.'
       operationId: learners_list
       parameters:
       - name: organization_id
@@ -631,6 +634,20 @@ paths:
           description: Repeat for several. `unknown` selects rows with withheld outcomes.
           title: Completion Status
         description: Repeat for several. `unknown` selects rows with withheld outcomes.
+      - name: courserun_readable_id
+        in: query
+        required: false
+        schema:
+          type: array
+          items:
+            type: string
+            minLength: 1
+          maxItems: 50
+          description: Repeat for several modules; they OR together and AND with the
+            other filters. At most 50.
+          title: Courserun Readable Id
+        description: Repeat for several modules; they OR together and AND with the
+          other filters. At most 50.
       - name: needs_attention
         in: query
         required: false
