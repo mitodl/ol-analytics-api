@@ -1,0 +1,42 @@
+name: dbt exposures
+
+# tests/dbt_exposures/ holds copies of the files ol-data-platform commits to
+# exposures/ (`ol-dbt exposures export`): the columns and cohort declarations of
+# every view this service reads. tests/test_dbt_exposure_contract.py checks the
+# models against the copies. A difference means a view changed in dbt: copy the
+# new file in and fix whatever that test then reports. The daily run catches a
+# dbt change between this repo's own pushes, before the view rebuild reaches
+# production.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 12 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Compare with ol-data-platform main
+        run: |
+          status=0
+          for file in tests/dbt_exposures/*.json; do
+            url="https://raw.githubusercontent.com/mitodl/ol-data-platform/main/exposures/$(basename "$file")"
+            if ! upstream=$(curl -fsSL "$url"); then
+              echo "::error file=$file::could not fetch $url"
+              status=1
+            elif ! diff -u "$file" <(printf '%s\n' "$upstream"); then
+              echo "::error file=$file::differs from ol-data-platform main; copy $url over it"
+              status=1
+            fi
+          done
+          exit "$status"
