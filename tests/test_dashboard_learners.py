@@ -34,8 +34,8 @@ ORG_ID = "11111111-1111-1111-1111-111111111111"
 CONTRACT_ID = 101
 PATH = f"/api/v1/analytics/organizations/{ORG_ID}/contracts/{CONTRACT_ID}/learners"
 _AS_OF = datetime.datetime(2026, 9, 15, 6, 0)  # noqa: DTZ001 - StarRocks returns naive UTC
-_CUTOFF = datetime.date(2026, 8, 16)
-_CUTOFF_SQL = "'2026-08-16'"
+_TODAY = datetime.date(2026, 9, 15)
+_TODAY_SQL = "'2026-09-15'"
 
 
 def _manager_header(organization_id=ORG_ID):
@@ -70,7 +70,7 @@ def _row(**overrides):
 
 
 class _FakePool:
-    """Answers the cutoff, as_of, contract-gate, count and page queries,
+    """Answers the UTC date, as_of, contract-gate, count and page queries,
     recording every call."""
 
     def __init__(self, rows=(), total_count=0, *, contract_exists=True):
@@ -81,8 +81,8 @@ class _FakePool:
 
     async def fetch_all(self, query, params=()):
         self.calls.append((query, params))
-        if query == learner_queries.NEEDS_ATTENTION_CUTOFF_QUERY:
-            return [{"cutoff": _CUTOFF}]
+        if query == learner_queries.UTC_TODAY_QUERY:
+            return [{"today": _TODAY}]
         if "information_schema" in query:
             return [{"as_of": _AS_OF}]
         if query.startswith("SELECT 1 "):
@@ -179,18 +179,18 @@ async def test_page_size_is_capped_by_the_learner_setting(app, limit, status):
     assert response.status_code == status
 
 
-async def test_page_and_count_share_one_filter_and_one_cutoff(app):
+async def test_page_and_count_share_one_filter_and_one_date(app):
     pool = _FakePool()
     await _get(app, pool, params={"needs_attention": "true", "completion_status": ["unknown"]})
-    cutoffs = [i for i, (q, _) in enumerate(pool.calls) if "DATE_SUB" in q]
+    todays = [i for i, (q, _) in enumerate(pool.calls) if q == learner_queries.UTC_TODAY_QUERY]
     page_query, _ = pool.page_call()
     count_query, _ = pool.count_call()
-    assert len(cutoffs) == 1
-    assert cutoffs[0] < pool.calls.index(pool.page_call())
-    attention = learner_queries._needs_attention(_CUTOFF)  # noqa: SLF001
+    assert len(todays) == 1
+    assert todays[0] < pool.calls.index(pool.page_call())
+    attention = learner_queries._needs_attention(_TODAY)  # noqa: SLF001
     for query in (page_query, count_query):
         assert "CURRENT_DATE" not in query
-        assert _CUTOFF_SQL in query
+        assert _TODAY_SQL in query
         assert f"(COALESCE(outcomes_decision, FALSE) AND ({attention}))" in query
         assert "NOT COALESCE(outcomes_decision, FALSE)" in query
         assert "enrollment_is_active = TRUE" in query
@@ -274,24 +274,48 @@ _ENROLLMENT_MV_COLUMNS = (
     "enrollment_created_on",
     "enrollment_is_active",
     "enrollment_mode",
+    "completion_status",
     "certificate_is_revoked",
     "is_passing",
     "grade_value",
     "letter_grade",
     "certificate_issued_on",
     "last_active_on",
+    "needs_attention_since",
     "outcomes_shared",
 )
 
-_PASSED = {"is_passing": True, "grade_value": 0.9, "last_active_on": "2026-09-01"}
-_RECENT = {"grade_value": 0.3, "last_active_on": "2026-09-01"}
-# On or before _CUTOFF, so an in-progress enrollment like this needs attention.
-_STALE = {"grade_value": 0.2, "last_active_on": "2026-07-01"}
-_NOT_STARTED: dict[str, object] = {}
+# needs_attention_since as the view dates it: 30 days after the last activity
+# while in progress, the enrollment date when not started, none once passed.
+_PASSED = {
+    "completion_status": "passed",
+    "is_passing": True,
+    "grade_value": 0.9,
+    "last_active_on": "2026-09-01",
+}
+_RECENT = {
+    "completion_status": "in_progress",
+    "grade_value": 0.3,
+    "last_active_on": "2026-09-01",
+    "needs_attention_since": "2026-10-01",
+}
+# Due on or before _TODAY, so an enrollment like this needs attention.
+_STALE = {
+    "completion_status": "in_progress",
+    "grade_value": 0.2,
+    "last_active_on": "2026-07-01",
+    "needs_attention_since": "2026-07-31",
+}
+_NOT_STARTED = {"completion_status": "not_started", "needs_attention_since": "2026-02-03"}
 
 # learner_id: (full_name, email, consent decision, [(run, outcome)]).
 _LEARNERS = {
-    "ann": ("Ann Lee", "ann@x", True, [("run-1", _PASSED), ("run-2", _STALE), ("run-3", {})]),
+    "ann": (
+        "Ann Lee",
+        "ann@x",
+        True,
+        [("run-1", _PASSED), ("run-2", _STALE), ("run-3", _NOT_STARTED)],
+    ),
     "bob": ("Bob Ray", "bob@x", True, [("run-1", _RECENT), ("run-2", _PASSED)]),
     "eve": ("Eve Ng", "eve@x", False, [("run-1", _PASSED), ("run-2", _PASSED)]),
     # Same name and email: only learner_id can order them.
@@ -349,7 +373,7 @@ def mv(monkeypatch):
 def _run(mv, *, limit=100, offset=0, **filters):
     query = learner_queries.learners(
         learner_queries.LearnerFilters(organization_id=ORG_ID, contract_id=CONTRACT_ID, **filters),
-        _CUTOFF,
+        _TODAY,
     )
     rows = [
         dict(row)
@@ -433,7 +457,7 @@ def test_the_projection_is_exactly_the_row_model(mv):
     # LearnerEnrollment ignores unknown keys, so a column added to the query
     # alone would vanish silently; pin the two together.
     query = learner_queries.learners(
-        learner_queries.LearnerFilters(organization_id=ORG_ID, contract_id=CONTRACT_ID), _CUTOFF
+        learner_queries.LearnerFilters(organization_id=ORG_ID, contract_id=CONTRACT_ID), _TODAY
     )
     cursor = mv.conn.execute(query.page.replace("%s", "?"), (*query.params, 100, 0))
     assert {column[0] for column in cursor.description} == set(LearnerProgress.model_fields)

@@ -85,22 +85,21 @@ CompletionStatusParam = Annotated[
 ]
 
 
-async def _needs_attention_cutoff() -> datetime.date:
-    """Resolve the needs-attention cutoff on the cluster, once, before either
-    data query.
+async def _utc_today() -> datetime.date:
+    """Resolve today's UTC date on the cluster, once, before either data query.
 
-    The page and the count are two statements, so leaving CURRENT_DATE() in
-    the SQL would let them evaluate it either side of midnight and disagree
-    about which learners are quiet -- a row reading `false` while
-    needs_attention_count counted it, and a `total_count` the page's own
-    filter contradicts. Resolved per request and never cached: the failure
-    this prevents is a date boundary, so a cached cutoff would be wrong for
-    exactly as long as the cache held it. This is the one non-deterministic
-    expression in the tenant's SQL.
+    needs_attention_since is compared against it. The page and the count are
+    two statements, so leaving the date in the SQL would let them evaluate it
+    either side of midnight and disagree about which learners are quiet -- a
+    row reading `false` while needs_attention_count counted it, and a
+    `total_count` the page's own filter contradicts. Resolved per request and
+    never cached: the failure this prevents is a date boundary, so a cached
+    date would be wrong for exactly as long as the cache held it. This is the
+    one non-deterministic expression in the tenant's SQL.
     """
-    rows = await starrocks_pool.fetch_all(learner_queries.NEEDS_ATTENTION_CUTOFF_QUERY)
-    cutoff: datetime.date = rows[0]["cutoff"]
-    return cutoff
+    rows = await starrocks_pool.fetch_all(learner_queries.UTC_TODAY_QUERY)
+    today: datetime.date = rows[0]["today"]
+    return today
 
 
 async def _enrollment_as_of() -> datetime.datetime | None:
@@ -148,7 +147,7 @@ async def learner_progress(  # noqa: PLR0913
     sort: learner_queries.SortKey = learner_queries.SortKey.FULL_NAME,
     descending: bool = False,
 ) -> LearnerProgressResponse:
-    cutoff = await _needs_attention_cutoff()
+    today = await _utc_today()
     query = learner_queries.learner_progress(
         learner_queries.ProgressFilters(
             organization_id=organization_id,
@@ -161,7 +160,7 @@ async def learner_progress(  # noqa: PLR0913
             sort=sort,
             descending=descending,
         ),
-        cutoff,
+        today,
     )
     as_of = await _enrollment_as_of()
     rows = await starrocks_pool.fetch_all(query.page, (*query.params, page.limit, page.offset))
@@ -212,7 +211,7 @@ async def learners(  # noqa: PLR0913
         ),
     ] = None,
 ) -> LearnersResponse:
-    cutoff = await _needs_attention_cutoff()
+    today = await _utc_today()
     query = learner_queries.learners(
         learner_queries.LearnerFilters(
             organization_id=organization_id,
@@ -221,7 +220,7 @@ async def learners(  # noqa: PLR0913
             completion_statuses=tuple(status.value for status in completion_status),
             needs_attention=needs_attention,
         ),
-        cutoff,
+        today,
     )
     as_of = await _enrollment_as_of()
     rows = await starrocks_pool.fetch_all(query.page, (*query.params, page.limit, page.offset))

@@ -36,29 +36,28 @@ CONTRACT_ID = 101
 ORG_PATH = f"/api/v1/analytics/organizations/{ORG_ID}/needs-attention"
 CONTRACT_PATH = f"/api/v1/analytics/organizations/{ORG_ID}/contracts/{CONTRACT_ID}/needs-attention"
 _AS_OF = datetime.datetime(2026, 9, 15, 6, 0)  # noqa: DTZ001 - StarRocks returns naive UTC
-# What the cluster answers NEEDS_ATTENTION_CUTOFF_QUERY with: 30 days before
-# _AS_OF's date. Fixed, so the SQL these tests assert on is stable.
-_CUTOFF = datetime.date(2026, 8, 16)
+# What the cluster answers UTC_TODAY_QUERY with: _AS_OF's date. Fixed, so the
+# SQL these tests assert on is stable.
+_TODAY = datetime.date(2026, 9, 15)
 # Bound into the page query's HAVING by the tests whose subject is the
 # needs-attention rule rather than the k-anonymity floor: their fixtures are a
 # handful of learners on purpose, and the real floor would gate them all out.
 # The two tests that ARE about the floor bind it explicitly instead.
 _NO_FLOOR = 1
 
-# The MV columns the aggregate's inner select reads. Same shape as the
-# learner-progress sqlite fixtures, plus the scoping and grain columns this
-# query groups and filters on.
+# The MV columns the aggregate's inner select reads: the scoping and grain
+# columns this query groups and filters on, and the date the rule compares.
 _MV_COLUMNS = (
     "sso_organization_id TEXT",
     "contract_id INTEGER",
     "user_global_id TEXT",
     "enrollment_is_active INTEGER",
-    "certificate_is_revoked INTEGER",
-    "is_passing INTEGER",
-    "grade_value REAL",
-    "last_active_on TEXT",
+    "needs_attention_since TEXT",
     "outcomes_shared INTEGER",
 )
+# A needs_attention_since that has arrived, and one that has not.
+_DUE = (_TODAY - datetime.timedelta(days=1)).isoformat()
+_NOT_DUE = (_TODAY + datetime.timedelta(days=29)).isoformat()
 
 
 def _enrollment(
@@ -67,29 +66,22 @@ def _enrollment(
     contract_id=CONTRACT_ID,
     organization_id=ORG_ID,
     active=1,
-    revoked=1,
-    passing=0,
-    grade=None,
-    last_active_on=None,
+    needs_attention_since=None,
     outcomes_shared=None,
 ):
     """One row of mv_b2b_learner_enrollment.
 
-    ``revoked=1`` is the default because _COMPLETION_STATUS reads an
-    *unrevoked* certificate as certified; 1 keeps a row out of that branch so
-    the grade and activity columns decide its status, which is what these
-    tests vary. ``outcomes_shared=None`` is a learner with no recorded consent
-    decision, who follows ``consent_fail_open``.
+    ``needs_attention_since=None`` is a learner the MV never flags (passed,
+    certified, or graded with no tracked activity). ``outcomes_shared=None`` is
+    a learner with no recorded consent decision, who follows
+    ``consent_fail_open``.
     """
     return (
         organization_id,
         contract_id,
         learner,
         active,
-        revoked,
-        passing,
-        grade,
-        last_active_on,
+        needs_attention_since,
         outcomes_shared,
     )
 
@@ -134,26 +126,16 @@ def test_counts_each_learner_once_however_many_courses_they_are_quiet_in():
     # cannot sit beside active_learners, a distinct-learner count. Executed
     # against real rows, not asserted on SQL text, because the units are the
     # whole point.
-    quiet = (_CUTOFF - datetime.timedelta(days=1)).isoformat()
     rows = [
         # One learner, quiet in three of the contract's course runs.
-        *(_enrollment("learner-a", grade=0.4, last_active_on=quiet) for _ in range(3)),
+        *(_enrollment("learner-a", needs_attention_since=_DUE) for _ in range(3)),
         # A second learner, quiet in one.
-        _enrollment("learner-b", grade=0.4, last_active_on=quiet),
+        _enrollment("learner-b", needs_attention_since=_DUE),
         # A third, active yesterday in two runs: not quiet in either.
-        *(
-            _enrollment(
-                "learner-c",
-                grade=0.4,
-                last_active_on=(
-                    datetime.date(2026, 9, 15) - datetime.timedelta(days=1)
-                ).isoformat(),
-            )
-            for _ in range(2)
-        ),
+        *(_enrollment("learner-c", needs_attention_since=_NOT_DUE) for _ in range(2)),
     ]
     conn = _db(rows)
-    query = learner_queries.needs_attention_aggregate(ORG_ID, CONTRACT_ID, _CUTOFF)
+    query = learner_queries.needs_attention_aggregate(ORG_ID, CONTRACT_ID, _TODAY)
     [row] = _run(conn, query.page, (*query.params, _NO_FLOOR, 100, 0)).fetchall()
 
     # 6 enrollments, 3 learners, 2 of them needing attention.
@@ -162,13 +144,12 @@ def test_counts_each_learner_once_however_many_courses_they_are_quiet_in():
     # And the same rows through learner-progress's enrollment-grain count,
     # built from the production expression rather than a copy of it, to show
     # the two really do disagree and by how much. 4 enrollments, 2 learners.
-    needs_attention = learner_queries._needs_attention(_CUTOFF)  # noqa: SLF001
+    needs_attention = learner_queries._needs_attention(_TODAY)  # noqa: SLF001
     enrollment_grain = _run(
         conn,
         "SELECT SUM(CASE WHEN TRUE AND"  # noqa: S608
-        f" ({needs_attention}) THEN 1 ELSE 0 END) FROM (SELECT *,"
-        f" {learner_queries._COMPLETION_STATUS} AS completion_status"  # noqa: SLF001
-        f" FROM {settings.learner_records_schema}.{learner_queries.ENROLLMENT_MV})",
+        f" ({needs_attention}) THEN 1 ELSE 0 END)"
+        f" FROM {settings.learner_records_schema}.{learner_queries.ENROLLMENT_MV}",
         (),
     ).fetchone()[0]
     conn.close()
@@ -185,7 +166,7 @@ def test_projects_exactly_the_model_fields_in_order():
     # ContractNeedsAttention on a live request. Executing it and reading the
     # cursor's column names catches that, and proves the SQL parses.
     conn = _db([_enrollment("learner-a")])
-    query = learner_queries.needs_attention_aggregate(ORG_ID, CONTRACT_ID, _CUTOFF)
+    query = learner_queries.needs_attention_aggregate(ORG_ID, CONTRACT_ID, _TODAY)
     cursor = _run(conn, query.page, (*query.params, _NO_FLOOR, 100, 0))
     columns = [description[0] for description in cursor.description]
     conn.close()
@@ -198,16 +179,15 @@ def test_consent_gate_moves_learners_between_the_counts(monkeypatch):
     # learner-progress: being enrolled is not an outcome, so it is disclosed,
     # while anything about progress is gated. So a withheld learner is counted
     # in the first and the third, never the second -- and the three never sum.
-    quiet = (_CUTOFF - datetime.timedelta(days=1)).isoformat()
     conn = _db(
         [
-            _enrollment("learner-a", grade=0.4, last_active_on=quiet),
-            _enrollment("learner-b", grade=0.4, last_active_on=quiet),
+            _enrollment("learner-a", needs_attention_since=_DUE),
+            _enrollment("learner-b", needs_attention_since=_DUE),
         ]
     )
 
     def aggregate():
-        query = learner_queries.needs_attention_aggregate(ORG_ID, CONTRACT_ID, _CUTOFF)
+        query = learner_queries.needs_attention_aggregate(ORG_ID, CONTRACT_ID, _TODAY)
         return _run(conn, query.page, (*query.params, _NO_FLOOR, 100, 0)).fetchall()
 
     # The code default fails closed, so no learner's quietness is disclosed and
@@ -225,17 +205,16 @@ def test_recorded_consent_decision_wins_over_the_fail_open_toggle(monkeypatch):
     # recorded decline is withheld even where the stack fails open (which is
     # what Production runs), a recorded grant is counted even where it fails
     # closed, and only the learner with no decision follows the toggle.
-    quiet = (_CUTOFF - datetime.timedelta(days=1)).isoformat()
     conn = _db(
         [
-            _enrollment("declined", grade=0.4, last_active_on=quiet, outcomes_shared=0),
-            _enrollment("granted", grade=0.4, last_active_on=quiet, outcomes_shared=1),
-            _enrollment("undecided", grade=0.4, last_active_on=quiet),
+            _enrollment("declined", needs_attention_since=_DUE, outcomes_shared=0),
+            _enrollment("granted", needs_attention_since=_DUE, outcomes_shared=1),
+            _enrollment("undecided", needs_attention_since=_DUE),
         ]
     )
 
     def aggregate():
-        query = learner_queries.needs_attention_aggregate(ORG_ID, CONTRACT_ID, _CUTOFF)
+        query = learner_queries.needs_attention_aggregate(ORG_ID, CONTRACT_ID, _TODAY)
         return _run(conn, query.page, (*query.params, _NO_FLOOR, 100, 0)).fetchall()
 
     monkeypatch.setattr(settings, "consent_fail_open", True)
@@ -250,26 +229,26 @@ def test_recorded_consent_decision_wins_over_the_fail_open_toggle(monkeypatch):
 def test_boundary_is_the_same_day_the_learner_directory_uses():
     # The tile and the directory must agree about a learner whose 30th quiet
     # day is today, which is the reason this aggregate reuses
-    # ._needs_attention against a per-request cutoff instead of restating the
-    # rule. Day 30 counts ("at least 30 days ago" includes the 30th); day 29
-    # does not.
+    # ._needs_attention against a per-request date instead of restating the
+    # comparison. Day 30 counts ("at least 30 days ago" includes the 30th);
+    # day 29 does not.
     conn = _db(
         [
-            _enrollment("day-30", grade=0.4, last_active_on=_CUTOFF.isoformat()),
+            # The MV dates a quiet learner 30 days after their last activity,
+            # so on their 30th quiet day the date is today.
+            _enrollment("day-30", needs_attention_since=_TODAY.isoformat()),
             _enrollment(
-                "day-29",
-                grade=0.4,
-                last_active_on=(_CUTOFF + datetime.timedelta(days=1)).isoformat(),
+                "day-29", needs_attention_since=(_TODAY + datetime.timedelta(days=1)).isoformat()
             ),
-            # Never started: quiet by definition, with no timestamp involved.
-            _enrollment("never-started"),
-            # A grade but no tracked activity. The staleness comparison is NULL
+            # Never started: dated from the enrollment, so long since due.
+            _enrollment("never-started", needs_attention_since="2026-02-03"),
+            # A grade but no tracked activity: no date. The comparison is NULL
             # for this row; ._needs_attention's COALESCE settles it as "no", so
             # it is counted in neither direction rather than vanishing.
-            _enrollment("graded-no-activity", grade=0.4),
+            _enrollment("graded-no-activity"),
         ]
     )
-    query = learner_queries.needs_attention_aggregate(ORG_ID, CONTRACT_ID, _CUTOFF)
+    query = learner_queries.needs_attention_aggregate(ORG_ID, CONTRACT_ID, _TODAY)
     [row] = _run(conn, query.page, (*query.params, _NO_FLOOR, 100, 0)).fetchall()
     conn.close()
 
@@ -281,14 +260,13 @@ def test_inactive_enrollments_are_left_out_like_the_directory_default():
     # learner_progress's include_inactive defaults to false, so a manager
     # clicking through from this tile sees only active enrollments. The tile
     # must count that same population or it sends them to a shorter list.
-    quiet = (_CUTOFF - datetime.timedelta(days=1)).isoformat()
     conn = _db(
         [
-            _enrollment("active", grade=0.4, last_active_on=quiet),
-            _enrollment("unenrolled", active=0, grade=0.4, last_active_on=quiet),
+            _enrollment("active", needs_attention_since=_DUE),
+            _enrollment("unenrolled", active=0, needs_attention_since=_DUE),
         ]
     )
-    query = learner_queries.needs_attention_aggregate(ORG_ID, CONTRACT_ID, _CUTOFF)
+    query = learner_queries.needs_attention_aggregate(ORG_ID, CONTRACT_ID, _TODAY)
     [row] = _run(conn, query.page, (*query.params, _NO_FLOOR, 100, 0)).fetchall()
     conn.close()
 
@@ -297,12 +275,11 @@ def test_inactive_enrollments_are_left_out_like_the_directory_default():
 
 @pytest.mark.usefixtures("_fail_open")
 def test_org_scope_returns_one_row_per_contract_and_never_crosses_orgs():
-    quiet = (_CUTOFF - datetime.timedelta(days=1)).isoformat()
     other_org = "22222222-2222-2222-2222-222222222222"
     conn = _db(
         [
-            _enrollment("learner-a", contract_id=101, grade=0.4, last_active_on=quiet),
-            _enrollment("learner-b", contract_id=102, grade=0.4, last_active_on=quiet),
+            _enrollment("learner-a", contract_id=101, needs_attention_since=_DUE),
+            _enrollment("learner-b", contract_id=102, needs_attention_since=_DUE),
             _enrollment("learner-b", contract_id=102),
             # Same contract id under a different org. Contract ids are globally
             # unique but not secret, so the org predicate is what keeps this
@@ -310,7 +287,7 @@ def test_org_scope_returns_one_row_per_contract_and_never_crosses_orgs():
             _enrollment("intruder", contract_id=101, organization_id=other_org),
         ]
     )
-    query = learner_queries.needs_attention_aggregate(ORG_ID, None, _CUTOFF)
+    query = learner_queries.needs_attention_aggregate(ORG_ID, None, _TODAY)
     rows = _run(conn, query.page, (*query.params, _NO_FLOOR, 100, 0)).fetchall()
     conn.close()
 
@@ -334,7 +311,7 @@ def test_page_and_count_describe_the_same_gated_set():
         *(_enrollment(f"l103-{n}", contract_id=103) for n in range(6)),
     ]
     conn = _db(rows)
-    query = learner_queries.needs_attention_aggregate(ORG_ID, None, _CUTOFF)
+    query = learner_queries.needs_attention_aggregate(ORG_ID, None, _TODAY)
     floor = settings.anonymization_floor
     first_page = _run(conn, query.page, (*query.params, floor, 2, 0)).fetchall()
     [(total,)] = _run(conn, query.count, (*query.params, floor)).fetchall()
@@ -359,7 +336,7 @@ def test_count_query_applies_the_primary_cohort_floor():
             *(_enrollment(f"small-{n}", contract_id=102) for n in range(2)),
         ]
     )
-    query = learner_queries.needs_attention_aggregate(ORG_ID, None, _CUTOFF)
+    query = learner_queries.needs_attention_aggregate(ORG_ID, None, _TODAY)
     page = _run(conn, query.page, (*query.params, 5, 100, 0)).fetchall()
     [(total,)] = _run(conn, query.count, (*query.params, 5)).fetchall()
     conn.close()
@@ -390,8 +367,8 @@ class _FakePool:
 
     async def fetch_all(self, query, params=()):
         self.calls.append((query, params))
-        if query == learner_queries.NEEDS_ATTENTION_CUTOFF_QUERY:
-            return [{"cutoff": _CUTOFF}]
+        if query == learner_queries.UTC_TODAY_QUERY:
+            return [{"today": _TODAY}]
         if "information_schema" in query:
             return [{"as_of": _AS_OF}]
         if query.startswith("SELECT 1 "):
@@ -509,11 +486,9 @@ async def test_cutoff_is_resolved_once_and_shared_by_the_page_and_the_count(app)
     pool = _FakePool(rows=[_row()], total_count=1)
     await _get(app, pool)
 
-    probes = [
-        query for query, _ in pool.calls if query == learner_queries.NEEDS_ATTENTION_CUTOFF_QUERY
-    ]
+    probes = [query for query, _ in pool.calls if query == learner_queries.UTC_TODAY_QUERY]
     assert len(probes) == 1
-    needs_attention = learner_queries._needs_attention(_CUTOFF)  # noqa: SLF001
+    needs_attention = learner_queries._needs_attention(_TODAY)  # noqa: SLF001
     assert needs_attention in pool.page_call()[0]
     # The count query gates on the primary cohort only, so it carries the
     # scope but not the predicate -- the two cannot disagree about the cutoff

@@ -1571,20 +1571,22 @@ components:
 
         KPI tile and the learner directory beneath it share a single
 
-        needs-attention expression and a single per-request cutoff.
+        needs-attention expression and a single per-request date.
 
 
-        A column on ``mv_b2b_contract_utilization`` was the other candidate and was
+        A count column on ``mv_b2b_contract_utilization`` was the other candidate
 
-        not chosen (decided 2026-10-02). It would have restated the 30-day rule and
+        and was not chosen (decided 2026-10-02): it would have frozen the cutoff at
 
-        the completion-status CASE in dbt — two repos, two languages, no test that
+        MV-refresh time, so the tile and the directory could disagree about the
 
-        can see both — and frozen the cutoff at MV-refresh time, so the tile and the
+        same learner for up to a refresh interval. The rule itself has since moved
 
-        directory could disagree about the same learner for up to a refresh
+        to dbt in a form that avoids that. The MV publishes a per-enrollment
 
-        interval. The rule has already changed once since it was written.
+        ``needs_attention_since`` date and this query compares it to today, so
+
+        the rule lives in one repo and the comparison still happens per request.
 
 
         Served from its own endpoint rather than folded into ``ContractUtilization``

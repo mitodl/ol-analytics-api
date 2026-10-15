@@ -4,7 +4,7 @@ Backs the needs-attention KPI tile on MIT Learn's B2B analytics page, beside
 Seat utilization, Active learners and Completion rate. Those three come from
 ``mv_b2b_contract_utilization``; this one is aggregated here instead, over the
 learner-grain MV the learner directory reads, so that the tile and the
-directory share one needs-attention rule and one cutoff. See
+directory share one needs-attention predicate and one date. See
 ``models.ContractNeedsAttention`` for why that was preferred to a dbt column.
 
 Two routes, because the dashboard renders a card group per contract on both
@@ -53,21 +53,20 @@ _SUMMARY = "Learners who may need a nudge, counted once each, per contract"
 async def _respond(
     organization_id: str, contract_id: int | None, page: Pagination
 ) -> OrgAnalyticsResponse[ContractNeedsAttention]:
-    """Resolve the cutoff, run the aggregate and its gated count, suppress, wrap.
+    """Resolve today's UTC date, run the aggregate and its gated count,
+    suppress, wrap.
 
-    The cutoff is read from the cluster once per request and never cached, for
+    The date is read from the cluster once per request and never cached, for
     the reason learner-progress does the same: the page and the count are two
-    round trips, so leaving ``CURRENT_DATE()`` in the SQL would let them
-    evaluate it either side of midnight and report a count the rows contradict.
-    A cached cutoff would be wrong for exactly as long as the cache held it,
-    which is worse than the bug — the whole value of the rule is being right at
-    a date boundary. Resolving it here rather than in the query builder also
-    means this endpoint and learner-progress agree within a request.
+    round trips, so leaving the date in the SQL would let them evaluate it
+    either side of midnight and report a count the rows contradict. A cached
+    date would be wrong for exactly as long as the cache held it, which is
+    worse than the bug — the whole value of the rule is being right at a date
+    boundary. Resolving it here rather than in the query builder also means
+    this endpoint and learner-progress agree within a request.
     """
-    cutoff = (await starrocks_pool.fetch_all(learner_queries.NEEDS_ATTENTION_CUTOFF_QUERY))[0][
-        "cutoff"
-    ]
-    query = learner_queries.needs_attention_aggregate(organization_id, contract_id, cutoff)
+    today = (await starrocks_pool.fetch_all(learner_queries.UTC_TODAY_QUERY))[0]["today"]
+    query = learner_queries.needs_attention_aggregate(organization_id, contract_id, today)
     # Freshness first, so a refresh landing mid-request labels newer rows with
     # the older as_of rather than the reverse. This is the learner-enrollment
     # MV's own refresh time, not contract-utilization's: a client showing this
