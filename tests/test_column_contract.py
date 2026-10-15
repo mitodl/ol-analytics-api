@@ -7,9 +7,9 @@ matching the model, fails here instead of at request time. Every projected
 value is also asserted to be a validate_sql_identifier-safe name — proving the
 one identifier-splicing construct only ever emits validated identifiers.
 
-The *other* half of the contract — dbt/StarRocks adding or dropping a column
-the model doesn't mirror — needs a live StarRocks and is tracked as a separate
-CI contract-test task (see the schema-drift follow-up).
+The *other* half of the contract — dbt dropping a column a model reads, or
+declaring its cohort differently — is test_dbt_exposure_contract.py, against
+the column lists ol-data-platform commits per exposure.
 """
 
 from __future__ import annotations
