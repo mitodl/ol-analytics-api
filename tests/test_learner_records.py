@@ -103,6 +103,7 @@ def _enrollment_row(**overrides):
         "is_passing": None,
         "grade": None,
         "letter_grade": None,
+        "content_progress": None,
         "certificate_issued_on": None,
         "certificate_is_revoked": None,
         "last_active_on": None,
@@ -300,21 +301,38 @@ def test_models_null_outcomes_a_row_carries_when_not_shared():
         None,
     )
     enrollment = Enrollment(
-        **_enrollment_row(completion_status="certified", is_passing=1, grade=0.91, days_active=3)
+        **_enrollment_row(
+            completion_status="certified",
+            is_passing=1,
+            grade=0.91,
+            content_progress=0.96,
+            days_active=3,
+        )
     )
     assert (enrollment.completion_status, enrollment.is_passing, enrollment.grade) == (
         None,
         None,
         None,
     )
+    assert enrollment.content_progress is None
     assert enrollment.days_active is None
 
 
 def test_models_keep_outcomes_when_shared():
     enrollment = Enrollment(
-        **_enrollment_row(outcomes_shared=1, completion_status="passed", is_passing=1, grade=0.8)
+        **_enrollment_row(
+            outcomes_shared=1,
+            completion_status="passed",
+            is_passing=1,
+            grade=0.8,
+            content_progress=0.75,
+        )
     )
-    assert (enrollment.completion_status, enrollment.grade) == ("passed", 0.8)
+    assert (enrollment.completion_status, enrollment.grade, enrollment.content_progress) == (
+        "passed",
+        0.8,
+        0.75,
+    )
 
 
 def test_models_keep_activity_when_shared():

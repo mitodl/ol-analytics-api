@@ -270,6 +270,14 @@ class Enrollment(BaseModel):
     letter_grade: str | None = Field(
         description="Frequently null — not every platform records one."
     )
+    content_progress: float | None = Field(
+        description=(
+            "Share of the run's current course content the learner has completed, between 0 "
+            "and 1. Times 100 it is the completion percent on the course's progress page. Not "
+            "an input to completion_status: a certified learner can be below 1. Null where the "
+            "run has no content to count. Changes to it do not move updated_since."
+        )
+    )
     certificate_issued_on: UtcDatetime | None = Field(
         description="Timestamp the certificate was issued, or null if none exists."
     )
@@ -319,6 +327,7 @@ class Enrollment(BaseModel):
                 "is_passing",
                 "grade",
                 "letter_grade",
+                "content_progress",
                 "certificate_issued_on",
                 "certificate_is_revoked",
                 "last_active_on",
