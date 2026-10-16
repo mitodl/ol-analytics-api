@@ -86,24 +86,29 @@ class ContractUtilization(SQLModel):
     """mv_b2b_contract_utilization — grain: org x contract.
 
     ``seats_consumed`` is the primary cohort. ``active_learners`` and
-    ``learners_certified`` are secondary counts, nulled when nonzero but below
-    the floor. ``completion_rate_pct`` is ``learners_certified`` over
+    ``certified_learners`` are secondary counts, nulled when nonzero but below
+    the floor. ``completion_rate_pct`` is ``certified_learners`` over
     ``seats_consumed`` and is nulled with it. ``seat_utilization_pct`` is
     ``seats_consumed`` over ``seat_limit``, null when the limit is zero or null
     (the view divides by ``nullif(seat_limit, 0)``).
+
+    ``learners_certified`` is the deprecated name for ``certified_learners``:
+    always equal to it and floored the same way, kept until clients read the
+    new name.
     """
 
     cohort_policy: ClassVar[CohortPolicy] = CohortPolicy(
         primary="seats_consumed",
-        secondary=("active_learners", "learners_certified"),
-        derived={"completion_rate_pct": ("learners_certified",)},
-        # Both are counted from users the contract's enrollments already
+        secondary=("active_learners", "certified_learners", "learners_certified"),
+        derived={"completion_rate_pct": ("certified_learners",)},
+        # All are counted from users the contract's enrollments already
         # produced (`active_learners` filters those enrollments;
-        # `learners_certified` counts certificates on the same contract's
+        # `certified_learners` counts certificates on the same contract's
         # course runs, which a learner can only hold by enrolling), so each is
         # a subset of the seats consumed.
         contained_in={
             "active_learners": "seats_consumed",
+            "certified_learners": "seats_consumed",
             "learners_certified": "seats_consumed",
         },
     )
@@ -132,11 +137,15 @@ class ContractUtilization(SQLModel):
     active_learners: int | None = Field(
         description=f"Learners on the contract whose enrollment is still active. {_WITHHELD}"
     )
-    learners_certified: int | None = Field(
+    certified_learners: int | None = Field(
         description=(
             f"Learners on the contract who earned a certificate that hasn't been revoked. "
             f"{_WITHHELD}"
         )
+    )
+    learners_certified: int | None = Field(
+        description="Deprecated: use certified_learners, which this always equals.",
+        schema_extra={"deprecated": True},
     )
     seat_utilization_pct: float | None = Field(
         description=(
