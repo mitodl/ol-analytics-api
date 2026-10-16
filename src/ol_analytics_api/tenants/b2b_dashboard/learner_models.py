@@ -20,9 +20,7 @@ developer detail lives here instead:
 
 - ``learner_id`` is the Keycloak user id (MITx Online's user ``global_id``). It
   is stable across email changes, so join against MITx Online's manager
-  enrollment list on it, never on ``email``. It is null for accounts without a
-  ``global_id``, so ``user_pk`` (MITx Online's user primary key) is the unique
-  key: rows are grouped, paged and counted on it.
+  enrollment list on it, never on ``email``.
 - ``enrollment_is_active`` and the enrollment fields are not consent-gated;
   everything in ``_OUTCOME_FIELDS`` is.
 - ``outcomes_consent_status`` is the recorded decision for the contract before
@@ -109,14 +107,8 @@ class CompletionStatus(StrEnum):
 class LearnerIdentity(BaseModel):
     """Who the learner is. Shared by a per-enrollment row and a per-learner one."""
 
-    user_pk: int = Field(
-        description="The learner's internal account number. It is unique to each learner."
-    )
-    learner_id: str | None = Field(
-        description=(
-            "The learner's account ID. It stays the same if their email address changes. "
-            "It is missing for accounts that weren't created through single sign-on."
-        )
+    learner_id: str = Field(
+        description="The learner's account ID. It stays the same if their email address changes."
     )
     email: str | None = Field(
         description="The learner's email address. It may differ from the one they enrolled with."
@@ -237,15 +229,15 @@ class LearnerWithEnrollments(LearnerIdentity):
     def from_rows(cls, rows: Iterable[Mapping[str, Any]]) -> list[Self]:
         """Nest flat enrollment rows into learners, in the order rows arrive.
 
-        Keyed by ``user_pk`` rather than grouped by adjacency, so a change
+        Keyed by ``learner_id`` rather than grouped by adjacency, so a change
         to the query's ordering can't emit one learner twice. The learner's
         name and email come from their first row.
         """
-        learners: dict[int, Self] = {}
+        learners: dict[str, Self] = {}
         for row in rows:
-            learner = learners.get(row["user_pk"])
+            learner = learners.get(row["learner_id"])
             if learner is None:
-                learner = learners[row["user_pk"]] = cls(**row, enrollments=[])
+                learner = learners[row["learner_id"]] = cls(**row, enrollments=[])
             learner.enrollments.append(LearnerEnrollment(**row))
         return list(learners.values())
 

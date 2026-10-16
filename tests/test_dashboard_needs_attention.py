@@ -51,7 +51,6 @@ _MV_COLUMNS = (
     "sso_organization_id TEXT",
     "contract_id INTEGER",
     "user_global_id TEXT",
-    "user_pk TEXT",
     "enrollment_is_active INTEGER",
     "needs_attention_since TEXT",
     "outcomes_shared INTEGER",
@@ -80,7 +79,6 @@ def _enrollment(
     return (
         organization_id,
         contract_id,
-        learner,
         learner,
         active,
         needs_attention_since,
@@ -160,18 +158,6 @@ def test_counts_each_learner_once_however_many_courses_they_are_quiet_in():
 
 
 @pytest.mark.usefixtures("_fail_open")
-def test_learners_without_a_global_id_are_still_counted():
-    # user_global_id is null for accounts not created through SSO, and
-    # COUNT(DISTINCT) skips nulls, so the aggregate counts user_pk instead.
-    rows = [
-        (ORG_ID, CONTRACT_ID, None, "1", 1, _DUE, None),
-        (ORG_ID, CONTRACT_ID, None, "2", 1, _DUE, None),
-    ]
-    query = learner_queries.needs_attention_aggregate(ORG_ID, CONTRACT_ID, _TODAY)
-    [row] = _run(_db(rows), query.page, (*query.params, _NO_FLOOR, 100, 0)).fetchall()
-    assert row == (CONTRACT_ID, 2, 2, 0)
-
-
 def test_projects_exactly_the_model_fields_in_order():
     # The hand-built analogue of test_column_contract's
     # test_query_projects_exactly_model_fields. This query is not built by
