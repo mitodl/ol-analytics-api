@@ -131,6 +131,7 @@ async def test_org_endpoint_returns_envelope_and_suppresses_small_cohorts(app):
             "seats_consumed": 40,
             "active_learners": 30,
             "learners_certified": 10,
+            "certified_learners": 10,
             "seat_utilization_pct": 40.0,
             "completion_rate_pct": 25.0,
         },
@@ -159,6 +160,44 @@ async def test_org_endpoint_returns_envelope_and_suppresses_small_cohorts(app):
     # The sub-floor contract_pk="contract-pk-2" row is suppressed; only
     # contract_pk="contract-pk-1" remains.
     assert [row["contract_pk"] for row in body["data"]] == ["contract-pk-1"]
+
+
+async def test_contract_utilization_floors_both_certified_names_together(app):
+    # learners_certified is the deprecated name for certified_learners. A
+    # client still reading it must not see a count the new name withholds.
+    rows = [
+        {**_row_template(), "contract_pk": "contract-pk-1"},
+        {
+            **_row_template(),
+            "contract_pk": "contract-pk-2",
+            "learners_certified": 3,
+            "certified_learners": 3,
+            "completion_rate_pct": 7.5,
+        },
+    ]
+    with (
+        patch(
+            "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
+            new=_fake_fetch_all(rows),
+        ),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/contract-utilization",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
+            )
+
+    assert response.status_code == 200
+    published, withheld = response.json()["data"]
+    assert published["certified_learners"] == published["learners_certified"] == 10
+    assert published["completion_rate_pct"] == 25.0
+    assert withheld["certified_learners"] is None
+    assert withheld["learners_certified"] is None
+    assert withheld["completion_rate_pct"] is None
 
 
 async def test_org_envelope_carries_the_total_row_count(app):
@@ -966,6 +1005,7 @@ def _row_template() -> dict:
         "seats_consumed": 40,
         "active_learners": 30,
         "learners_certified": 10,
+        "certified_learners": 10,
         "seat_utilization_pct": 40.0,
         "completion_rate_pct": 25.0,
     }

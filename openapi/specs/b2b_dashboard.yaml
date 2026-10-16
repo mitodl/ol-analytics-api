@@ -1675,14 +1675,21 @@ components:
           description: Learners on the contract whose enrollment is still active.
             Withheld when too few learners are in the group to report without identifying
             them.
+        certified_learners:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Certified Learners
+          description: Learners on the contract who earned a certificate that hasn't
+            been revoked. Withheld when too few learners are in the group to report
+            without identifying them.
         learners_certified:
           anyOf:
           - type: integer
           - type: 'null'
           title: Learners Certified
-          description: Learners on the contract who earned a certificate that hasn't
-            been revoked. Withheld when too few learners are in the group to report
-            without identifying them.
+          description: 'Deprecated: use certified_learners, which this always equals.'
+          deprecated: true
         seat_utilization_pct:
           anyOf:
           - type: number
@@ -1711,6 +1718,7 @@ components:
       - b2b_contract_membership_type
       - seats_consumed
       - active_learners
+      - certified_learners
       - learners_certified
       - seat_utilization_pct
       - completion_rate_pct
@@ -1720,15 +1728,22 @@ components:
 
         ``seats_consumed`` is the primary cohort. ``active_learners`` and
 
-        ``learners_certified`` are secondary counts, nulled when nonzero but below
+        ``certified_learners`` are secondary counts, nulled when nonzero but below
 
-        the floor. ``completion_rate_pct`` is ``learners_certified`` over
+        the floor. ``completion_rate_pct`` is ``certified_learners`` over
 
         ``seats_consumed`` and is nulled with it. ``seat_utilization_pct`` is
 
         ``seats_consumed`` over ``seat_limit``, null when the limit is zero or null
 
-        (the view divides by ``nullif(seat_limit, 0)``).'
+        (the view divides by ``nullif(seat_limit, 0)``).
+
+
+        ``learners_certified`` is the deprecated name for ``certified_learners``:
+
+        always equal to it and floored the same way, kept until clients read the
+
+        new name.'
     CourseRun:
       properties:
         courserun_id:
