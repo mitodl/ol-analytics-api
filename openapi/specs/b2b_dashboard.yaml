@@ -1153,21 +1153,38 @@ components:
         value. Naming both cohorts nulls the average whenever either is sub-floor.
 
 
-        ``certificates_earned`` counts learners. Since ol-data-platform PR #2881
+        ``certificates_earned`` counts learners holding an unrevoked certificate
 
-        it is one per enrolled learner holding an unrevoked certificate for the
+        for the run, whether or not their enrollment is still active
 
-        run, read off the same enrollment rows as ``total_enrolled_learners``, so
+        (ol-data-platform PR #2913). So it is not a subset of
 
-        it is a subset of that count and carries the complement rule. That holds
+        ``total_enrolled_learners``: a learner who certified and then unenrolled
 
-        as long as a course run belongs to one contract (the dbt bridge does not
+        is counted here and not there. It is declared contained in it anyway, so
 
-        test that). If a run were bridged twice the SUM would double while the
+        besides its own floor it is withheld when the gap (enrolled minus
 
-        distinct enrollment count did not, and a count above its container fails
+        certified) is below the floor and not 0, including below zero. That gap
 
-        closed.'
+        is the uncertified enrolled learners minus the unenrolled certificate
+
+        holders, never more than the true one, so the declaration over-suppresses
+
+        on runs with unenrolled holders. A gap of exactly 0 is published even
+
+        though it can hide as many uncertified enrolled learners as there are
+
+        unenrolled holders.
+
+
+        Each learner counts once per run at this grain. Since ol-data-platform
+
+        PR #2982 every row of the progress fact carries the one contract the
+
+        learner enrolled under, so a run offered under two contracts does not
+
+        double the SUM.'
     ContractContentEngagementDepth:
       properties:
         organization_key:
