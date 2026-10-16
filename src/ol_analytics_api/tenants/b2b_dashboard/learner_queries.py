@@ -138,6 +138,7 @@ _BLANK_AS_NULL_NAME = "NULLIF(TRIM(full_name), '')"
 _STATUSES = ("not_started", "in_progress", "passed", "certified")
 
 _COLUMNS = (
+    "user_pk",
     "learner_id",
     "email",
     "full_name",
@@ -371,10 +372,10 @@ def learner_progress(filters: ProgressFilters, today: datetime.date) -> Progress
 
 # Each learner's sort key, nulls last: a blank name is already NULL in
 # `records`, and MIN skips NULLs, so a learner sorts as nameless only when
-# every row is. learner_id is the unique tie-break that makes paging
+# every row is. user_pk is the unique tie-break that makes paging
 # deterministic.
 _LEARNER_ORDER = (
-    "page_full_name IS NULL, page_full_name, page_email IS NULL, page_email, page_learner_id"
+    "page_full_name IS NULL, page_full_name, page_email IS NULL, page_email, page_user_pk"
 )
 
 
@@ -401,7 +402,7 @@ def learners(filters: LearnerFilters, today: datetime.date) -> ProgressQuery:
     ``params`` plus LIMIT and OFFSET. ``paged`` is the only place with a LIMIT
     and is read once: a LIMITed CTE read twice could be evaluated twice and
     pick different learners. Its columns are renamed ``page_*`` so the
-    projection's unqualified ``learner_id``, ``email`` and ``full_name`` stay
+    projection's unqualified ``user_pk``, ``email`` and ``full_name`` stay
     unambiguous after the join. The ``matched`` subquery groups before
     ``paged`` orders, so the ORDER BY reads plain columns rather than
     aggregate aliases.
@@ -419,16 +420,16 @@ def learners(filters: LearnerFilters, today: datetime.date) -> ProgressQuery:
     page = (
         f"WITH records AS ({records.select}),"  # noqa: S608
         " paged AS ("
-        "SELECT page_learner_id, page_full_name, page_email FROM ("
-        "SELECT learner_id AS page_learner_id, MIN(full_name) AS page_full_name,"
-        f" MIN(email) AS page_email FROM records{where} GROUP BY learner_id) matched"
+        "SELECT page_user_pk, page_full_name, page_email FROM ("
+        "SELECT user_pk AS page_user_pk, MIN(full_name) AS page_full_name,"
+        f" MIN(email) AS page_email FROM records{where} GROUP BY user_pk) matched"
         f" ORDER BY {_LEARNER_ORDER} LIMIT %s OFFSET %s)"
         f" SELECT {_projection(records)}"
-        " FROM records JOIN paged ON records.learner_id = paged.page_learner_id"
+        " FROM records JOIN paged ON records.user_pk = paged.page_user_pk"
         f" ORDER BY {_LEARNER_ORDER}, courserun_readable_id, courserun_pk"
     )
     count = (
-        "SELECT COUNT(DISTINCT learner_id) AS total_count"  # noqa: S608
+        "SELECT COUNT(DISTINCT user_pk) AS total_count"  # noqa: S608
         f" FROM ({records.select}) records{where}"
     )
     return ProgressQuery(page, count, (*records.params, *where_params))
@@ -481,7 +482,7 @@ def needs_attention_aggregate(
     # the tile lands on exactly these learners.
     scope.append("enrollment_is_active = TRUE")
     records = (
-        "SELECT user_global_id AS learner_id, contract_id, needs_attention_since,"  # noqa: S608
+        "SELECT user_pk AS learner_id, contract_id, needs_attention_since,"  # noqa: S608
         " outcomes_shared AS outcomes_decision"
         f" FROM {table} WHERE {' AND '.join(scope)}"
     )

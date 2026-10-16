@@ -46,6 +46,7 @@ def _manager_header(organization_id=ORG_ID):
 
 def _row(**overrides):
     return {
+        "user_pk": 1,
         "learner_id": "3e1a9c74-5b2d-4f88-9a01-7c6de2b4f019",
         "email": "rgarcia@contoso.example",
         "full_name": "R. Garcia",
@@ -125,9 +126,13 @@ async def _get(app, pool, *, is_manager=True, params=None):
 
 async def test_rows_nest_into_learners_under_a_learner_count(app):
     rows = [
-        _row(learner_id="a", email="a@x", full_name="Ann", courserun_readable_id="run-1"),
-        _row(learner_id="a", email="a@x", full_name="Ann", courserun_readable_id="run-2"),
-        _row(learner_id="b", email="b@x", full_name=None, courserun_readable_id="run-1"),
+        _row(
+            user_pk=1, learner_id="a", email="a@x", full_name="Ann", courserun_readable_id="run-1"
+        ),
+        _row(
+            user_pk=1, learner_id="a", email="a@x", full_name="Ann", courserun_readable_id="run-2"
+        ),
+        _row(user_pk=2, learner_id="b", email="b@x", full_name=None, courserun_readable_id="run-1"),
     ]
     response = await _get(app, _FakePool(rows=rows, total_count=40))
     assert response.status_code == 200
@@ -243,7 +248,7 @@ def test_learner_progress_is_exactly_identity_plus_enrollment():
         set(LearnerIdentity.model_fields) | set(LearnerEnrollment.model_fields)
     )
     # Identity first, so the published schema keeps its field order.
-    assert list(LearnerProgress.model_fields)[:3] == ["learner_id", "email", "full_name"]
+    assert list(LearnerProgress.model_fields)[:4] == ["user_pk", "learner_id", "email", "full_name"]
 
 
 @pytest.mark.parametrize("model", [LearnerWithEnrollments, LearnersResponse])
@@ -261,9 +266,9 @@ def test_every_field_has_a_manager_facing_description(model):
 
 def test_from_rows_never_emits_a_learner_twice():
     rows = [
-        _row(learner_id="a", courserun_readable_id="run-1"),
-        _row(learner_id="b", courserun_readable_id="run-1"),
-        _row(learner_id="a", courserun_readable_id="run-2"),
+        _row(user_pk=1, learner_id="a", courserun_readable_id="run-1"),
+        _row(user_pk=2, learner_id="b", courserun_readable_id="run-1"),
+        _row(user_pk=1, learner_id="a", courserun_readable_id="run-2"),
     ]
     learners = LearnerWithEnrollments.from_rows(rows)
     assert [(learner.learner_id, len(learner.enrollments)) for learner in learners] == [
@@ -333,7 +338,7 @@ _LEARNERS = {
     ),
     "bob": ("Bob Ray", "bob@x", True, [("run-1", _RECENT), ("run-2", _PASSED)]),
     "eve": ("Eve Ng", "eve@x", False, [("run-1", _PASSED), ("run-2", _PASSED)]),
-    # Same name and email: only learner_id can order them.
+    # Same name and email: only user_pk can order them.
     "gus-a": ("Gus", "gus@x", True, [("run-1", _NOT_STARTED)]),
     "gus-b": ("Gus", "gus@x", True, [("run-2", _NOT_STARTED)]),
     # A blank name is no name, so these sort last, by email.
@@ -353,10 +358,12 @@ def mv(monkeypatch):
     conn.execute(f"ATTACH ':memory:' AS {schema}")
     conn.execute(f"CREATE TABLE {table} ({', '.join(_ENROLLMENT_MV_COLUMNS)})")
 
+    pks = {}
+
     def insert(learner, run, outcome, *, active=True):
         learner_id, full_name, email, decision = learner
         row = {
-            "user_pk": learner_id,
+            "user_pk": pks.setdefault(learner_id, len(pks) + 1),
             "courserun_pk": run,
             "user_global_id": learner_id,
             "email": email,
@@ -506,3 +513,13 @@ def test_the_projection_is_exactly_the_row_model(mv):
     )
     cursor = mv.conn.execute(query.page.replace("%s", "?"), (*query.params, 100, 0))
     assert {column[0] for column in cursor.description} == set(LearnerProgress.model_fields)
+
+
+def test_learners_without_a_global_id_stay_separate():
+    rows = [
+        _row(user_pk=1, learner_id=None, courserun_readable_id="run-1"),
+        _row(user_pk=2, learner_id=None, courserun_readable_id="run-1"),
+    ]
+    learners = LearnerWithEnrollments.from_rows(rows)
+    assert [learner.user_pk for learner in learners] == [1, 2]
+    assert [learner.learner_id for learner in learners] == [None, None]

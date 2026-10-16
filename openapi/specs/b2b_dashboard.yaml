@@ -2098,11 +2098,19 @@ components:
         outcomes the same way.'
     LearnerProgress:
       properties:
+        user_pk:
+          type: integer
+          title: User Pk
+          description: The learner's internal account number. It is unique to each
+            learner.
         learner_id:
-          type: string
+          anyOf:
+          - type: string
+          - type: 'null'
           title: Learner Id
           description: The learner's account ID. It stays the same if their email
-            address changes.
+            address changes. It is missing for accounts that weren't created through
+            single sign-on.
         email:
           anyOf:
           - type: string
@@ -2231,6 +2239,7 @@ components:
             Hidden if the learner hasn''t agreed to share their progress.'
       type: object
       required:
+      - user_pk
       - learner_id
       - email
       - full_name
@@ -2310,11 +2319,19 @@ components:
         rows carry withheld outcomes without paging through all of them.'
     LearnerWithEnrollments:
       properties:
+        user_pk:
+          type: integer
+          title: User Pk
+          description: The learner's internal account number. It is unique to each
+            learner.
         learner_id:
-          type: string
+          anyOf:
+          - type: string
+          - type: 'null'
           title: Learner Id
           description: The learner's account ID. It stays the same if their email
-            address changes.
+            address changes. It is missing for accounts that weren't created through
+            single sign-on.
         email:
           anyOf:
           - type: string
@@ -2337,6 +2354,7 @@ components:
             including the ones that didn't match the filters.
       type: object
       required:
+      - user_pk
       - learner_id
       - email
       - full_name

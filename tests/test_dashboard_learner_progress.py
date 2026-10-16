@@ -47,6 +47,7 @@ def _manager_header(organization_id=ORG_ID):
 
 def _row(**overrides):
     return {
+        "user_pk": 1,
         "learner_id": "3e1a9c74-5b2d-4f88-9a01-7c6de2b4f019",
         "email": "rgarcia@contoso.example",
         "full_name": "R. Garcia",
