@@ -29,6 +29,7 @@ from ol_analytics_api.tenants.b2b_dashboard.learner_models import (
     LearnersResponse,
     LearnerWithEnrollments,
 )
+from ol_analytics_api.tenants.b2b_dashboard.routers.learners import MAX_COURSERUN_FILTERS
 
 ORG_ID = "11111111-1111-1111-1111-111111111111"
 CONTRACT_ID = 101
@@ -166,6 +167,14 @@ async def test_limit_and_offset_bind_last_and_count_learners(app):
     assert pool.page_call()[1][-2:] == (25, 50)
 
 
+async def test_modules_bind_as_an_in_list_on_page_and_count(app):
+    pool = _FakePool()
+    await _get(app, pool, params={"courserun_readable_id": ["run-1", "run-2"]})
+    for query, params in (pool.page_call(), pool.count_call()):
+        assert "courserun_readable_id IN (%s, %s)" in query
+        assert params[2:4] == ("run-1", "run-2")
+
+
 @pytest.mark.parametrize(
     ("limit", "status"),
     [
@@ -200,7 +209,13 @@ async def test_page_and_count_share_one_filter_and_one_date(app):
 
 @pytest.mark.parametrize(
     "params",
-    [{"needs_attention": "maybe"}, {"completion_status": ["finished"]}, {"search": ""}],
+    [
+        {"needs_attention": "maybe"},
+        {"completion_status": ["finished"]},
+        {"search": ""},
+        {"courserun_readable_id": [""]},
+        {"courserun_readable_id": [f"run-{i}" for i in range(MAX_COURSERUN_FILTERS + 1)]},
+    ],
 )
 async def test_invalid_filters_are_rejected(app, params):
     pool = _FakePool()
@@ -429,6 +444,36 @@ def test_filters_combine_on_one_enrollment(mv):
     assert total == 1
     learners, _ = _run(mv, needs_attention=True)
     assert list(_shape(learners)) == ["ann", "gus-a", "gus-b"]
+
+
+def test_one_module_lists_learners_with_every_enrollment(mv):
+    learners, total = _run(mv, courserun_readable_ids=("run-3",))
+    assert _shape(learners) == {"ann": ["run-1", "run-2", "run-3"]}
+    assert total == 1
+
+
+def test_several_modules_or_together_and_count_learners(mv):
+    learners, total = _run(mv, courserun_readable_ids=("run-1", "run-2"))
+    # ann and bob match both runs but count once; eve is listed (her rows exist).
+    assert list(_shape(learners)) == _ALL_ORDER
+    assert total == len(_ALL_ORDER)
+
+
+def test_an_unknown_module_lists_nobody(mv):
+    assert _run(mv, courserun_readable_ids=("run-404",)) == ([], 0)
+    # bob's run-9 enrollment is inactive, so it is no match.
+    assert _run(mv, courserun_readable_ids=("run-9",)) == ([], 0)
+
+
+def test_modules_compose_with_status_and_needs_attention(mv):
+    learners, total = _run(mv, courserun_readable_ids=("run-1",), completion_statuses=("passed",))
+    assert list(_shape(learners)) == ["ann"]
+    assert total == 1
+    # ann's quiet enrollment is run-2, so run-1 plus needs_attention skips her.
+    learners, _ = _run(mv, courserun_readable_ids=("run-1",), needs_attention=True)
+    assert list(_shape(learners)) == ["gus-a"]
+    learners, _ = _run(mv, courserun_readable_ids=("run-2",), needs_attention=True)
+    assert list(_shape(learners)) == ["ann", "gus-b"]
 
 
 def test_search_lists_the_learner_with_all_their_enrollments(mv):
