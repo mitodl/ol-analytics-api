@@ -41,6 +41,7 @@ _ENROLLMENT_MV_COLUMNS = (
     "is_in_progress",
     "grade_value",
     "letter_grade",
+    "content_progress",
     "certificate_issued_on",
     "certificate_is_revoked",
     "last_active_on",

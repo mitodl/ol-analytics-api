@@ -85,6 +85,7 @@ _OUTCOME_FIELDS = (
     "is_passing",
     "grade",
     "letter_grade",
+    "content_progress",
     "certificate_issued_on",
     "certificate_is_revoked",
     "last_active_on",
@@ -173,6 +174,14 @@ class LearnerEnrollment(BaseModel):
     grade: float | None = Field(description=f"The learner's current grade, from 0 to 1. {_HIDDEN}")
     letter_grade: str | None = Field(
         description=f"The learner's letter grade, when the course assigns one. {_HIDDEN}"
+    )
+    content_progress: float | None = Field(
+        description=(
+            "How much of the course content the learner has completed, from 0 to 1. Times 100 "
+            "it is the percent complete on the course's progress page. It isn't the grade, so "
+            "a learner can be certified below 1. Empty if the course has no content to count. "
+            f"{_HIDDEN}"
+        )
     )
     certificate_issued_on: UtcDatetime | None = Field(
         description=(

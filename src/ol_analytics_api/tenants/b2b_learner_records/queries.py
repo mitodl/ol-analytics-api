@@ -101,6 +101,7 @@ _ENROLLMENT_OUTCOMES = (
     "is_passing",
     "grade",
     "letter_grade",
+    "content_progress",
     "certificate_issued_on",
     "certificate_is_revoked",
     "last_active_on",
@@ -261,7 +262,8 @@ def enrollments(schema: str, filters: RecordFilters) -> RecordQuery:
         " courserun_title, courserun_start_on, courserun_end_on,"
         " enrollment_created_on AS enrolled_on, enrollment_is_active, enrollment_mode,"
         " enrollment_status, completion_status, is_passing,"
-        " grade_value AS grade, letter_grade, certificate_issued_on, certificate_is_revoked,"
+        " grade_value AS grade, letter_grade, content_progress, certificate_issued_on,"
+        " certificate_is_revoked,"
         " last_active_on, days_active, videos_played AS videos_watched, problems_attempted,"
         " chatbot_interactions, outcomes_shared AS outcomes_decision, record_updated_on"
         f" FROM {table} WHERE {' AND '.join(scope)}"

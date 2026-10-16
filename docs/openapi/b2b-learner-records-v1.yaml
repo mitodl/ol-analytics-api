@@ -37,8 +37,8 @@ info:
       enrollment with `enrollment_is_active: false`, and a learner who left the
       organization with `is_current: false`. A client that upserts drops what
       it held. Activity (`last_active_on`, `days_active`, the counters, and
-      the `in_progress` status and count they drive) does not move
-      `updated_since`; a full reload picks it up.
+      the `in_progress` status and count they drive) and `content_progress`
+      do not move `updated_since`; a full reload picks them up.
     * **Paging is stable within one refresh.** Every collection has a unique
       order, but a refresh between two pages can shift rows across the offset.
       If `as_of` changes between pages, restart from offset 0.
@@ -216,6 +216,7 @@ paths:
                         is_passing: true
                         grade: 0.91
                         letter_grade: A
+                        content_progress: 0.96
                         certificate_issued_on: '2026-07-02T11:00:00Z'
                         certificate_is_revoked: false
                         last_active_on: '2026-08-11'
@@ -243,6 +244,7 @@ paths:
                         is_passing: null
                         grade: null
                         letter_grade: null
+                        content_progress: null
                         certificate_issued_on: null
                         certificate_is_revoked: null
                         last_active_on: null
@@ -674,6 +676,7 @@ components:
         - is_passing
         - grade
         - letter_grade
+        - content_progress
         - certificate_issued_on
         - certificate_is_revoked
         - last_active_on
@@ -775,6 +778,18 @@ components:
         letter_grade:
           type: [string, 'null']
           description: Frequently null — not every platform records one.
+          x-data-readiness: available
+        content_progress:
+          type: [number, 'null']
+          format: float
+          minimum: 0
+          maximum: 1
+          description: >-
+            Share of the run's current course content the learner has
+            completed. Times 100 it is the completion percent on the course's
+            progress page. Not an input to `completion_status`: a certified
+            learner can be below 1. Null where the run has no content to
+            count. Changes to it do not move `updated_since`.
           x-data-readiness: available
         certificate_issued_on:
           type: [string, 'null']
