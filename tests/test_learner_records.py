@@ -271,7 +271,8 @@ async def test_outcome_columns_are_gated_on_the_consent_expression(app, monkeypa
     )
     page_query, _ = pool.page_call()
     assert f"{_CLOSED} AS outcomes_shared" in page_query
-    assert f"CASE WHEN {_CLOSED} THEN grade END AS grade" in page_query
+    for name in ("grade", "content_progress"):
+        assert f"CASE WHEN {_CLOSED} THEN {name} END AS {name}" in page_query
     count_query, _ = pool.count_call()
     assert f"SUM(CASE WHEN {_CLOSED} THEN 0 ELSE 1 END) AS outcomes_withheld_count" in count_query
 
