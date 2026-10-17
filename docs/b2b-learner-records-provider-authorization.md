@@ -41,13 +41,27 @@ client listing the same organization keeps reading the same rows, so ending one
 provider's access means removing that provider's clients, not the
 organization's.
 
-**Open, for pdpinch: does access expire with the contract?** Today it doesn't.
-The per-request steps below check no end date, so a client whose cleanup PR is
-forgotten keeps issuing tokens. Two ways to enforce it:
+**Access ends with the contract, as a backstop.** A client provisioned with
+`contract_end_date` carries it as the `learner_records_contract_end_date`
+claim, and the API refuses the client's tokens once that date has passed. The
+date is inclusive and read as Anywhere on Earth (UTC-12): access runs through
+the end of the end date wherever the partner is, and stops at 12:00 UTC the
+following day. A client provisioned without an end date is open-ended. A claim
+that is present but isn't a `YYYY-MM-DD` string refuses every token, since
+reading it as "no end date" would fail open.
 
-- Carry the contract end date as a claim, and refuse tokens past it.
-- Check the warehouse instead. `dim_contract` already has `contract_is_active`
-  and `contract_end_date`, and the API serves both on `/courses`.
+This does not replace removing the client when the contract ends. It is what
+stops a client whose cleanup PR was forgotten, and when it fires the API logs
+`learner_records_contract_ended` at warning level, which means that cleanup is
+overdue. Every authorized request also logs the client's `contract_end_date`
+beside `learner_records_access`, so an alert can raise the renewal
+conversation before a partner's sync breaks.
+
+Checking the warehouse instead (`dim_contract` has `contract_is_active` and
+`contract_end_date`) was the other option. It would put a StarRocks read ahead
+of every authorization decision, and a client covers every contract under
+each of its organizations, so no single `dim_contract` row says when the
+client's access ends.
 
 ## What the API does
 
@@ -60,6 +74,9 @@ In `tenants/b2b_learner_records/auth.py`, per request:
    403, identical to the response for an organization that does not exist.
 3. Require the `learner-records:read` scope. Identity fields are always
    populated.
+
+Before any of that, `token.py` verifies the token and refuses one whose
+contract end date has passed (above).
 
 No call to mitxonline or any other service, and no access store. The client
 definition is the only place access is recorded.
