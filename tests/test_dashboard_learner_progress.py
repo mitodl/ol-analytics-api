@@ -63,6 +63,7 @@ def _row(**overrides):
         "is_passing": None,
         "grade": None,
         "letter_grade": None,
+        "content_progress": None,
         "certificate_issued_on": None,
         "certificate_is_revoked": None,
         "last_active_on": None,
@@ -604,7 +605,14 @@ def test_every_outcome_column_is_consent_gated_in_the_query():
     query = learner_queries.learner_progress(
         learner_queries.ProgressFilters(organization_id=ORG_ID, contract_id=CONTRACT_ID), _TODAY
     )
-    for name in ("completion_status", "is_passing", "grade", "letter_grade", "last_active_on"):
+    for name in (
+        "completion_status",
+        "is_passing",
+        "grade",
+        "letter_grade",
+        "content_progress",
+        "last_active_on",
+    ):
         assert f"CASE WHEN {_CLOSED} THEN {name} END AS {name}" in query.page
     # needs_attention is derived, not selected, so the same gate wraps an
     # expression rather than a column name.
@@ -662,6 +670,7 @@ _ENROLLMENT_MV_COLUMNS = (
     "is_passing",
     "grade_value",
     "letter_grade",
+    "content_progress",
     "certificate_issued_on",
     "last_active_on",
     "needs_attention_since",
