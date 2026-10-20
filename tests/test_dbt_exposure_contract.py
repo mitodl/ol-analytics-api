@@ -23,6 +23,7 @@ those queries read declare no cohorts, so there is no policy to compare.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import json
 import uuid
@@ -36,6 +37,7 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.errors import OptimizeError
 from sqlglot.optimizer.qualify import qualify
+from sqlglot.optimizer.scope import Scope, traverse_scope
 from sqlmodel import SQLModel
 
 from ol_analytics_api.core.anonymization import CohortPolicy
@@ -201,12 +203,6 @@ class _Query:
 
 
 _HAND_WRITTEN = [
-    _Query(
-        "learner_records.learners",
-        _LEARNER_RECORDS,
-        _LR_SCHEMA,
-        lambda: learner_records.learners(_LR_SCHEMA, learner_records.RecordFilters(_ORG)),
-    ),
     *(
         _Query(
             f"learner_records.learners (contract_id={contract_id}, "
@@ -216,13 +212,16 @@ _HAND_WRITTEN = [
             lambda contract_id=contract_id, include_inactive=include_inactive: (
                 learner_records.learners(
                     _LR_SCHEMA,
-                    learner_records.RecordFilters(
-                        _ORG, contract_id=contract_id, include_inactive=include_inactive
+                    dataclasses.replace(
+                        _EVERY_RECORD_FILTER,
+                        contract_id=contract_id,
+                        include_inactive=include_inactive,
                     ),
                 )
             ),
         )
-        for contract_id, include_inactive in ((1, False), (None, True), (1, True))
+        for contract_id in (None, 1)
+        for include_inactive in (False, True)
     ),
     *(
         _Query(
@@ -231,9 +230,7 @@ _HAND_WRITTEN = [
             _LR_SCHEMA,
             lambda include_inactive=include_inactive: learner_records.enrollments(
                 _LR_SCHEMA,
-                learner_records.RecordFilters(
-                    **{**vars(_EVERY_RECORD_FILTER), "include_inactive": include_inactive}
-                ),
+                dataclasses.replace(_EVERY_RECORD_FILTER, include_inactive=include_inactive),
             ),
         )
         for include_inactive in (False, True)
@@ -251,12 +248,8 @@ _HAND_WRITTEN = [
             _DASHBOARD,
             dashboard_settings.learner_records_schema,
             lambda sort=sort, include_inactive=include_inactive: learner_queries.learner_progress(
-                learner_queries.ProgressFilters(
-                    **{
-                        **vars(_EVERY_PROGRESS_FILTER),
-                        "sort": sort,
-                        "include_inactive": include_inactive,
-                    }
+                dataclasses.replace(
+                    _EVERY_PROGRESS_FILTER, sort=sort, include_inactive=include_inactive
                 ),
                 _TODAY,
             ),
@@ -342,16 +335,64 @@ def test_every_column_a_hand_written_query_reads_exists_in_the_view(query, state
         pytest.fail(f"{query.label} {statement}: {error}")
 
 
-def test_a_column_missing_from_the_view_fails_the_hand_written_check():
+def _unread_star_columns(tree: exp.Expression, query: _Query) -> set[tuple[str, str]]:
+    """The ``(view, column)`` pairs the statement reaches only through ``SELECT *``.
+
+    The recomputed learner rollup reads mv_b2b_learner as ``(SELECT * ...) l``
+    and names only the ``l`` columns it uses. The view's other columns are in
+    the star's expansion but nothing reads them, so dropping one from the view
+    changes no reference and qualify has nothing to fail on. A column counts
+    as read when a reference in any scope resolves to it, directly or through a
+    ``SELECT *`` subquery or CTE.
+    """
+    qualified = qualify(
+        tree.copy(), schema=_sqlglot_schema(query), dialect="starrocks", expand_stars=False
+    )
+    read: set[tuple[str, str]] = set()
+    star_views: set[str] = set()
+
+    def reads(source: exp.Table | Scope, column: str) -> None:
+        if isinstance(source, exp.Table):
+            read.add((source.name, column))
+        elif source.expression.is_star:
+            for inner in source.sources.values():
+                reads(inner, column)
+
+    for scope in traverse_scope(qualified):
+        if scope.expression.is_star:
+            star_views.update(
+                source.name for source in scope.sources.values() if isinstance(source, exp.Table)
+            )
+        for column in scope.columns:
+            reads(scope.sources[column.table], column.name)
+    return {
+        (view, column)
+        for view in star_views
+        for column in query.exposure[view]
+        if (view, column) not in read
+    }
+
+
+@pytest.mark.parametrize(("query", "statement"), _STATEMENTS)
+def test_dropping_a_column_the_query_names_fails_the_hand_written_check(query, statement):
     # Guards the check itself: if a sqlglot upgrade stopped validating
-    # references, the test above would pass for every query.
-    (query,) = [
-        q
-        for q in _HAND_WRITTEN
-        if q.label == "learner_records.enrollments (include_inactive=False)"
-    ]
-    tree = _parse(query.build().page)
-    with pytest.raises(OptimizeError, match="videos_played"):
-        _resolve_columns(
-            tree, _sqlglot_schema(query, without=(learner_records.ENROLLMENT_MV, "videos_played"))
-        )
+    # references, or stopped following them through a subquery, CTE or join,
+    # the test above would pass for every query.
+    tree = _parse(getattr(query.build(), statement))
+    named = {column.name for column in tree.find_all(exp.Column)}
+    views = {table.name for table in tree.find_all(exp.Table) if table.db == query.schema}
+    unread = _unread_star_columns(tree, query)
+    resolved, misattributed = [], []
+    for view in sorted(views):
+        for column in sorted(named & set(query.exposure[view])):
+            if (view, column) in unread:
+                continue
+            try:
+                _resolve_columns(tree.copy(), _sqlglot_schema(query, without=(view, column)))
+            except OptimizeError as error:
+                if column not in str(error):
+                    misattributed.append(f"{view}.{column}: {error}")
+            else:
+                resolved.append(f"{view}.{column}")
+    assert not resolved, f"{query.label} {statement}: resolved without {resolved}"
+    assert not misattributed, f"{query.label} {statement}: other errors {misattributed}"
