@@ -236,7 +236,9 @@ def _records(
     table = f"{validate_sql_identifier(settings.learner_records_schema)}.{ENROLLMENT_MV}"
     # The org predicate stays next to the contract one: contract ids are
     # globally unique but not secret.
-    scope = ["sso_organization_id = %s", "contract_id = %s"]
+    # shortcut: learners with no global_id (non-SSO accounts) are excluded because
+    # learner_id is the grouping, paging and count key; expose user_pk if they must appear.
+    scope = ["sso_organization_id = %s", "contract_id = %s", "user_global_id IS NOT NULL"]
     if not include_inactive:
         scope.append("enrollment_is_active = TRUE")
     select = (

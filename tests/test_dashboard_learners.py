@@ -204,6 +204,8 @@ async def test_page_and_count_share_one_filter_and_one_date(app):
         assert f"(COALESCE(outcomes_decision, FALSE) AND ({attention}))" in query
         assert "NOT COALESCE(outcomes_decision, FALSE)" in query
         assert "enrollment_is_active = TRUE" in query
+        # learner_id is the group, page and count key, so a null one is excluded.
+        assert "user_global_id IS NOT NULL" in query
     # The filter picks learners; the final select joins back to every row.
     assert "FROM records JOIN paged" in page_query
 
