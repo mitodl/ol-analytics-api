@@ -154,6 +154,7 @@ _OUTCOMES = (
     "is_passing",
     "grade",
     "letter_grade",
+    "content_progress",
     "certificate_issued_on",
     "certificate_is_revoked",
     "last_active_on",
@@ -246,7 +247,8 @@ def _records(
         " courserun_readable_id, courserun_title, courserun_start_on, courserun_end_on,"
         " enrollment_created_on AS enrolled_on, enrollment_is_active, enrollment_mode,"
         " completion_status, is_passing, grade_value AS grade,"
-        " letter_grade, certificate_issued_on, certificate_is_revoked, last_active_on,"
+        " letter_grade, content_progress, certificate_issued_on, certificate_is_revoked,"
+        " last_active_on,"
         " needs_attention_since, outcomes_shared AS outcomes_decision"
         f" FROM {table} WHERE {' AND '.join(scope)}"
     )

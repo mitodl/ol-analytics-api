@@ -142,6 +142,7 @@ Every collection returns the same envelope, with `data` typed to its record:
   "is_passing": true,
   "grade": 0.91,
   "letter_grade": "A",
+  "content_progress": 0.96,
   "certificate_issued_on": "2026-07-02T11:00:00Z",
   "certificate_is_revoked": false,
   "last_active_on": "2026-08-11",
