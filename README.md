@@ -279,18 +279,24 @@ Run it whenever a response model, route or query parameter changes. CI fails
 otherwise — both as a test (`tests/test_openapi_spec.py`) and as a
 `--check` run of the generator itself.
 
-The spec is committed rather than served-and-forgotten because it is meant to
-become a cross-repo interface. The intended pipeline mirrors the one already
-running for `mitxonline` and `mit-learn`: a Concourse pipeline in
-`ol-infrastructure` (`ol_concourse/pipelines/libraries/api_clients_pipeline.py`)
-watching these files on a release branch, running `openapi-generator` over
-them, and publishing a TypeScript client the same way
-`@mitodl/mitxonline-api-axios` and `@mitodl/mit-learn-api-axios` are today.
-None of that is wired up yet — this repo has no entry in `PIPELINE_CONFIGS`
-and no `release` branch, and MIT Learn's dashboard still uses its hand-written
-client. Until it is, committing the spec still buys the same thing locally: a
-column that appears here without appearing in the diff is a column a
-consumer would find out about at runtime once the pipeline exists.
+The spec is committed rather than served-and-forgotten because it is a
+cross-repo interface. On every release tag (e.g. `2026.10.20.1`), the
+`ol-analytics-api-api-client` Concourse pipeline in `ol-infrastructure`
+(`ol_concourse/pipelines/libraries/api_clients_pipeline.py`) runs
+`openapi-generator` over these files, commits the result to
+[ol-analytics-api-clients](https://github.com/mitodl/ol-analytics-api-clients),
+and publishes one npm package per tenant:
+
+| Spec                       | Package                                          |
+| -------------------------- | ------------------------------------------------ |
+| `b2b_dashboard.yaml`       | `@mitodl/ol-analytics-dashboard-api-axios`       |
+| `b2b_learner_records.yaml` | `@mitodl/ol-analytics-learner-records-api-axios` |
+
+The pipeline versions on tags, not on spec changes, so every release publishes
+new client versions whether or not a spec moved. A new tenant's spec is
+drift-checked here but not published until its package is added to the clients
+repo and to the `ol-analytics-api` entry in `PIPELINE_CONFIGS`; the clients
+repo's README lists every step.
 
 Three details are worth knowing before editing a route:
 
