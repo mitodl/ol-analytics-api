@@ -340,9 +340,9 @@ _LEARNERS = {
     # Same name and email: only learner_id can order them.
     "gus-a": ("Gus", "gus@x", True, [("run-1", _NOT_STARTED)]),
     "gus-b": ("Gus", "gus@x", True, [("run-2", _NOT_STARTED)]),
-    # A blank name is no name, so these sort last, by email.
+    # No name (the view publishes a blank one as null), so these sort last, by email.
     "dee": (None, "dee@x", True, [("run-1", _RECENT)]),
-    "cy": ("  ", "cy@x", True, [("run-1", _RECENT)]),
+    "cy": (None, "cy@x", True, [("run-1", _RECENT)]),
 }
 _ALL_ORDER = ["ann", "bob", "eve", "gus-a", "gus-b", "cy", "dee"]
 

@@ -1,0 +1,3 @@
+### Changed
+
+- `b2b_learner_records` reads `certificates_earned` from `mv_b2b_learner` instead of adding `courses_certified` and `program_certificates_earned` here, and both tenants read `full_name` as `mv_b2b_learner` and `mv_b2b_learner_enrollment` publish it, with blank names already null, instead of applying `NULLIF(TRIM(full_name), '')`. The `contract_id` and `include_inactive` recompute still adds the program certificates to the course certificates it counts from `mv_b2b_learner_enrollment`. Responses are unchanged. Requires the `mv_b2b_learner` build that adds `certificates_earned` (ol-data-platform branch `learner-certificates-earned`).

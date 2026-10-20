@@ -429,6 +429,9 @@ async def test_default_learners_read_the_precomputed_rollup(app, monkeypatch):
     query, params = pool.page_call()
     assert f"FROM b2b_learner_records.{queries.LEARNER_MV} WHERE" in query
     assert queries.ENROLLMENT_MV not in query
+    # The view publishes the sum, so the default rollup does not restate it.
+    assert " courses_certified, certificates_earned," in query
+    assert "program_certificates_earned" not in query
     assert query.endswith("ORDER BY learner_id, user_pk LIMIT %s OFFSET %s")
     assert params == (ORG_ID, 100, 0)
 
@@ -482,11 +485,13 @@ async def test_include_inactive_learners_keep_every_roster_member(app, monkeypat
     "path",
     ["enrollments", "learners", "learners?contract_id=42", "learners?include_inactive=true"],
 )
-async def test_blank_names_read_as_null(app, monkeypatch, path):
+async def test_names_are_read_from_the_view_as_published(app, monkeypatch, path):
+    # The views null blank names (ol-data-platform's mv_b2b_learner and
+    # mv_b2b_learner_enrollment), so no query restates that rule.
     pool = _FakePool()
     await _get(app, f"/organizations/{ORG_ID}/{path}", _partner_token(ORG_ID), pool, monkeypatch)
     query, _ = pool.page_call()
-    assert "NULLIF(TRIM(full_name), '')" in query
+    assert "TRIM(" not in query
 
 
 async def test_recomputed_learners_report_the_staler_view(app, monkeypatch):

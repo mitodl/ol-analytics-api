@@ -571,10 +571,14 @@ async def test_sort_puts_nulls_last_with_a_unique_tie_break(app):
     )
 
 
-async def test_blank_names_read_as_null_so_they_sort_last(app):
+async def test_names_are_read_from_the_view_as_published(app):
+    # mv_b2b_learner_enrollment nulls blank names, so they sort with the
+    # missing ones without this query restating the rule.
     pool = _FakePool()
     await _get(app, pool)
-    assert "NULLIF(TRIM(full_name), '') AS full_name," in pool.page_call()[0]
+    query = pool.page_call()[0]
+    assert " email, full_name, courserun_readable_id," in query
+    assert "TRIM(" not in query
 
 
 async def test_unknown_sort_key_is_rejected(app):
