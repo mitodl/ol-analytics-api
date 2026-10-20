@@ -6,6 +6,30 @@ the switch to scriv were reconstructed from the git history.
 
 <!-- scriv-insert-here -->
 
+<a id='changelog-2026.10.20.1'></a>
+## 2026.10.20.1 (2026-10-20)
+
+### Added
+
+- `b2b_dashboard`: `/contract-utilization` returns `certified_learners`, the name every other dashboard endpoint uses for learners holding an unrevoked certificate. Requires a `mv_b2b_contract_utilization` built from ol-data-platform#3011 or later.
+
+### Changed
+
+- `b2b_dashboard`: engagement-trend rows are withheld on `contributing_learners` (learners who were active, enrolled or were certified in the month) instead of `monthly_active_learners`. A month with enough certified or enrolling learners and too few active ones is returned with `monthly_active_learners` set to `null`. Both engagement-trend endpoints need the views from [ol-data-platform #2881](https://github.com/mitodl/ol-data-platform/pull/2881) ([#95](https://github.com/mitodl/ol-analytics-api/pull/95))
+
+- `b2b_dashboard` and `b2b_learner_records` read `completion_status`, `needs_attention_since`, `is_certified` and `is_in_progress` from `mv_b2b_learner_enrollment` instead of deriving them in SQL here. The rules are defined once in ol-data-platform's `afact_learner_courserun_progress` (ol-data-platform#2855, #2904). Needs attention now compares `needs_attention_since` with the cluster's UTC date. Responses are unchanged. Requires a `mv_b2b_learner_enrollment` built from ol-data-platform#2904 or later.
+
+### Deprecated
+
+- `b2b_dashboard`: `learners_certified` on `/contract-utilization`. It always equals `certified_learners` and is withheld with it; it will be removed once MIT Learn reads `certified_learners`.
+
+### Fixed
+
+- `b2b_dashboard`: content-engagement withholds `certificates_earned` when the enrolled learners without a certificate are fewer than the floor ([#95](https://github.com/mitodl/ol-analytics-api/pull/95))
+- `b2b_dashboard`: the organization engagement trend withholds `monthly_active_learners` for a month in which a contract's count is withheld, so it cannot be recovered by subtracting the visible contracts ([#95](https://github.com/mitodl/ol-analytics-api/pull/95))
+
+- `b2b_dashboard`: the `ContentEngagementDepth` schema description no longer says `certificates_earned` is a subset of `total_enrolled_learners` or that a run offered under two contracts double-counts it. Since [ol-data-platform #2913](https://github.com/mitodl/ol-data-platform/pull/2913) it counts certificate holders whatever their enrollment status, and since [ol-data-platform #2982](https://github.com/mitodl/ol-data-platform/pull/2982) each learner is attributed to one contract. It now describes what the containment declaration from [#95](https://github.com/mitodl/ol-analytics-api/pull/95) withholds and publishes. Responses are unchanged.
+
 <a id='changelog-2026.10.14.1'></a>
 ## 2026.10.14.1 (2026-10-14)
 
