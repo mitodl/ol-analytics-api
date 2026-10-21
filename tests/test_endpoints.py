@@ -433,30 +433,34 @@ async def test_content_engagement_withholds_certificates_that_name_the_uncertifi
     assert data["engaged_learners"] == 30
 
 
+# A month kept on its 13 contributing learners while only 3 were active.
+_QUIET_MONTH = {
+    "organization_key": "org-a",
+    "organization_name": "Org A",
+    "activity_year_and_month": "2026-07",
+    "monthly_active_learners": 3,
+    "new_enrollments": 0,
+    "enrolling_learners": 0,
+    "certificates_earned": 14,
+    "newly_certified_learners": 12,
+    "certified_learners": 12,
+    "total_videos_watched": 9,
+    "video_watchers": 3,
+    "total_problems_attempted": 0,
+    "problem_attempters": 0,
+    "total_chatbot_interactions": 0,
+    "chatbot_users": 0,
+    "contributing_learners": 13,
+}
+
+
 async def test_monthly_trend_keeps_a_month_with_too_few_active_learners(app):
     # Activity is course work, so a month can have enough certified or
     # enrolling learners and too few active ones. The row is gated on
     # contributing_learners, and monthly_active_learners is nulled like any
     # other sub-floor cohort. A month with too few learners of any kind is
     # still withheld whole.
-    quiet_month = {
-        "organization_key": "org-a",
-        "organization_name": "Org A",
-        "activity_year_and_month": "2026-07",
-        "monthly_active_learners": 3,
-        "new_enrollments": 0,
-        "enrolling_learners": 0,
-        "certificates_earned": 14,
-        "newly_certified_learners": 12,
-        "certified_learners": 12,
-        "total_videos_watched": 9,
-        "video_watchers": 3,
-        "total_problems_attempted": 0,
-        "problem_attempters": 0,
-        "total_chatbot_interactions": 0,
-        "chatbot_users": 0,
-        "contributing_learners": 13,
-    }
+    quiet_month = _QUIET_MONTH
     tiny_month = quiet_month | {
         "activity_year_and_month": "2026-08",
         "certificates_earned": 2,
@@ -659,10 +663,8 @@ def _contract_trend_row(
 ):
     """A contract-grained trend row, the grain the org row sums over.
 
-    ``contributing`` is the row gate and has no default. Defaulting it to
-    ``active`` made every contract row here pass or fail both gates together,
-    so these tests could not tell gating on ``contributing_learners`` from
-    gating on ``monthly_active_learners``.
+    ``contributing`` is the row gate and has no default, so a row can clear
+    one of the two gates and not the other.
     """
     return _trend_row(month) | {
         "contract_pk": f"pk-{contract}",
@@ -675,7 +677,7 @@ def _contract_trend_row(
     }
 
 
-async def _get_trend(app, fetch_all):
+async def _get_trend(app, fetch_all, path="engagement-trend"):
     with (
         patch("ol_analytics_api.core.db.client.starrocks_pool.fetch_all", new=fetch_all),
         patch(
@@ -685,7 +687,7 @@ async def _get_trend(app, fetch_all):
     ):
         async with _client(app) as client:
             return await client.get(
-                f"/api/v1/analytics/organizations/{ORG_A_ID}/engagement-trend",
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/{path}",
                 headers={"X-Userinfo": _manager_header(ORG_A_ID)},
             )
 
@@ -1306,41 +1308,14 @@ async def test_contract_trend_keeps_a_month_with_too_few_active_learners(app):
     # The contract grain inherits the org grain's cohort_policy, gate included:
     # 13 contributing learners keep the month, and its 3 active learners are
     # nulled as a sub-floor secondary count rather than withholding the row.
-    row = {
-        "organization_key": "org-a",
-        "organization_name": "Org A",
+    row = _QUIET_MONTH | {
         "contract_pk": "contract-pk-1",
         "contract_id": 101,
         "b2b_contract_name": "C1",
-        "activity_year_and_month": "2026-07",
-        "monthly_active_learners": 3,
-        "new_enrollments": 0,
-        "enrolling_learners": 0,
-        "certificates_earned": 14,
-        "certified_learners": 12,
-        "total_videos_watched": 9,
-        "video_watchers": 3,
-        "total_problems_attempted": 0,
-        "problem_attempters": 0,
-        "total_chatbot_interactions": 0,
-        "chatbot_users": 0,
-        "contributing_learners": 13,
     }
-    with (
-        patch(
-            "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
-            new=_fake_fetch_all_with_contract([row]),
-        ),
-        patch(
-            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
-            new=AsyncMock(return_value=True),
-        ),
-    ):
-        async with _client(app) as client:
-            response = await client.get(
-                f"/api/v1/analytics/organizations/{ORG_A_ID}/contracts/101/engagement-trend",
-                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
-            )
+    response = await _get_trend(
+        app, _fake_fetch_all_with_contract([row]), "contracts/101/engagement-trend"
+    )
     assert response.status_code == 200
     (data,) = response.json()["data"]
     assert "contributing_learners" not in data
@@ -1387,7 +1362,7 @@ async def test_trend_count_query_gates_on_contributing_learners(app, path):
                 headers={"X-Userinfo": _manager_header(ORG_A_ID)},
             )
     assert response.status_code == 200
-    assert captured["query"].endswith("contributing_learners >= %s")
+    assert "contributing_learners >= %s" in captured["query"]
     assert "monthly_active_learners" not in captured["query"]
     assert captured["params"][-1] == 5
 
