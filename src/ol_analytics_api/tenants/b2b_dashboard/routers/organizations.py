@@ -17,7 +17,8 @@ are relative to that mount point.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
@@ -28,6 +29,7 @@ from ol_analytics_api.core.anonymization import (
     hidden_additive_columns,
 )
 from ol_analytics_api.core.db.query import (
+    KeyExclusion,
     build_count,
     build_grain_scan,
     build_select,
@@ -99,6 +101,15 @@ class _FinerGrain:
     MV cannot leave a new subtraction open just because nobody thought about it
     here.
 
+    ``non_additive_columns`` maps each such column (a rate or an average) to
+    every column it is computed from, numerator and denominator. The cohort
+    policy's ``derived`` names only cohorts, so an average over engaged
+    learners lists ``engaged_learners`` and its activity cohort but not the
+    activity total. If a contract row withheld that total and published its
+    cohorts, the org's average times its engaged learners would return the
+    total. The guard blanks a non-additive column when any column it is
+    computed from is hidden.
+
     The coarse model's ``primary`` and ``secondary`` learner counts get no
     equivalent declaration here. How ``_register`` guards them depends on
     ``partitions``.
@@ -127,7 +138,7 @@ class _FinerGrain:
     mv: str
     model: type[SQLModel]
     additive_columns: tuple[str, ...]
-    non_additive_columns: tuple[str, ...] = ()
+    non_additive_columns: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     partitions: bool = False
 
 
@@ -176,6 +187,14 @@ class _OrgEndpoint:
                 "exactly-additive column left out keeps its subtraction open."
             )
             raise ValueError(msg)
+        fields = set(self.model.model_fields)
+        for column, sources in self.finer_grain.non_additive_columns.items():
+            if unknown_sources := set(sources) - fields:
+                msg = (
+                    f"{self.path}: {column} is computed from {sorted(unknown_sources)}, "
+                    f"which are not columns of {self.model.__name__}."
+                )
+                raise ValueError(msg)
 
 
 ENDPOINTS: list[_OrgEndpoint] = [
@@ -227,12 +246,15 @@ ENDPOINTS: list[_OrgEndpoint] = [
                 "total_problems_attempted",
                 "total_chatbot_interactions",
             ),
-            non_additive_columns=(
-                "engagement_rate_pct",
-                "avg_videos_per_engaged_learner",
-                "avg_problems_per_engaged_learner",
-                "chatbot_adoption_pct",
-            ),
+            non_additive_columns={
+                "engagement_rate_pct": ("engaged_learners", "total_enrolled_learners"),
+                "avg_videos_per_engaged_learner": ("total_videos_watched", "engaged_learners"),
+                "avg_problems_per_engaged_learner": (
+                    "total_problems_attempted",
+                    "engaged_learners",
+                ),
+                "chatbot_adoption_pct": ("chatbot_users", "total_enrolled_learners"),
+            },
             partitions=True,
         ),
     ),
@@ -281,11 +303,15 @@ def _register(spec: _OrgEndpoint) -> None:
         # key. Endpoints with a finer grain are single-keyed by construction.
         (key_column,) = spec.order_by
         coarse_policy = cohort_policy_of(spec.model)
+        computed_from = {
+            column: (*cohorts, *spec.finer_grain.non_additive_columns.get(column, ()))
+            for column, cohorts in coarse_policy.derived.items()
+        }
         if spec.finer_grain.partitions:
             additives = CrossGrainAdditives(
                 key_column,
                 (*spec.finer_grain.additive_columns, *coarse_policy.secondary),
-                derived=coarse_policy.derived,
+                derived=computed_from,
                 drop_when_hidden=(coarse_policy.primary,),
             )
         else:
@@ -293,7 +319,7 @@ def _register(spec: _OrgEndpoint) -> None:
                 key_column,
                 spec.finer_grain.additive_columns,
                 guarded_cohorts=(coarse_policy.primary, *coarse_policy.secondary),
-                derived=coarse_policy.derived,
+                derived=computed_from,
             )
         scan_query = build_grain_scan(
             _SCHEMA,
@@ -332,22 +358,26 @@ def _register(spec: _OrgEndpoint) -> None:
                 additive_columns=additives.columns,
             )
             cross_grain = (additives, hidden_by_key)
-            if excluded := tuple(sorted(additives.dropped_keys(hidden_by_key))):
-                not_in = (key_column, len(excluded))
+            if dropped := additives.dropped_keys(hidden_by_key):
+                # A NULL key is excluded with IS NOT NULL, not bound into the
+                # NOT IN list, where it would exclude every row. Keeping it out
+                # of the list also keeps sorted() from comparing it to a str.
+                excluded = tuple(sorted(key for key in dropped if key is not None))
+                exclusion = KeyExclusion(key_column, len(excluded), null=None in dropped)
                 page_query = build_select(
                     _SCHEMA,
                     spec.mv,
                     spec.model,
                     filter_columns=(_ORG_FILTER_COLUMN,),
                     order_by=spec.order_by,
-                    not_in=not_in,
+                    exclude=exclusion,
                 )
                 total_query = build_count(
                     _SCHEMA,
                     spec.mv,
                     spec.model,
                     filter_columns=(_ORG_FILTER_COLUMN,),
-                    not_in=not_in,
+                    exclude=exclusion,
                 )
         rows = await fetch_and_suppress(
             page_query,

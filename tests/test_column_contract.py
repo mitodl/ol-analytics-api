@@ -180,6 +180,19 @@ def test_finer_grain_rejects_a_column_that_is_not_derived():
         replace(trend, finer_grain=bogus)
 
 
+def test_finer_grain_rejects_a_ratio_computed_from_an_unknown_column():
+    # A typo here would leave a ratio unblanked when the column it is really
+    # computed from is hidden.
+    depth = next(spec for spec in organizations.ENDPOINTS if spec.path == "/content-engagement")
+    bogus = replace(
+        depth.finer_grain,
+        non_additive_columns=dict(depth.finer_grain.non_additive_columns)
+        | {"chatbot_adoption_pct": ("chatbot_userz", "total_enrolled_learners")},
+    )
+    with pytest.raises(ValueError, match="chatbot_userz"):
+        replace(depth, finer_grain=bogus)
+
+
 @_cases
 def test_every_field_is_described_in_the_published_schema(case):
     # The descriptions are this tenant's API documentation. A field added without
