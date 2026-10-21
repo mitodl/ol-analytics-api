@@ -12,6 +12,7 @@ from ol_analytics_api.core.anonymization import CohortPolicy
 from ol_analytics_api.core.db.query import (
     build_count,
     build_grain_scan,
+    build_select,
     cohort_policy_of,
     fetch_and_suppress,
     fetch_grain_scan,
@@ -70,6 +71,37 @@ def test_build_count_without_a_filter_column_still_gates_on_the_cohort():
     assert build_count("b2b", "mv_thing", _PolicyRow) == (
         "SELECT COUNT(*) AS total_count FROM b2b.mv_thing WHERE enrolled_learners >= %s"
     )
+
+
+def test_page_and_count_exclude_the_same_keys():
+    # A cross-grain guard that drops coarse rows excludes their keys from both
+    # queries, so the count matches the pages. The values are bound after the
+    # filter values, before the floor or the LIMIT and OFFSET.
+    not_in = ("courserun_readable_id", 2)
+    assert build_select(
+        "b2b",
+        "mv_thing",
+        _PolicyRow,
+        filter_columns=("organization_key",),
+        order_by=("enrolled_learners",),
+        not_in=not_in,
+    ) == (
+        "SELECT enrolled_learners FROM b2b.mv_thing WHERE organization_key = %s "
+        "AND courserun_readable_id NOT IN (%s, %s) "
+        "ORDER BY enrolled_learners LIMIT %s OFFSET %s"
+    )
+    assert build_count(
+        "b2b", "mv_thing", _PolicyRow, filter_columns=("organization_key",), not_in=not_in
+    ) == (
+        "SELECT COUNT(*) AS total_count FROM b2b.mv_thing WHERE organization_key = %s "
+        "AND courserun_readable_id NOT IN (%s, %s) AND enrolled_learners >= %s"
+    )
+
+
+def test_an_empty_exclusion_is_rejected():
+    # "NOT IN ()" is a syntax error; excluding nothing is not_in=None.
+    with pytest.raises(ValueError, match="at least one value"):
+        build_count("b2b", "mv_thing", _PolicyRow, not_in=("courserun_readable_id", 0))
 
 
 async def test_fetch_visible_count_returns_the_count():

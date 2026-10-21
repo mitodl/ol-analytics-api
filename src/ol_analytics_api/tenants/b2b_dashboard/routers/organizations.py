@@ -41,6 +41,7 @@ from ol_analytics_api.tenants.b2b_dashboard.auth import require_org_manager
 from ol_analytics_api.tenants.b2b_dashboard.config import settings
 from ol_analytics_api.tenants.b2b_dashboard.models import (
     ContentEngagementDepth,
+    ContractContentEngagementDepth,
     ContractMonthlyEngagementTrend,
     ContractUtilization,
     EnrollmentCompletionFunnel,
@@ -78,19 +79,18 @@ _GRAIN_SCAN_LIMIT = 10_000
 class _FinerGrain:
     """The contract-grained sibling MV whose rows sum into this endpoint's.
 
-    Only the engagement trend needs one, and the other four org endpoints need
-    none for two different reasons. Three of them (contract-utilization,
+    Two org endpoints aggregate *across* an org's contracts while the contract
+    router publishes the same rows one contract at a time: the engagement trend
+    (org x month against org x contract x month) and content engagement (org x
+    course run against org x contract x course run). What a contract row
+    withholds is recoverable from either as ``org_total - sum(the visible
+    contract rows)``. The other three org endpoints (contract-utilization,
     enrollment-funnel, program-funnel) carry a contract per row already, so
-    there is no coarser total to difference against. The fourth,
-    content-engagement, is org x course_run against a contract-grained sibling
-    of org x contract x course_run — but a course run belongs to exactly one
-    contract, so the sibling adds a label rather than splitting a row, the two
-    hold identical counts, and the floor makes the same call on both.
+    there is no coarser total to difference against.
 
-    That leaves the trend. It is the one org endpoint that aggregates *across*
-    an org's contracts while the contract router publishes the same months one
-    contract at a time, so what a contract-month withholds is recoverable as
-    ``org_total - sum(the visible contract months)``.
+    A course run is usually offered under one of an org's contracts, and then
+    its contract row holds the same numbers as its org row. A run offered under
+    two is split between them, and the org row is their sum.
 
     ``additive_columns`` are the event sums, which do add up exactly across
     contracts. ``non_additive_columns`` are the derived columns that do not, and
@@ -100,21 +100,35 @@ class _FinerGrain:
     here.
 
     The coarse model's ``primary`` and ``secondary`` learner counts get no
-    equivalent declaration here — ``_register`` guards all of them together,
-    unconditionally, via ``CrossGrainAdditives.guarded_cohorts``. They are not
-    exactly additive across contracts in general (a learner active under two
-    is counted once at the org grain but in both contract rows), but two
+    equivalent declaration here. How ``_register`` guards them depends on
+    ``partitions``.
+
+    ``partitions`` is False for the trend. Its learner counts are not exactly
+    additive across contracts in general (a learner active under two is
+    counted once at the org grain but in both contract rows), but two
     contracts sharing no learners sum exactly, and this service has no way to
     tell that case from an overlapping one before deciding what to publish. So
-    every cohort column at the coarse grain is blanked whenever the finer scan
-    hides anything at all for that key, not only the columns known to be safe
-    from it.
+    every cohort column at the coarse grain is blanked, via
+    ``CrossGrainAdditives.guarded_cohorts``, whenever the finer scan hides
+    anything at all for that key.
+
+    ``partitions`` is True for content engagement. Since ol-data-platform
+    #2982 each learner's course run is attributed to the one contract they
+    enrolled under, so every learner count sums exactly across the contract
+    rows, the primary included. The guard can then be exact instead of
+    wholesale. A cohort a contract row withholds is blanked on the org row by
+    itself, with the totals and rates computed over it, and the org row's
+    other columns stay. A contract row dropped by its row gate drops the org
+    row for that run: the org's ``total_enrolled_learners`` minus the published
+    contract rows would return the dropped headcount, and it is returned as a
+    plain int, so it cannot be blanked.
     """
 
     mv: str
     model: type[SQLModel]
     additive_columns: tuple[str, ...]
     non_additive_columns: tuple[str, ...] = ()
+    partitions: bool = False
 
 
 @dataclass(frozen=True)
@@ -205,6 +219,22 @@ ENDPOINTS: list[_OrgEndpoint] = [
         "mv_b2b_content_engagement_depth",
         ContentEngagementDepth,
         ("courserun_readable_id",),
+        finer_grain=_FinerGrain(
+            "mv_b2b_contract_content_engagement_depth",
+            ContractContentEngagementDepth,
+            additive_columns=(
+                "total_videos_watched",
+                "total_problems_attempted",
+                "total_chatbot_interactions",
+            ),
+            non_additive_columns=(
+                "engagement_rate_pct",
+                "avg_videos_per_engaged_learner",
+                "avg_problems_per_engaged_learner",
+                "chatbot_adoption_pct",
+            ),
+            partitions=True,
+        ),
     ),
 ]
 
@@ -229,9 +259,16 @@ def _register(spec: _OrgEndpoint) -> None:
     An endpoint declaring a ``finer_grain`` pays for one more round trip, and
     only that endpoint: a scan of its contract-grained sibling, suppressed here
     exactly as that sibling's own endpoint would suppress it, so the additive
-    columns it does not publish in full — and, more bluntly, every cohort
-    column at this grain — can be blanked for whatever key it hid something
-    for.
+    columns it does not publish in full — and, for a finer grain that does not
+    partition this one, every cohort column at this grain — can be blanked for
+    whatever key it hid something for.
+
+    When the guard drops coarse rows (a partitioning finer grain), the dropped
+    keys are also excluded in SQL from the page and the count. Dropping them
+    only after paging would make ``total_count`` count rows no page returns,
+    and leave pages short of ``limit`` with no way for a client to tell why.
+    ``fetch_and_suppress`` still drops them itself, so the exclusion is what
+    keeps paging consistent and not what keeps the rows out.
     """
     query = build_select(
         _SCHEMA, spec.mv, spec.model, filter_columns=(_ORG_FILTER_COLUMN,), order_by=spec.order_by
@@ -244,11 +281,20 @@ def _register(spec: _OrgEndpoint) -> None:
         # key. Endpoints with a finer grain are single-keyed by construction.
         (key_column,) = spec.order_by
         coarse_policy = cohort_policy_of(spec.model)
-        additives = CrossGrainAdditives(
-            key_column,
-            spec.finer_grain.additive_columns,
-            guarded_cohorts=(coarse_policy.primary, *coarse_policy.secondary),
-        )
+        if spec.finer_grain.partitions:
+            additives = CrossGrainAdditives(
+                key_column,
+                (*spec.finer_grain.additive_columns, *coarse_policy.secondary),
+                derived=coarse_policy.derived,
+                drop_when_hidden=(coarse_policy.primary,),
+            )
+        else:
+            additives = CrossGrainAdditives(
+                key_column,
+                spec.finer_grain.additive_columns,
+                guarded_cohorts=(coarse_policy.primary, *coarse_policy.secondary),
+                derived=coarse_policy.derived,
+            )
         scan_query = build_grain_scan(
             _SCHEMA,
             spec.finer_grain.mv,
@@ -260,6 +306,8 @@ def _register(spec: _OrgEndpoint) -> None:
         organization_id: str, page: Annotated[Pagination, Depends(pagination)]
     ) -> OrgAnalyticsResponse[SQLModel]:
         cross_grain = None
+        page_query, total_query = query, count_query
+        excluded: tuple[str, ...] = ()
         if spec.finer_grain is not None and additives is not None and scan_query is not None:
             # Scanned across the whole org, not just this page: an org row on
             # page 1 can be reconstructed from contract rows the caller reads
@@ -276,19 +324,34 @@ def _register(spec: _OrgEndpoint) -> None:
                     "for one organization, so the cross-grain guard cannot be applied."
                 )
                 raise RuntimeError(msg)
-            cross_grain = (
-                additives,
-                hidden_additive_columns(
-                    finer_rows,
-                    cohort_policy_of(spec.finer_grain.model),
-                    settings.anonymization_floor,
-                    key_column=key_column,
-                    additive_columns=spec.finer_grain.additive_columns,
-                ),
+            hidden_by_key = hidden_additive_columns(
+                finer_rows,
+                cohort_policy_of(spec.finer_grain.model),
+                settings.anonymization_floor,
+                key_column=key_column,
+                additive_columns=additives.columns,
             )
+            cross_grain = (additives, hidden_by_key)
+            if excluded := tuple(sorted(additives.dropped_keys(hidden_by_key))):
+                not_in = (key_column, len(excluded))
+                page_query = build_select(
+                    _SCHEMA,
+                    spec.mv,
+                    spec.model,
+                    filter_columns=(_ORG_FILTER_COLUMN,),
+                    order_by=spec.order_by,
+                    not_in=not_in,
+                )
+                total_query = build_count(
+                    _SCHEMA,
+                    spec.mv,
+                    spec.model,
+                    filter_columns=(_ORG_FILTER_COLUMN,),
+                    not_in=not_in,
+                )
         rows = await fetch_and_suppress(
-            query,
-            (organization_id, page.limit, page.offset),
+            page_query,
+            (organization_id, *excluded, page.limit, page.offset),
             spec.model,
             settings.anonymization_floor,
             cross_grain=cross_grain,
@@ -297,7 +360,7 @@ def _register(spec: _OrgEndpoint) -> None:
             organization_id=organization_id,
             as_of=await latest_refresh_timestamp(_SCHEMA, spec.mv),
             total_count=await fetch_visible_count(
-                count_query, (organization_id, settings.anonymization_floor)
+                total_query, (organization_id, *excluded, settings.anonymization_floor)
             ),
             data=rows,
         )
