@@ -10,6 +10,7 @@ from sqlmodel import SQLModel
 
 from ol_analytics_api.core.anonymization import CohortPolicy
 from ol_analytics_api.core.db.query import (
+    KeyExclusion,
     build_count,
     build_grain_scan,
     build_select,
@@ -77,31 +78,50 @@ def test_page_and_count_exclude_the_same_keys():
     # A cross-grain guard that drops coarse rows excludes their keys from both
     # queries, so the count matches the pages. The values are bound after the
     # filter values, before the floor or the LIMIT and OFFSET.
-    not_in = ("courserun_readable_id", 2)
+    exclude = KeyExclusion("courserun_readable_id", 2)
     assert build_select(
         "b2b",
         "mv_thing",
         _PolicyRow,
         filter_columns=("organization_key",),
         order_by=("enrolled_learners",),
-        not_in=not_in,
+        exclude=exclude,
     ) == (
         "SELECT enrolled_learners FROM b2b.mv_thing WHERE organization_key = %s "
         "AND courserun_readable_id NOT IN (%s, %s) "
         "ORDER BY enrolled_learners LIMIT %s OFFSET %s"
     )
     assert build_count(
-        "b2b", "mv_thing", _PolicyRow, filter_columns=("organization_key",), not_in=not_in
+        "b2b", "mv_thing", _PolicyRow, filter_columns=("organization_key",), exclude=exclude
     ) == (
         "SELECT COUNT(*) AS total_count FROM b2b.mv_thing WHERE organization_key = %s "
         "AND courserun_readable_id NOT IN (%s, %s) AND enrolled_learners >= %s"
     )
 
 
+def test_a_null_key_is_excluded_without_a_bound_value():
+    # A NULL bound into NOT IN makes the predicate exclude every row, so a
+    # dropped NULL key is excluded with IS NOT NULL instead.
+    exclude = KeyExclusion("courserun_readable_id", 1, null=True)
+    assert build_count(
+        "b2b", "mv_thing", _PolicyRow, filter_columns=("organization_key",), exclude=exclude
+    ) == (
+        "SELECT COUNT(*) AS total_count FROM b2b.mv_thing WHERE organization_key = %s "
+        "AND courserun_readable_id NOT IN (%s) AND courserun_readable_id IS NOT NULL "
+        "AND enrolled_learners >= %s"
+    )
+    assert build_count(
+        "b2b", "mv_thing", _PolicyRow, exclude=KeyExclusion("courserun_readable_id", null=True)
+    ) == (
+        "SELECT COUNT(*) AS total_count FROM b2b.mv_thing "
+        "WHERE courserun_readable_id IS NOT NULL AND enrolled_learners >= %s"
+    )
+
+
 def test_an_empty_exclusion_is_rejected():
-    # "NOT IN ()" is a syntax error; excluding nothing is not_in=None.
-    with pytest.raises(ValueError, match="at least one value"):
-        build_count("b2b", "mv_thing", _PolicyRow, not_in=("courserun_readable_id", 0))
+    # "NOT IN ()" is a syntax error; excluding nothing is exclude=None.
+    with pytest.raises(ValueError, match="excludes nothing"):
+        KeyExclusion("courserun_readable_id")
 
 
 async def test_fetch_visible_count_returns_the_count():

@@ -238,9 +238,11 @@ class CrossGrainAdditives:
         anything is hidden for the key, at the cost of also blanking counts
         that overlap would have made safe to publish.
     ``derived``
-        The coarse grain's ``CohortPolicy.derived``. A coarse column computed
-        over a column blanked for being hidden is blanked too: a rate next to
-        its published denominator gives its numerator back.
+        Maps a coarse column to every column it is computed from: the cohorts
+        its ``CohortPolicy.derived`` entry names, plus, for a rate or an
+        average, the total in its numerator. A coarse column computed from a
+        hidden column is blanked too: a rate next to its published
+        denominator gives its numerator back.
     ``drop_when_hidden``
         Columns that cannot be blanked, because the coarse row is gated on
         them. A key whose hidden columns include one of these has its coarse
@@ -445,7 +447,7 @@ def suppress_cross_grain_additives(
     narrower blanking that stays safe under the disjoint-contract case
     ``CrossGrainAdditives`` documents.
 
-    ``additives.derived`` columns computed over a hidden column are blanked
+    ``additives.derived`` columns computed from a hidden column are blanked
     with it, and a key hiding one of ``additives.drop_when_hidden`` loses its
     row instead.
 

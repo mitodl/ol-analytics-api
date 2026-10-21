@@ -24,6 +24,7 @@ b2b_dashboard/learner_queries.py.
 from __future__ import annotations
 
 from collections.abc import Collection, Mapping
+from dataclasses import dataclass
 from typing import Any, ClassVar, Protocol, cast
 
 from sqlmodel import SQLModel
@@ -38,6 +39,30 @@ from ol_analytics_api.core.db.client import starrocks_pool
 from ol_analytics_api.core.db.identifiers import validate_sql_identifier
 
 
+@dataclass(frozen=True)
+class KeyExclusion:
+    """Rows a cross-grain guard drops, left out of a page and its count alike.
+
+    ``values`` is how many bound values ``column NOT IN (...)`` takes; they
+    follow the filter values. ``null`` also leaves out rows whose ``column`` is
+    NULL. A NULL cannot go in the ``NOT IN`` list: ``x NOT IN ('a', NULL)`` is
+    never true, so it would leave out every row.
+
+    ``NOT IN`` already leaves out rows whose ``column`` is NULL, since
+    ``NULL NOT IN ('a')`` is NULL. That fails closed, and the page and the
+    count apply the same predicate, so they still agree.
+    """
+
+    column: str
+    values: int = 0
+    null: bool = False
+
+    def __post_init__(self) -> None:
+        if self.values < 1 and not self.null:
+            msg = "KeyExclusion excludes nothing; pass None instead"
+            raise ValueError(msg)
+
+
 def build_select(  # noqa: PLR0913 -- keyword-only after model_cls
     schema: str,
     table: str,
@@ -45,7 +70,7 @@ def build_select(  # noqa: PLR0913 -- keyword-only after model_cls
     *,
     filter_columns: tuple[str, ...] = (),
     order_by: tuple[str, ...],
-    not_in: tuple[str, int] | None = None,
+    exclude: KeyExclusion | None = None,
 ) -> str:
     """Build a paginated ``SELECT`` projecting exactly ``model_cls``'s columns.
 
@@ -65,10 +90,9 @@ def build_select(  # noqa: PLR0913 -- keyword-only after model_cls
     column dbt drops surfaces as a query error naming that column, rather than
     ``SELECT *`` silently feeding an unexpected column set into a strict model.
 
-    ``not_in`` is ``(column, n)``: rows whose ``column`` is one of ``n`` bound
-    values are left out, the values following the filter values. A cross-grain
-    guard that drops coarse rows uses it so paging and ``build_count`` skip the
-    same rows; see ``routers.organizations``.
+    ``exclude`` leaves out the rows a cross-grain guard drops, so paging and
+    ``build_count`` skip the same rows; see ``KeyExclusion`` and
+    ``routers.organizations``.
     """
     if not order_by:
         msg = "order_by must contain at least one column for deterministic pagination"
@@ -80,7 +104,7 @@ def build_select(  # noqa: PLR0913 -- keyword-only after model_cls
     # just the org column, contract-scoped ones pass org AND contract. The org
     # predicate is never dropped when a contract is added -- a caller must not
     # be able to read another org's contract by naming it.
-    predicates = " AND ".join(_predicates(filter_columns, not_in))
+    predicates = " AND ".join(_predicates(filter_columns, exclude))
     where = f" WHERE {predicates}" if predicates else ""
     # The single S608 suppression in the service: justified because every
     # interpolated token above is a validate_sql_identifier'd identifier.
@@ -93,7 +117,7 @@ def build_count(
     model_cls: type[SQLModel],
     *,
     filter_columns: tuple[str, ...] = (),
-    not_in: tuple[str, int] | None = None,
+    exclude: KeyExclusion | None = None,
 ) -> str:
     """Build the ``COUNT(*)`` matching what ``build_select`` yields across all
     pages, so a client can tell a full page from a truncated result set.
@@ -106,7 +130,7 @@ def build_count(
     exists to prevent. Applying the same primary-cohort gate here in SQL keeps
     the total consistent with the data and discloses nothing the rows don't.
 
-    ``not_in`` is ``build_select``'s, and has to match it for the count to
+    ``exclude`` is ``build_select``'s, and has to match it for the count to
     match the pages. Its values follow the filter values and precede the floor.
 
     Identifiers are spliced under ``build_select``'s rules — every token is
@@ -114,24 +138,26 @@ def build_count(
     """
     policy = _require_cohort_policy(model_cls).cohort_policy
     schema_table = f"{validate_sql_identifier(schema)}.{validate_sql_identifier(table)}"
-    scope_filter = "".join(f"{predicate} AND " for predicate in _predicates(filter_columns, not_in))
+    scope_filter = "".join(
+        f"{predicate} AND " for predicate in _predicates(filter_columns, exclude)
+    )
     cohort_gate = f"{validate_sql_identifier(policy.primary)} >= %s"
     # Same justification as build_select: every interpolated token is a
     # validate_sql_identifier'd identifier, and values are bound params.
     return f"SELECT COUNT(*) AS total_count FROM {schema_table} WHERE {scope_filter}{cohort_gate}"  # noqa: S608
 
 
-def _predicates(filter_columns: tuple[str, ...], not_in: tuple[str, int] | None) -> list[str]:
+def _predicates(filter_columns: tuple[str, ...], exclude: KeyExclusion | None) -> list[str]:
     """The bound-parameter predicates ``build_select`` and ``build_count``
     share, in the order their values are bound."""
     predicates = [f"{validate_sql_identifier(name)} = %s" for name in filter_columns]
-    if not_in is not None:
-        column, count = not_in
-        if count < 1:
-            msg = "not_in needs at least one value; pass None to exclude nothing"
-            raise ValueError(msg)
-        placeholders = ", ".join(["%s"] * count)
-        predicates.append(f"{validate_sql_identifier(column)} NOT IN ({placeholders})")
+    if exclude is not None:
+        column = validate_sql_identifier(exclude.column)
+        if exclude.values:
+            placeholders = ", ".join(["%s"] * exclude.values)
+            predicates.append(f"{column} NOT IN ({placeholders})")
+        if exclude.null:
+            predicates.append(f"{column} IS NOT NULL")
     return predicates
 
 
