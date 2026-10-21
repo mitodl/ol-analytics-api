@@ -799,6 +799,40 @@ async def test_org_trend_blanks_the_headline_count_disjoint_contracts_would_reve
     assert data["monthly_active_learners"] is None
 
 
+async def test_org_trend_blanks_a_total_a_contract_row_withholds_above_its_active_count(app):
+    # C1 clears the row gate on its 12 contributing learners and has 3 active
+    # learners (withheld) beside 6 video watchers. The watchers cannot sit
+    # inside the active learners, so C1 withholds them and the 40 videos
+    # derived from them. Left alone, the org's 140 minus C2's 100 hands the
+    # 40 back.
+    contract_1 = _contract_trend_row("C1", active=3, chatbot_users=0, chatbot_total=0) | {
+        "contributing_learners": 12,
+        "video_watchers": 6,
+        "total_videos_watched": 40,
+        "problem_attempters": 0,
+        "total_problems_attempted": 0,
+        "enrolling_learners": 0,
+        "new_enrollments": 0,
+        "certified_learners": 9,
+        "certificates_earned": 9,
+    }
+    contract_2 = _contract_trend_row("C2", active=30, chatbot_users=15, chatbot_total=60) | {
+        "video_watchers": 20,
+        "total_videos_watched": 100,
+    }
+    org_row = _trend_row() | {"total_videos_watched": 140}
+    response = await _get_trend(
+        app, _fake_fetch_all([org_row], finer_rows=[contract_1, contract_2])
+    )
+
+    assert response.status_code == 200
+    (data,) = response.json()["data"]
+    assert data["total_videos_watched"] is None
+    # C1 publishes its other totals, so the org's stay.
+    assert data["total_problems_attempted"] == 7
+    assert data["certificates_earned"] == 30
+
+
 async def test_org_trend_blanks_the_active_count_a_published_contract_row_withholds(app):
     # C1 clears the row gate on its certified learners, with 3 active learners
     # who only moved through course pages, so it publishes every total and
