@@ -320,8 +320,9 @@ from the running code and is the one a client is built from.
 
 ### Breaking changes
 
-The `OpenAPI Diff` workflow runs `oasdiff breaking` over every spec a PR
-changes and fails on a breaking change (e.g. a removed path), because a client
+The `OpenAPI Diff` workflow runs on a PR that changes `openapi/specs/`. It
+runs `oasdiff breaking` over every spec present on both the base and the PR,
+and fails on a breaking change (e.g. a removed path), because a client
 generated from the last release would break against the new one. Deleting a
 spec file always fails, with or without the steps below.
 
@@ -342,5 +343,6 @@ the fragment to the break and puts it in the released changelog where a client
 maintainer will see it. The check reads the label from the PR when it runs and
 re-runs when a label is added or removed, so adding the label after the first
 failure is enough; there is no need to push again. With both present it still
-posts the diff comment and lists each breaking change, then passes with a
-notice naming the label and the fragment.
+lists each breaking change (and posts the diff comment, on a PR from a branch
+of this repository), then passes with a notice naming the label and the
+fragment.

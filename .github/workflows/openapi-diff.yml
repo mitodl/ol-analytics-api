@@ -8,9 +8,8 @@ name: OpenAPI Diff
 #
 # An intended breaking change passes only when the PR both carries the
 # `breaking-api-change` label and adds a changelog.d/ fragment recording the
-# break (see "Breaking changes" in README.md). Without that path the only way
-# past this check was an admin merge, which skips every check and records
-# nothing about why.
+# break (see "Breaking changes" in README.md). Before that, an intended break
+# left this check red with nothing recording why it was merged past (#36).
 
 on:
   pull_request:
@@ -173,6 +172,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           # Labels and files come from the API rather than the event payload:
           # a re-run replays the original payload, so a label added since
@@ -188,7 +188,7 @@ jobs:
 
           LABEL = "breaking-api-change"
           FRAGMENT_PATH = re.compile(r"changelog\.d/[\w.-]+\.md")
-          CATEGORY_HEADER = re.compile(r"#+\s+(\w+)\s*")
+          CATEGORY_HEADER = re.compile(r"#+\s+(.+?)\s*")
           # scriv's template ships every category inside an HTML comment.
           COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
           MARKER = "Breaking:"
@@ -196,9 +196,9 @@ jobs:
           pr = f"repos/{os.environ['REPOSITORY']}/pulls/{os.environ['PR_NUMBER']}"
 
 
-          def gh_api(path: str) -> list:
+          def gh_api(*args: str):
               out = subprocess.run(
-                  ["gh", "api", "--paginate", "--slurp", path],
+                  ["gh", "api", *args],
                   check=True,
                   capture_output=True,
                   text=True,
@@ -206,18 +206,28 @@ jobs:
               return json.loads(out)
 
 
-          labels = {label["name"] for label in gh_api(pr)[0]["labels"]}
+          live = gh_api(pr)
+          # The files list is the live PR's and the fragment text is this
+          # run's checkout, so a re-run of an older run would mix two commits.
+          if live["head"]["sha"] != os.environ["HEAD_SHA"]:
+              print("::error::The PR head has moved since this run started. The newest run decides.")
+              sys.exit(1)
+          labels = {label["name"] for label in live["labels"]}
           added = [
               f["filename"]
-              for page in gh_api(f"{pr}/files")
+              for page in gh_api("--paginate", "--slurp", f"{pr}/files")
               for f in page
               if f["status"] == "added" and FRAGMENT_PATH.fullmatch(f["filename"])
           ]
 
 
           def records_break(path: str) -> bool:
+              fragment = Path("head") / path
+              # A symlink could point at CHANGELOG.md, which records old breaks.
+              if fragment.is_symlink():
+                  return False
               category = None
-              text = COMMENT.sub("", (Path("head") / path).read_text())
+              text = COMMENT.sub("", fragment.read_text())
               for line in text.splitlines():
                   header = CATEGORY_HEADER.fullmatch(line)
                   if header:
