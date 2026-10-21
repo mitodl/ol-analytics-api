@@ -58,7 +58,10 @@ class KeyExclusion:
     null: bool = False
 
     def __post_init__(self) -> None:
-        if self.values < 1 and not self.null:
+        if self.values < 0:
+            msg = f"KeyExclusion values must not be negative, got {self.values}"
+            raise ValueError(msg)
+        if self.values == 0 and not self.null:
             msg = "KeyExclusion excludes nothing; pass None instead"
             raise ValueError(msg)
 
