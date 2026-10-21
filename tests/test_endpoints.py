@@ -692,6 +692,34 @@ async def _get_trend(app, fetch_all, path="engagement-trend"):
             )
 
 
+async def test_monthly_trend_withholds_watchers_above_a_withheld_active_count(app):
+    # The active count (3) is under the floor and withheld. The view says 6
+    # learners watched a video, which cannot be a subset of 3 active learners,
+    # and next to the withheld count it would bound that count from below.
+    # The watchers and their total are withheld with it; cohorts the false
+    # declaration does not touch are published.
+    row = _trend_row() | {
+        "monthly_active_learners": 3,
+        "video_watchers": 6,
+        "total_videos_watched": 40,
+        "problem_attempters": 0,
+        "total_problems_attempted": 0,
+        "chatbot_users": 0,
+        "total_chatbot_interactions": 0,
+        "contributing_learners": 12,
+    }
+    response = await _get_trend(app, _fake_fetch_all([row]))
+
+    assert response.status_code == 200
+    (data,) = response.json()["data"]
+    assert data["monthly_active_learners"] is None
+    assert data["video_watchers"] is None
+    assert data["total_videos_watched"] is None
+    assert data["certified_learners"] == 22
+    assert data["enrolling_learners"] == 9
+    assert data["chatbot_users"] == 0
+
+
 async def test_org_trend_blanks_the_total_a_surviving_contract_row_withholds(app):
     # The contract row is NOT dropped: 30 active learners clears the row gate.
     # But only 2 of them used the chatbot, so the contract endpoint publishes

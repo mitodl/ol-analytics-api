@@ -1,0 +1,3 @@
+### Fixed
+
+- `b2b_dashboard`: a learner count that is declared a subset of another count, and is larger than it, is now withheld when that other count is withheld too, along with the totals and rates computed from it. Before, an engagement-trend month with 3 active learners (withheld) and 6 video watchers returned `video_watchers: 6` and `total_videos_watched`, which told the reader the withheld active count was at least 6. The same check already applied when the containing count was published. The organization engagement trend also blanks the matching organization totals when a contract row withholds a count this way.
