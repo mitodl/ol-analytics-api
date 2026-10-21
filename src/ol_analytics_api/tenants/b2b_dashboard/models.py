@@ -303,7 +303,7 @@ class MonthlyEngagementTrend(SQLModel):
 
     ``monthly_active_learners`` is not the gate, because activity is course
     work only. Enrolling or being issued a certificate does not make a learner
-    active, so ``enrolling_learners`` and ``certified_learners`` are not
+    active, so ``enrolling_learners`` and ``newly_certified_learners`` are not
     subsets of it, and a month can have enough of either with too few active
     learners. Gating on it would withhold those figures for no privacy
     reason. It is a secondary count, nulled on its own terms.
@@ -324,8 +324,8 @@ class MonthlyEngagementTrend(SQLModel):
     one learner enrolling in six runs reads as ``new_enrollments == 6`` and
     would clear a floor of 5 on its own. Flooring them directly is therefore
     the wrong instrument — they are ``derived`` from ``enrolling_learners``
-    and ``certified_learners``, the distinct-learner counts they are actually
-    attributable to, which do carry the floor.
+    and ``newly_certified_learners``, the distinct-learner counts they are
+    actually attributable to, which do carry the floor.
 
     ``contributing_learners`` is Optional even though it is the primary —
     everywhere else the primary gates the row (below floor, the row is dropped
@@ -335,6 +335,12 @@ class MonthlyEngagementTrend(SQLModel):
     breakdown hides anything gets its org-level learner counts blanked post
     hoc, after its own row gate already passed. See ``routers.organizations``
     and ``ContractMonthlyEngagementTrend``.
+
+    ``certified_learners`` is the deprecated name for
+    ``newly_certified_learners``: always equal to it and floored the same way,
+    kept until clients read the new name. Every other dashboard endpoint uses
+    ``certified_learners`` for learners holding an unrevoked certificate, not
+    for the month's newly certified ones.
     """
 
     cohort_policy: ClassVar[CohortPolicy] = CohortPolicy(
@@ -342,6 +348,7 @@ class MonthlyEngagementTrend(SQLModel):
         secondary=(
             "monthly_active_learners",
             "enrolling_learners",
+            "newly_certified_learners",
             "certified_learners",
             "video_watchers",
             "problem_attempters",
@@ -349,7 +356,7 @@ class MonthlyEngagementTrend(SQLModel):
         ),
         derived={
             "new_enrollments": ("enrolling_learners",),
-            "certificates_earned": ("certified_learners",),
+            "certificates_earned": ("newly_certified_learners",),
             "total_videos_watched": ("video_watchers",),
             "total_problems_attempted": ("problem_attempters",),
             "total_chatbot_interactions": ("chatbot_users",),
@@ -369,7 +376,12 @@ class MonthlyEngagementTrend(SQLModel):
         # but that count is never returned, so a caller has no container to
         # subtract them from and the complement rule would suppress on a
         # number nobody can see.
-        uncontained=("monthly_active_learners", "enrolling_learners", "certified_learners"),
+        uncontained=(
+            "monthly_active_learners",
+            "enrolling_learners",
+            "newly_certified_learners",
+            "certified_learners",
+        ),
     )
 
     organization_key: str = Field(description="Internal identifier for the organization.")
@@ -396,8 +408,12 @@ class MonthlyEngagementTrend(SQLModel):
             f"{_DERIVED_WITHHELD}"
         )
     )
-    certified_learners: int | None = Field(
+    newly_certified_learners: int | None = Field(
         description=f"Learners who earned at least one certificate this month. {_WITHHELD}"
+    )
+    certified_learners: int | None = Field(
+        description="Deprecated: use newly_certified_learners, which this always equals.",
+        schema_extra={"deprecated": True},
     )
     total_videos_watched: int | None = Field(
         description=f"Videos watched this month, counting every view. {_DERIVED_WITHHELD}"
@@ -494,7 +510,7 @@ class ContentEngagementDepth(SQLModel):
     ``chatbot_users`` is one too. That is a property of these particular
     cohorts, not a general rule: a certified learner need not be engaged,
     and see ``MonthlyEngagementTrend``, where neither ``enrolling_learners``
-    nor ``certified_learners`` is a subset of ``monthly_active_learners``.
+    nor ``newly_certified_learners`` is a subset of ``monthly_active_learners``.
 
     The ``avg_*_per_engaged_learner`` columns are derived from *two* cohorts,
     which is why each names both. The denominator is ``engaged_learners`` —

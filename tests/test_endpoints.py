@@ -443,6 +443,7 @@ async def test_monthly_trend_keeps_a_month_with_too_few_active_learners(app):
         "new_enrollments": 0,
         "enrolling_learners": 0,
         "certificates_earned": 14,
+        "newly_certified_learners": 12,
         "certified_learners": 12,
         "total_videos_watched": 9,
         "video_watchers": 3,
@@ -455,6 +456,7 @@ async def test_monthly_trend_keeps_a_month_with_too_few_active_learners(app):
     tiny_month = quiet_month | {
         "activity_year_and_month": "2026-08",
         "certificates_earned": 2,
+        "newly_certified_learners": 2,
         "certified_learners": 2,
         "contributing_learners": 4,
     }
@@ -479,7 +481,7 @@ async def test_monthly_trend_keeps_a_month_with_too_few_active_learners(app):
     # The gate itself is not returned: 13 next to 12 certified and a withheld
     # active count would bound that count from below.
     assert "contributing_learners" not in data
-    assert data["certified_learners"] == 12
+    assert data["newly_certified_learners"] == data["certified_learners"] == 12
     assert data["certificates_earned"] == 14
     assert data["monthly_active_learners"] is None
     # The three video watchers are the three active learners.
@@ -503,6 +505,7 @@ async def test_monthly_trend_floors_event_counts_through_their_learner_cohorts(a
         "new_enrollments": 12,
         "enrolling_learners": 1,
         "certificates_earned": 30,
+        "newly_certified_learners": 22,
         "certified_learners": 22,
         "total_videos_watched": 500,
         "video_watchers": 18,
@@ -537,12 +540,51 @@ async def test_monthly_trend_floors_event_counts_through_their_learner_cohorts(a
     assert data["total_problems_attempted"] is None
     # Cohorts above the floor keep their totals.
     assert data["monthly_active_learners"] == 40
-    assert data["certified_learners"] == 22
+    assert data["newly_certified_learners"] == data["certified_learners"] == 22
     assert data["certificates_earned"] == 30
     assert data["video_watchers"] == 18
     assert data["total_videos_watched"] == 500
     assert data["chatbot_users"] == 15
     assert data["total_chatbot_interactions"] == 60
+
+
+async def test_monthly_trend_floors_both_newly_certified_names_together(app):
+    # certified_learners is the deprecated name for newly_certified_learners.
+    # A client still reading it must not see a count the new name withholds,
+    # and certificates_earned goes with them. The contract endpoint applies
+    # the policy both trend models share without the org grain's cross-grain
+    # guard, so what is withheld here is the floor alone.
+    contract = {"contract_pk": "contract-pk-1", "contract_id": 101, "b2b_contract_name": "C1"}
+    published = _trend_row() | contract
+    withheld = (
+        _trend_row("2026-08")
+        | contract
+        | {"certificates_earned": 4, "newly_certified_learners": 3, "certified_learners": 3}
+    )
+    with (
+        patch(
+            "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
+            new=_fake_fetch_all_with_contract([published, withheld]),
+        ),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/contracts/101/engagement-trend",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
+            )
+
+    assert response.status_code == 200
+    july, august = response.json()["data"]
+    assert july["newly_certified_learners"] == july["certified_learners"] == 22
+    assert july["certificates_earned"] == 30
+    assert august["newly_certified_learners"] is None
+    assert august["certified_learners"] is None
+    assert august["certificates_earned"] is None
+    assert august["monthly_active_learners"] == 40
 
 
 def _trend_row(month="2026-07"):
@@ -556,6 +598,7 @@ def _trend_row(month="2026-07"):
         "new_enrollments": 12,
         "enrolling_learners": 9,
         "certificates_earned": 30,
+        "newly_certified_learners": 22,
         "certified_learners": 22,
         "total_videos_watched": 500,
         "video_watchers": 18,
@@ -624,6 +667,7 @@ async def test_org_trend_blanks_the_total_a_surviving_contract_row_withholds(app
     # here can distinguish that case from this one.
     assert data["monthly_active_learners"] is None
     assert data["chatbot_users"] is None
+    assert data["newly_certified_learners"] is None
     assert data["certified_learners"] is None
     assert data["video_watchers"] is None
     assert data["problem_attempters"] is None
@@ -648,6 +692,7 @@ async def test_org_trend_blanks_every_total_when_a_contract_row_is_dropped(app):
         "total_chatbot_interactions",
         "monthly_active_learners",
         "enrolling_learners",
+        "newly_certified_learners",
         "certified_learners",
         "video_watchers",
         "problem_attempters",
@@ -682,6 +727,7 @@ async def test_org_trend_blanks_the_active_count_a_published_contract_row_withho
     quiet = {
         "monthly_active_learners": 3,
         "contributing_learners": 13,
+        "newly_certified_learners": 10,
         "certified_learners": 10,
         "certificates_earned": 10,
         "enrolling_learners": 0,
@@ -1159,6 +1205,7 @@ async def test_contract_endpoint_suppresses_below_the_floor(app):
         "new_enrollments": 12,
         "enrolling_learners": 2,
         "certificates_earned": 30,
+        "newly_certified_learners": 22,
         "certified_learners": 22,
         "total_videos_watched": 500,
         "video_watchers": 18,
