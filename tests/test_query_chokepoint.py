@@ -124,6 +124,11 @@ def test_an_empty_exclusion_is_rejected():
         KeyExclusion("courserun_readable_id")
 
 
+def test_a_negative_exclusion_count_is_rejected():
+    with pytest.raises(ValueError, match="must not be negative"):
+        KeyExclusion("courserun_readable_id", -1, null=True)
+
+
 async def test_fetch_visible_count_returns_the_count():
     with patch(
         "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",

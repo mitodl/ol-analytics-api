@@ -193,6 +193,19 @@ def test_finer_grain_rejects_a_ratio_computed_from_an_unknown_column():
         replace(depth, finer_grain=bogus)
 
 
+def test_finer_grain_rejects_a_ratio_computed_from_a_column_never_reported_hidden():
+    # courserun_title is a real column, but the scan never reports it hidden,
+    # so listing it would blank nothing.
+    depth = next(spec for spec in organizations.ENDPOINTS if spec.path == "/content-engagement")
+    bogus = replace(
+        depth.finer_grain,
+        non_additive_columns=dict(depth.finer_grain.non_additive_columns)
+        | {"chatbot_adoption_pct": ("courserun_title", "total_enrolled_learners")},
+    )
+    with pytest.raises(ValueError, match="never reports as hidden"):
+        replace(depth, finer_grain=bogus)
+
+
 @_cases
 def test_every_field_is_described_in_the_published_schema(case):
     # The descriptions are this tenant's API documentation. A field added without

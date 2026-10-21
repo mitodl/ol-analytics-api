@@ -168,7 +168,8 @@ class _OrgEndpoint:
         """
         if self.finer_grain is None:
             return
-        derived = set(cohort_policy_of(self.model).derived)
+        policy = cohort_policy_of(self.model)
+        derived = set(policy.derived)
         additive = set(self.finer_grain.additive_columns)
         non_additive = set(self.finer_grain.non_additive_columns)
         if overlap := additive & non_additive:
@@ -187,12 +188,24 @@ class _OrgEndpoint:
                 "exactly-additive column left out keeps its subtraction open."
             )
             raise ValueError(msg)
-        fields = set(self.model.model_fields)
+        # A ratio is blanked only through a column the scan can report hidden,
+        # so naming any other column (a title, a typo) would blank nothing.
+        # This is what `hidden_additive_columns` reports: the additive columns
+        # `_register` passes it, the secondary cohorts no derived column is
+        # computed over, and the primary for a dropped row.
+        with_derived = {cohort for cohorts in policy.derived.values() for cohort in cohorts}
+        reportable = {
+            *additive,
+            *(policy.secondary if self.finer_grain.partitions else ()),
+            *(cohort for cohort in policy.secondary if cohort not in with_derived),
+            policy.primary,
+        }
         for column, sources in self.finer_grain.non_additive_columns.items():
-            if unknown_sources := set(sources) - fields:
+            if unreportable := set(sources) - reportable:
                 msg = (
-                    f"{self.path}: {column} is computed from {sorted(unknown_sources)}, "
-                    f"which are not columns of {self.model.__name__}."
+                    f"{self.path}: {column} is computed from {sorted(unreportable)}, "
+                    "which the finer-grain scan never reports as hidden, so the guard "
+                    "would never blank it through them."
                 )
                 raise ValueError(msg)
 
