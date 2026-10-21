@@ -18,6 +18,10 @@ from httpx import ASGITransport, AsyncClient
 from ol_analytics_api.core.db.client import PoolAcquireTimeoutError
 from ol_analytics_api.core.db.refresh_metadata import _clear_cache
 from ol_analytics_api.main import create_app
+from ol_analytics_api.tenants.b2b_dashboard.models import (
+    ContractMonthlyEngagementTrend,
+    MonthlyEngagementTrend,
+)
 from ol_analytics_api.tenants.b2b_dashboard.routers import organizations
 
 _AS_OF = datetime.datetime(2026, 7, 2, 4, 0, 0)  # noqa: DTZ001
@@ -585,6 +589,46 @@ async def test_monthly_trend_floors_both_newly_certified_names_together(app):
     assert august["certified_learners"] is None
     assert august["certificates_earned"] is None
     assert august["monthly_active_learners"] == 40
+
+
+def _cohort_declaration(policy, column):
+    """Everything a CohortPolicy says about ``column`` as a cohort count."""
+    return {
+        "primary": policy.primary == column,
+        "secondary": column in policy.secondary,
+        "uncontained": column in policy.uncontained,
+        "contained_in": policy.contained_in.get(column),
+        "contains": sorted(k for k, v in policy.contained_in.items() if v == column),
+        "is_derived": column in policy.derived,
+    }
+
+
+@pytest.mark.parametrize("model", [MonthlyEngagementTrend, ContractMonthlyEngagementTrend])
+def test_trend_declares_both_newly_certified_names_identically(model):
+    # certified_learners is the deprecated name for newly_certified_learners
+    # and always equals it. Declared differently, one name could be published
+    # where the other is withheld, so an edit to one has to be made to both.
+    policy = model.cohort_policy
+    new = _cohort_declaration(policy, "newly_certified_learners")
+    assert new == _cohort_declaration(policy, "certified_learners")
+    assert new == {
+        "primary": False,
+        "secondary": True,
+        "uncontained": True,
+        "contained_in": None,
+        "contains": [],
+        "is_derived": False,
+    }
+    # The derived totals cite only the new name, as the dbt declaration does
+    # (tests/test_dbt_exposure_contract.py holds the two to each other). Equal
+    # values mean equal floors, so the deprecated name needs no citation of
+    # its own.
+    citing = {
+        column: cohorts
+        for column, cohorts in policy.derived.items()
+        if {"newly_certified_learners", "certified_learners"} & set(cohorts)
+    }
+    assert citing == {"certificates_earned": ("newly_certified_learners",)}
 
 
 def _trend_row(month="2026-07"):
