@@ -24,6 +24,12 @@ dashboard can show them as help text: plain language, no field names. Which
 counts are withheld, and what each rate is derived from, is defined by the
 model's ``cohort_policy`` and explained in its docstring rather than repeated
 per field.
+
+The description of a field read straight from a view column is also the
+column's ``config.meta.api_description`` in ol-data-platform, and
+tests/test_dbt_exposure_contract.py fails when the two differ. To reword one,
+change it there, then copy the exported file into tests/dbt_exposures/ along
+with the new text here.
 """
 
 from __future__ import annotations

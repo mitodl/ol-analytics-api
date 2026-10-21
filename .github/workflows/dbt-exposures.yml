@@ -1,8 +1,9 @@
 name: dbt exposures
 
 # tests/dbt_exposures/ holds copies of the files ol-data-platform commits to
-# exposures/ (`ol-dbt exposures export`): the columns and cohort declarations of
-# every view this service reads. tests/test_dbt_exposure_contract.py checks the
+# exposures/ (`ol-dbt exposures export`): the columns, cohort declarations and
+# field descriptions of every view this service reads.
+# tests/test_dbt_exposure_contract.py checks the
 # models against the copies. A difference means a view changed in dbt: copy the
 # new file in and fix whatever that test then reports. The daily run catches a
 # dbt change between this repo's own pushes, before the view rebuild reaches
