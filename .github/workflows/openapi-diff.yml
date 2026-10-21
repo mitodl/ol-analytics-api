@@ -188,7 +188,7 @@ jobs:
 
           LABEL = "breaking-api-change"
           FRAGMENT_PATH = re.compile(r"changelog\.d/[\w.-]+\.md")
-          CATEGORY_HEADER = re.compile(r"#+\s+(.+?)\s*")
+          HEADER = re.compile(r"(#+) \s*(.+?)\s*")
           # scriv's template ships every category inside an HTML comment.
           COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
           MARKER = "Breaking:"
@@ -227,11 +227,15 @@ jobs:
               if fragment.is_symlink():
                   return False
               category = None
+              # scriv takes the first heading's level as the category level
+              # and reads a heading at any other level as entry text.
+              level = None
               text = COMMENT.sub("", fragment.read_text())
               for line in text.splitlines():
-                  header = CATEGORY_HEADER.fullmatch(line)
-                  if header:
-                      category = header.group(1)
+                  header = HEADER.fullmatch(line)
+                  if header and level in {None, header.group(1)}:
+                      level = header.group(1)
+                      category = header.group(2)
                   elif category in {"Removed", "Changed"} and MARKER in line:
                       return True
               return False
