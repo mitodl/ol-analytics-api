@@ -48,6 +48,14 @@ _ROW_WITHHELD = (
     "When too few learners are in the group, the whole row is withheld to avoid identifying them."
 )
 _DERIVED_WITHHELD = "Withheld when the learner count it is based on is withheld."
+_VIDEO_DAYS = (
+    "A video counts once for each day a learner plays it, so replaying it the same day doesn't "
+    "add to the total."
+)
+_PROBLEM_DAYS = (
+    "A problem counts once for each day a learner submits an answer to it, so resubmitting it "
+    "the same day doesn't add to the total."
+)
 _ANY_ACTIVITY = (
     "watched a video, attempted a problem, posted in a discussion, used the chatbot or moved "
     "through course pages"
@@ -401,12 +409,15 @@ class MonthlyEngagementTrend(SQLModel):
     )
     new_enrollments: int | None = Field(
         description=(
-            "Course enrollments made this month. A learner who enrolled in six courses counts "
-            f"six times. {_DERIVED_WITHHELD}"
+            "Course enrollments made this month that are still active. A learner who enrolled "
+            f"in six courses counts six times. {_DERIVED_WITHHELD}"
         )
     )
     enrolling_learners: int | None = Field(
-        description=f"Learners who enrolled in at least one course this month. {_WITHHELD}"
+        description=(
+            "Learners with at least one course enrollment made this month that is still active. "
+            f"{_WITHHELD}"
+        )
     )
     certificates_earned: int | None = Field(
         description=(
@@ -422,13 +433,13 @@ class MonthlyEngagementTrend(SQLModel):
         schema_extra={"deprecated": True},
     )
     total_videos_watched: int | None = Field(
-        description=f"Videos watched this month, counting every view. {_DERIVED_WITHHELD}"
+        description=f"Videos watched this month. {_VIDEO_DAYS} {_DERIVED_WITHHELD}"
     )
     video_watchers: int | None = Field(
         description=f"Learners who watched at least one video this month. {_WITHHELD}"
     )
     total_problems_attempted: int | None = Field(
-        description=f"Problem attempts this month, counting every attempt. {_DERIVED_WITHHELD}"
+        description=f"Problems attempted this month. {_PROBLEM_DAYS} {_DERIVED_WITHHELD}"
     )
     problem_attempters: int | None = Field(
         description=f"Learners who attempted at least one problem this month. {_WITHHELD}"
@@ -588,7 +599,9 @@ class ContentEngagementDepth(SQLModel):
     )
     courserun_title: str = Field(description="The course's title.")
     total_enrolled_learners: int = Field(
-        description=f"Learners who have ever enrolled in this course run. {_ROW_WITHHELD}"
+        description=(
+            f"Learners whose enrollment in this course run is still active. {_ROW_WITHHELD}"
+        )
     )
     engaged_learners: int | None = Field(
         description=(
@@ -601,7 +614,7 @@ class ContentEngagementDepth(SQLModel):
         )
     )
     total_videos_watched: int | None = Field(
-        description=(f"Videos watched in this course run, counting every view. {_DERIVED_WITHHELD}")
+        description=f"Videos watched in this course run. {_VIDEO_DAYS} {_DERIVED_WITHHELD}"
     )
     video_watchers: int | None = Field(
         description=f"Learners who watched at least one video in this course run. {_WITHHELD}"
@@ -613,16 +626,14 @@ class ContentEngagementDepth(SQLModel):
         )
     )
     total_problems_attempted: int | None = Field(
-        description=(
-            f"Problem attempts in this course run, counting every attempt. {_DERIVED_WITHHELD}"
-        )
+        description=(f"Problems attempted in this course run. {_PROBLEM_DAYS} {_DERIVED_WITHHELD}")
     )
     problem_attempters: int | None = Field(
         description=(f"Learners who attempted at least one problem in this course run. {_WITHHELD}")
     )
     avg_problems_per_engaged_learner: float | None = Field(
         description=(
-            "Average problem attempts per learner who did anything in the course. "
+            "Average problems attempted per learner who did anything in the course. "
             f"{_DERIVED_WITHHELD}"
         )
     )

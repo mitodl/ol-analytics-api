@@ -1009,9 +1009,9 @@ components:
         total_enrolled_learners:
           type: integer
           title: Total Enrolled Learners
-          description: Learners who have ever enrolled in this course run. When too
-            few learners are in the group, the whole row is withheld to avoid identifying
-            them.
+          description: Learners whose enrollment in this course run is still active.
+            When too few learners are in the group, the whole row is withheld to avoid
+            identifying them.
         engaged_learners:
           anyOf:
           - type: integer
@@ -1033,8 +1033,9 @@ components:
           - type: integer
           - type: 'null'
           title: Total Videos Watched
-          description: Videos watched in this course run, counting every view. Withheld
-            when the learner count it is based on is withheld.
+          description: Videos watched in this course run. A video counts once for
+            each day a learner plays it, so replaying it the same day doesn't add
+            to the total. Withheld when the learner count it is based on is withheld.
         video_watchers:
           anyOf:
           - type: integer
@@ -1055,8 +1056,10 @@ components:
           - type: integer
           - type: 'null'
           title: Total Problems Attempted
-          description: Problem attempts in this course run, counting every attempt.
-            Withheld when the learner count it is based on is withheld.
+          description: Problems attempted in this course run. A problem counts once
+            for each day a learner submits an answer to it, so resubmitting it the
+            same day doesn't add to the total. Withheld when the learner count it
+            is based on is withheld.
         problem_attempters:
           anyOf:
           - type: integer
@@ -1070,8 +1073,8 @@ components:
           - type: number
           - type: 'null'
           title: Avg Problems Per Engaged Learner
-          description: Average problem attempts per learner who did anything in the
-            course. Withheld when the learner count it is based on is withheld.
+          description: Average problems attempted per learner who did anything in
+            the course. Withheld when the learner count it is based on is withheld.
         total_chatbot_interactions:
           anyOf:
           - type: integer
@@ -1223,9 +1226,9 @@ components:
         total_enrolled_learners:
           type: integer
           title: Total Enrolled Learners
-          description: Learners who have ever enrolled in this course run. When too
-            few learners are in the group, the whole row is withheld to avoid identifying
-            them.
+          description: Learners whose enrollment in this course run is still active.
+            When too few learners are in the group, the whole row is withheld to avoid
+            identifying them.
         engaged_learners:
           anyOf:
           - type: integer
@@ -1247,8 +1250,9 @@ components:
           - type: integer
           - type: 'null'
           title: Total Videos Watched
-          description: Videos watched in this course run, counting every view. Withheld
-            when the learner count it is based on is withheld.
+          description: Videos watched in this course run. A video counts once for
+            each day a learner plays it, so replaying it the same day doesn't add
+            to the total. Withheld when the learner count it is based on is withheld.
         video_watchers:
           anyOf:
           - type: integer
@@ -1269,8 +1273,10 @@ components:
           - type: integer
           - type: 'null'
           title: Total Problems Attempted
-          description: Problem attempts in this course run, counting every attempt.
-            Withheld when the learner count it is based on is withheld.
+          description: Problems attempted in this course run. A problem counts once
+            for each day a learner submits an answer to it, so resubmitting it the
+            same day doesn't add to the total. Withheld when the learner count it
+            is based on is withheld.
         problem_attempters:
           anyOf:
           - type: integer
@@ -1284,8 +1290,8 @@ components:
           - type: number
           - type: 'null'
           title: Avg Problems Per Engaged Learner
-          description: Average problem attempts per learner who did anything in the
-            course. Withheld when the learner count it is based on is withheld.
+          description: Average problems attempted per learner who did anything in
+            the course. Withheld when the learner count it is based on is withheld.
         total_chatbot_interactions:
           anyOf:
           - type: integer
@@ -1405,16 +1411,17 @@ components:
           - type: integer
           - type: 'null'
           title: New Enrollments
-          description: Course enrollments made this month. A learner who enrolled
-            in six courses counts six times. Withheld when the learner count it is
-            based on is withheld.
+          description: Course enrollments made this month that are still active. A
+            learner who enrolled in six courses counts six times. Withheld when the
+            learner count it is based on is withheld.
         enrolling_learners:
           anyOf:
           - type: integer
           - type: 'null'
           title: Enrolling Learners
-          description: Learners who enrolled in at least one course this month. Withheld
-            when too few learners are in the group to report without identifying them.
+          description: Learners with at least one course enrollment made this month
+            that is still active. Withheld when too few learners are in the group
+            to report without identifying them.
         certificates_earned:
           anyOf:
           - type: integer
@@ -1442,8 +1449,9 @@ components:
           - type: integer
           - type: 'null'
           title: Total Videos Watched
-          description: Videos watched this month, counting every view. Withheld when
-            the learner count it is based on is withheld.
+          description: Videos watched this month. A video counts once for each day
+            a learner plays it, so replaying it the same day doesn't add to the total.
+            Withheld when the learner count it is based on is withheld.
         video_watchers:
           anyOf:
           - type: integer
@@ -1456,8 +1464,10 @@ components:
           - type: integer
           - type: 'null'
           title: Total Problems Attempted
-          description: Problem attempts this month, counting every attempt. Withheld
-            when the learner count it is based on is withheld.
+          description: Problems attempted this month. A problem counts once for each
+            day a learner submits an answer to it, so resubmitting it the same day
+            doesn't add to the total. Withheld when the learner count it is based
+            on is withheld.
         problem_attempters:
           anyOf:
           - type: integer
@@ -2562,16 +2572,17 @@ components:
           - type: integer
           - type: 'null'
           title: New Enrollments
-          description: Course enrollments made this month. A learner who enrolled
-            in six courses counts six times. Withheld when the learner count it is
-            based on is withheld.
+          description: Course enrollments made this month that are still active. A
+            learner who enrolled in six courses counts six times. Withheld when the
+            learner count it is based on is withheld.
         enrolling_learners:
           anyOf:
           - type: integer
           - type: 'null'
           title: Enrolling Learners
-          description: Learners who enrolled in at least one course this month. Withheld
-            when too few learners are in the group to report without identifying them.
+          description: Learners with at least one course enrollment made this month
+            that is still active. Withheld when too few learners are in the group
+            to report without identifying them.
         certificates_earned:
           anyOf:
           - type: integer
@@ -2599,8 +2610,9 @@ components:
           - type: integer
           - type: 'null'
           title: Total Videos Watched
-          description: Videos watched this month, counting every view. Withheld when
-            the learner count it is based on is withheld.
+          description: Videos watched this month. A video counts once for each day
+            a learner plays it, so replaying it the same day doesn't add to the total.
+            Withheld when the learner count it is based on is withheld.
         video_watchers:
           anyOf:
           - type: integer
@@ -2613,8 +2625,10 @@ components:
           - type: integer
           - type: 'null'
           title: Total Problems Attempted
-          description: Problem attempts this month, counting every attempt. Withheld
-            when the learner count it is based on is withheld.
+          description: Problems attempted this month. A problem counts once for each
+            day a learner submits an answer to it, so resubmitting it the same day
+            doesn't add to the total. Withheld when the learner count it is based
+            on is withheld.
         problem_attempters:
           anyOf:
           - type: integer
