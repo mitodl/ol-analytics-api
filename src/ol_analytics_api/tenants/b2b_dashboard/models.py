@@ -56,6 +56,7 @@ _PROBLEM_DAYS = (
     "A problem counts once for each day a learner submits an answer to it, so resubmitting it "
     "the same day doesn't add to the total."
 )
+_ACTIVE_ENROLLMENT_ONLY = "Only activity in an enrollment that is still active counts."
 _ANY_ACTIVITY = (
     "watched a video, attempted a problem, posted in a discussion, used the chatbot or moved "
     "through course pages"
@@ -403,8 +404,9 @@ class MonthlyEngagementTrend(SQLModel):
     activity_year_and_month: str = Field(description="The month, e.g. 2026-08.")
     monthly_active_learners: int | None = Field(
         description=(
-            f"Learners who did course work this month: {_ANY_ACTIVITY}. Enrolling or earning "
-            f"a certificate alone doesn't count. {_WITHHELD}"
+            f"Learners who did course work this month: {_ANY_ACTIVITY}. "
+            f"{_ACTIVE_ENROLLMENT_ONLY} Enrolling or earning a certificate alone doesn't count. "
+            f"{_WITHHELD}"
         )
     )
     new_enrollments: int | None = Field(
@@ -436,19 +438,27 @@ class MonthlyEngagementTrend(SQLModel):
         description=f"Videos watched this month. {_VIDEO_DAYS} {_DERIVED_WITHHELD}"
     )
     video_watchers: int | None = Field(
-        description=f"Learners who watched at least one video this month. {_WITHHELD}"
+        description=(
+            f"Learners who watched at least one video this month. {_ACTIVE_ENROLLMENT_ONLY} "
+            f"{_WITHHELD}"
+        )
     )
     total_problems_attempted: int | None = Field(
         description=f"Problems attempted this month. {_PROBLEM_DAYS} {_DERIVED_WITHHELD}"
     )
     problem_attempters: int | None = Field(
-        description=f"Learners who attempted at least one problem this month. {_WITHHELD}"
+        description=(
+            f"Learners who attempted at least one problem this month. {_ACTIVE_ENROLLMENT_ONLY} "
+            f"{_WITHHELD}"
+        )
     )
     total_chatbot_interactions: int | None = Field(
         description=f"Chatbot interactions this month. {_DERIVED_WITHHELD}"
     )
     chatbot_users: int | None = Field(
-        description=f"Learners who used the chatbot this month. {_WITHHELD}"
+        description=(
+            f"Learners who used the chatbot this month. {_ACTIVE_ENROLLMENT_ONLY} {_WITHHELD}"
+        )
     )
     # Selected so the row can be gated on it, never returned. Next to the other
     # counts it would pin a withheld one: 16 contributing with 12 certified
@@ -605,7 +615,8 @@ class ContentEngagementDepth(SQLModel):
     )
     engaged_learners: int | None = Field(
         description=(
-            f"Enrolled learners who did anything in the course: {_ANY_ACTIVITY}. {_WITHHELD}"
+            "Learners whose enrollment in this course run is still active and who did anything in "
+            f"the course: {_ANY_ACTIVITY}. {_WITHHELD}"
         )
     )
     engagement_rate_pct: float | None = Field(
@@ -617,7 +628,10 @@ class ContentEngagementDepth(SQLModel):
         description=f"Videos watched in this course run. {_VIDEO_DAYS} {_DERIVED_WITHHELD}"
     )
     video_watchers: int | None = Field(
-        description=f"Learners who watched at least one video in this course run. {_WITHHELD}"
+        description=(
+            "Learners who watched at least one video in this course run. "
+            f"{_ACTIVE_ENROLLMENT_ONLY} {_WITHHELD}"
+        )
     )
     avg_videos_per_engaged_learner: float | None = Field(
         description=(
@@ -629,7 +643,10 @@ class ContentEngagementDepth(SQLModel):
         description=(f"Problems attempted in this course run. {_PROBLEM_DAYS} {_DERIVED_WITHHELD}")
     )
     problem_attempters: int | None = Field(
-        description=(f"Learners who attempted at least one problem in this course run. {_WITHHELD}")
+        description=(
+            "Learners who attempted at least one problem in this course run. "
+            f"{_ACTIVE_ENROLLMENT_ONLY} {_WITHHELD}"
+        )
     )
     avg_problems_per_engaged_learner: float | None = Field(
         description=(
@@ -641,7 +658,10 @@ class ContentEngagementDepth(SQLModel):
         description=f"Chatbot interactions in this course run. {_DERIVED_WITHHELD}"
     )
     chatbot_users: int | None = Field(
-        description=f"Learners who used the chatbot in this course run. {_WITHHELD}"
+        description=(
+            f"Learners who used the chatbot in this course run. {_ACTIVE_ENROLLMENT_ONLY} "
+            f"{_WITHHELD}"
+        )
     )
     chatbot_adoption_pct: float | None = Field(
         description=f"Percentage of enrolled learners who used the chatbot. {_DERIVED_WITHHELD}"

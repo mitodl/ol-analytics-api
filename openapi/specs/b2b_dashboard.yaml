@@ -1017,10 +1017,11 @@ components:
           - type: integer
           - type: 'null'
           title: Engaged Learners
-          description: 'Enrolled learners who did anything in the course: watched
-            a video, attempted a problem, posted in a discussion, used the chatbot
-            or moved through course pages. Withheld when too few learners are in the
-            group to report without identifying them.'
+          description: 'Learners whose enrollment in this course run is still active
+            and who did anything in the course: watched a video, attempted a problem,
+            posted in a discussion, used the chatbot or moved through course pages.
+            Withheld when too few learners are in the group to report without identifying
+            them.'
         engagement_rate_pct:
           anyOf:
           - type: number
@@ -1042,8 +1043,8 @@ components:
           - type: 'null'
           title: Video Watchers
           description: Learners who watched at least one video in this course run.
-            Withheld when too few learners are in the group to report without identifying
-            them.
+            Only activity in an enrollment that is still active counts. Withheld when
+            too few learners are in the group to report without identifying them.
         avg_videos_per_engaged_learner:
           anyOf:
           - type: number
@@ -1066,8 +1067,8 @@ components:
           - type: 'null'
           title: Problem Attempters
           description: Learners who attempted at least one problem in this course
-            run. Withheld when too few learners are in the group to report without
-            identifying them.
+            run. Only activity in an enrollment that is still active counts. Withheld
+            when too few learners are in the group to report without identifying them.
         avg_problems_per_engaged_learner:
           anyOf:
           - type: number
@@ -1087,8 +1088,9 @@ components:
           - type: integer
           - type: 'null'
           title: Chatbot Users
-          description: Learners who used the chatbot in this course run. Withheld
-            when too few learners are in the group to report without identifying them.
+          description: Learners who used the chatbot in this course run. Only activity
+            in an enrollment that is still active counts. Withheld when too few learners
+            are in the group to report without identifying them.
         chatbot_adoption_pct:
           anyOf:
           - type: number
@@ -1234,10 +1236,11 @@ components:
           - type: integer
           - type: 'null'
           title: Engaged Learners
-          description: 'Enrolled learners who did anything in the course: watched
-            a video, attempted a problem, posted in a discussion, used the chatbot
-            or moved through course pages. Withheld when too few learners are in the
-            group to report without identifying them.'
+          description: 'Learners whose enrollment in this course run is still active
+            and who did anything in the course: watched a video, attempted a problem,
+            posted in a discussion, used the chatbot or moved through course pages.
+            Withheld when too few learners are in the group to report without identifying
+            them.'
         engagement_rate_pct:
           anyOf:
           - type: number
@@ -1259,8 +1262,8 @@ components:
           - type: 'null'
           title: Video Watchers
           description: Learners who watched at least one video in this course run.
-            Withheld when too few learners are in the group to report without identifying
-            them.
+            Only activity in an enrollment that is still active counts. Withheld when
+            too few learners are in the group to report without identifying them.
         avg_videos_per_engaged_learner:
           anyOf:
           - type: number
@@ -1283,8 +1286,8 @@ components:
           - type: 'null'
           title: Problem Attempters
           description: Learners who attempted at least one problem in this course
-            run. Withheld when too few learners are in the group to report without
-            identifying them.
+            run. Only activity in an enrollment that is still active counts. Withheld
+            when too few learners are in the group to report without identifying them.
         avg_problems_per_engaged_learner:
           anyOf:
           - type: number
@@ -1304,8 +1307,9 @@ components:
           - type: integer
           - type: 'null'
           title: Chatbot Users
-          description: Learners who used the chatbot in this course run. Withheld
-            when too few learners are in the group to report without identifying them.
+          description: Learners who used the chatbot in this course run. Only activity
+            in an enrollment that is still active counts. Withheld when too few learners
+            are in the group to report without identifying them.
         chatbot_adoption_pct:
           anyOf:
           - type: number
@@ -1403,9 +1407,9 @@ components:
           title: Monthly Active Learners
           description: 'Learners who did course work this month: watched a video,
             attempted a problem, posted in a discussion, used the chatbot or moved
-            through course pages. Enrolling or earning a certificate alone doesn''t
-            count. Withheld when too few learners are in the group to report without
-            identifying them.'
+            through course pages. Only activity in an enrollment that is still active
+            counts. Enrolling or earning a certificate alone doesn''t count. Withheld
+            when too few learners are in the group to report without identifying them.'
         new_enrollments:
           anyOf:
           - type: integer
@@ -1457,8 +1461,9 @@ components:
           - type: integer
           - type: 'null'
           title: Video Watchers
-          description: Learners who watched at least one video this month. Withheld
-            when too few learners are in the group to report without identifying them.
+          description: Learners who watched at least one video this month. Only activity
+            in an enrollment that is still active counts. Withheld when too few learners
+            are in the group to report without identifying them.
         total_problems_attempted:
           anyOf:
           - type: integer
@@ -1473,8 +1478,9 @@ components:
           - type: integer
           - type: 'null'
           title: Problem Attempters
-          description: Learners who attempted at least one problem this month. Withheld
-            when too few learners are in the group to report without identifying them.
+          description: Learners who attempted at least one problem this month. Only
+            activity in an enrollment that is still active counts. Withheld when too
+            few learners are in the group to report without identifying them.
         total_chatbot_interactions:
           anyOf:
           - type: integer
@@ -1487,8 +1493,9 @@ components:
           - type: integer
           - type: 'null'
           title: Chatbot Users
-          description: Learners who used the chatbot this month. Withheld when too
-            few learners are in the group to report without identifying them.
+          description: Learners who used the chatbot this month. Only activity in
+            an enrollment that is still active counts. Withheld when too few learners
+            are in the group to report without identifying them.
         contract_pk:
           type: string
           title: Contract Pk
@@ -2564,9 +2571,9 @@ components:
           title: Monthly Active Learners
           description: 'Learners who did course work this month: watched a video,
             attempted a problem, posted in a discussion, used the chatbot or moved
-            through course pages. Enrolling or earning a certificate alone doesn''t
-            count. Withheld when too few learners are in the group to report without
-            identifying them.'
+            through course pages. Only activity in an enrollment that is still active
+            counts. Enrolling or earning a certificate alone doesn''t count. Withheld
+            when too few learners are in the group to report without identifying them.'
         new_enrollments:
           anyOf:
           - type: integer
@@ -2618,8 +2625,9 @@ components:
           - type: integer
           - type: 'null'
           title: Video Watchers
-          description: Learners who watched at least one video this month. Withheld
-            when too few learners are in the group to report without identifying them.
+          description: Learners who watched at least one video this month. Only activity
+            in an enrollment that is still active counts. Withheld when too few learners
+            are in the group to report without identifying them.
         total_problems_attempted:
           anyOf:
           - type: integer
@@ -2634,8 +2642,9 @@ components:
           - type: integer
           - type: 'null'
           title: Problem Attempters
-          description: Learners who attempted at least one problem this month. Withheld
-            when too few learners are in the group to report without identifying them.
+          description: Learners who attempted at least one problem this month. Only
+            activity in an enrollment that is still active counts. Withheld when too
+            few learners are in the group to report without identifying them.
         total_chatbot_interactions:
           anyOf:
           - type: integer
@@ -2648,8 +2657,9 @@ components:
           - type: integer
           - type: 'null'
           title: Chatbot Users
-          description: Learners who used the chatbot this month. Withheld when too
-            few learners are in the group to report without identifying them.
+          description: Learners who used the chatbot this month. Only activity in
+            an enrollment that is still active counts. Withheld when too few learners
+            are in the group to report without identifying them.
       type: object
       required:
       - organization_key
