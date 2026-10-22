@@ -68,6 +68,7 @@ _LEARNER_MV_COLUMNS = (
     "courses_passed",
     "courses_certified",
     "program_certificates_earned",
+    "certificates_earned",
     "last_active_on",
     "courses_in_progress",
     "outcomes_shared",
@@ -84,13 +85,14 @@ def _insert(conn, mv, columns, **values):
     )
 
 
-def _enroll(conn, name, contract_id, *, decision, consent_on=None):
+def _enroll(conn, name, contract_id, *, decision, consent_on=None, full_name=None):
     _insert(
         conn,
         queries.ENROLLMENT_MV,
         _ENROLLMENT_MV_COLUMNS,
         user_pk=name,
         user_global_id=name,
+        full_name=full_name,
         sso_organization_id=ORG_ID,
         contract_id=contract_id,
         courserun_pk=f"run-{contract_id}",
@@ -106,13 +108,14 @@ def _enroll(conn, name, contract_id, *, decision, consent_on=None):
     )
 
 
-def _roster(conn, name, *, decision, consent_on=None):
+def _roster(conn, name, *, decision, consent_on=None, full_name=None):
     _insert(
         conn,
         queries.LEARNER_MV,
         _LEARNER_MV_COLUMNS,
         user_pk=name,
         user_global_id=name,
+        full_name=full_name,
         sso_organization_id=ORG_ID,
         membership_source="both",
         is_organization_manager=False,
@@ -120,6 +123,7 @@ def _roster(conn, name, *, decision, consent_on=None):
         courses_passed=1,
         courses_certified=0,
         program_certificates_earned=0,
+        certificates_earned=0,
         courses_in_progress=0,
         outcomes_shared=decision,
         outcomes_consent_on=consent_on,
@@ -339,3 +343,86 @@ def test_a_missing_decision_the_learner_view_has_not_caught_up_with_is_undecided
     assert rows["stale"]["courses_passed"] == 1
     # Shared by the deployment's default, so there is no consent date to report.
     assert rows["stale"]["outcomes_consent_on"] is None
+
+
+@pytest.mark.parametrize(
+    ("filters", "expected"),
+    [
+        # mv_b2b_learner's certificates_earned as the view publishes it. It
+        # differs from courses_certified + program_certificates_earned (1 + 1)
+        # so this fails if the API adds the two itself.
+        ({}, 7),
+        # The recompute counts the course certificate from the enrollment view
+        # and adds the learner view's program certificates, ignoring the view's
+        # certificates_earned.
+        ({"include_inactive": True}, 2),
+        # A program certificate belongs to no one contract, so it is left out.
+        ({"contract_id": 42}, 1),
+    ],
+)
+def test_certificates_earned_counts_program_certificates_outside_a_contract(
+    conn, filters, expected
+):
+    _insert(
+        conn,
+        queries.ENROLLMENT_MV,
+        _ENROLLMENT_MV_COLUMNS,
+        user_pk="certified",
+        user_global_id="certified",
+        sso_organization_id=ORG_ID,
+        contract_id=42,
+        courserun_pk="run-42",
+        courserun_readable_id="run-42",
+        enrollment_is_active=True,
+        completion_status="certified",
+        is_passing=True,
+        is_certified=True,
+        is_in_progress=False,
+        outcomes_shared=True,
+        outcomes_consent_on=CONSENT_ON,
+    )
+    _insert(
+        conn,
+        queries.LEARNER_MV,
+        _LEARNER_MV_COLUMNS,
+        user_pk="certified",
+        user_global_id="certified",
+        sso_organization_id=ORG_ID,
+        membership_source="both",
+        is_organization_manager=False,
+        courses_enrolled=1,
+        courses_passed=1,
+        courses_certified=1,
+        program_certificates_earned=1,
+        certificates_earned=7,
+        courses_in_progress=0,
+        outcomes_shared=True,
+        outcomes_consent_on=CONSENT_ON,
+    )
+    rows, _ = _learners(conn, **filters)
+    assert rows["certified"]["courses_certified"] == 1
+    assert rows["certified"]["certificates_earned"] == expected
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "filters"),
+    [
+        ("enrollments", {}),
+        ("learners", {}),
+        ("learners", {"include_inactive": True}),
+        ("learners", {"contract_id": 42}),
+    ],
+)
+def test_full_name_is_returned_as_the_views_publish_it(conn, endpoint, filters):
+    # The views trim names and null blank ones, so the API passes full_name
+    # through: a null stays null and a name is returned unchanged.
+    for name, full_name in (("named", "Ann Lee"), ("nameless", None)):
+        _enroll(conn, name, 42, decision=True, consent_on=CONSENT_ON, full_name=full_name)
+        _roster(conn, name, decision=True, consent_on=CONSENT_ON, full_name=full_name)
+    if endpoint == "enrollments":
+        enrollment_rows, _ = _enrollments(conn)
+        rows = {learner_id: row for (learner_id, _), row in enrollment_rows.items()}
+    else:
+        rows, _ = _learners(conn, **filters)
+    assert rows["named"]["full_name"] == "Ann Lee"
+    assert rows["nameless"]["full_name"] is None

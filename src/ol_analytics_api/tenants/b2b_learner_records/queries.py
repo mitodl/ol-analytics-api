@@ -111,10 +111,6 @@ _ENROLLMENT_OUTCOMES = (
     "chatbot_interactions",
 )
 
-# Upstream stores "" rather than NULL for learners who never set a name. Null
-# blank names so they sort with the missing ones instead of before every name.
-_BLANK_AS_NULL_NAME = "NULLIF(TRIM(full_name), '')"
-
 
 @dataclass(frozen=True)
 class RecordFilters:
@@ -255,8 +251,7 @@ def enrollments(schema: str, filters: RecordFilters) -> RecordQuery:
         scope.append("courserun_readable_id = %s")
         scope_params.append(filters.courserun_id)
     records = (
-        "SELECT user_pk, user_global_id AS learner_id, email,"  # noqa: S608
-        f" {_BLANK_AS_NULL_NAME} AS full_name,"
+        "SELECT user_pk, user_global_id AS learner_id, email, full_name,"  # noqa: S608
         " sso_organization_id AS organization_id, contract_id,"
         " b2b_contract_name AS contract_name, courserun_readable_id AS courserun_id,"
         " courserun_title, courserun_start_on, courserun_end_on,"
@@ -314,12 +309,10 @@ def learners(schema: str, filters: RecordFilters) -> RecordQuery:
     schema = validate_sql_identifier(schema)
     if filters.contract_id is None and not filters.include_inactive:
         records = (
-            "SELECT user_pk, user_global_id AS learner_id, email,"  # noqa: S608
-            f" {_BLANK_AS_NULL_NAME} AS full_name,"
+            "SELECT user_pk, user_global_id AS learner_id, email, full_name,"  # noqa: S608
             " sso_organization_id AS organization_id, organization_name, membership_source,"
             " is_organization_manager, first_enrolled_on, last_enrolled_on, courses_enrolled,"
-            " courses_passed, courses_certified,"
-            " courses_certified + program_certificates_earned AS certificates_earned,"
+            " courses_passed, courses_certified, certificates_earned,"
             " outcomes_shared AS outcomes_decision, outcomes_consent_on,"
             " last_active_on, courses_in_progress, record_updated_on"
             f" FROM {schema}.{LEARNER_MV} WHERE sso_organization_id = %s"
@@ -369,6 +362,11 @@ def _recomputed_learners(schema: str, filters: RecordFilters) -> tuple[str, list
         active_on = "CASE WHEN enrollment_is_active = TRUE THEN last_active_on END"
         in_progress = f"enrollment_is_active = TRUE AND {in_progress}"
 
+    # certificates_earned is mv_b2b_learner's courses_certified plus
+    # program_certificates_earned. This rollup recounts the course certificates
+    # from e, so it adds the program certificates to that count itself rather
+    # than reading the view's sum, which could disagree with e's
+    # courses_certified while the two MVs refresh.
     if filters.contract_id is not None:
         # Learners with any enrollment in the contract, active or not, as the
         # default rollup keeps learners whose seats were reclaimed. A program
@@ -408,7 +406,7 @@ def _recomputed_learners(schema: str, filters: RecordFilters) -> tuple[str, list
 
     enrollment_rollup = (
         "SELECT user_pk, MAX(user_global_id) AS user_global_id, MAX(email) AS email,"  # noqa: S608
-        f" MAX({_BLANK_AS_NULL_NAME}) AS full_name,"
+        " MAX(full_name) AS full_name,"
         " MAX(sso_organization_id) AS sso_organization_id,"
         " MAX(organization_name) AS organization_name,"
         f" MIN({enrolled_on}) AS first_enrolled_on,"
@@ -436,7 +434,7 @@ def _recomputed_learners(schema: str, filters: RecordFilters) -> tuple[str, list
         "SELECT COALESCE(l.user_pk, e.user_pk) AS user_pk,"  # noqa: S608
         " COALESCE(l.user_global_id, e.user_global_id) AS learner_id,"
         " COALESCE(l.email, e.email) AS email,"
-        " COALESCE(NULLIF(TRIM(l.full_name), ''), e.full_name) AS full_name,"
+        " COALESCE(l.full_name, e.full_name) AS full_name,"
         " COALESCE(l.sso_organization_id, e.sso_organization_id) AS organization_id,"
         " COALESCE(l.organization_name, e.organization_name) AS organization_name,"
         " CASE WHEN l.membership_source IN ('roster', 'both') AND e.courses_enrolled > 0"

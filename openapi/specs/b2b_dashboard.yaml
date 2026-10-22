@@ -1148,7 +1148,7 @@ components:
 
         and see ``MonthlyEngagementTrend``, where neither ``enrolling_learners``
 
-        nor ``certified_learners`` is a subset of ``monthly_active_learners``.
+        nor ``newly_certified_learners`` is a subset of ``monthly_active_learners``.
 
 
         The ``avg_*_per_engaged_learner`` columns are derived from *two* cohorts,
@@ -1422,13 +1422,21 @@ components:
           title: Certificates Earned
           description: Certificates earned this month. A learner who earned two counts
             twice. Withheld when the learner count it is based on is withheld.
+        newly_certified_learners:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Newly Certified Learners
+          description: Learners who earned at least one certificate this month. Withheld
+            when too few learners are in the group to report without identifying them.
         certified_learners:
           anyOf:
           - type: integer
           - type: 'null'
           title: Certified Learners
-          description: Learners who earned at least one certificate this month. Withheld
-            when too few learners are in the group to report without identifying them.
+          description: 'Deprecated: use newly_certified_learners, which this always
+            equals.'
+          deprecated: true
         total_videos_watched:
           anyOf:
           - type: integer
@@ -1492,6 +1500,7 @@ components:
       - new_enrollments
       - enrolling_learners
       - certificates_earned
+      - newly_certified_learners
       - certified_learners
       - total_videos_watched
       - video_watchers
@@ -2570,13 +2579,21 @@ components:
           title: Certificates Earned
           description: Certificates earned this month. A learner who earned two counts
             twice. Withheld when the learner count it is based on is withheld.
+        newly_certified_learners:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Newly Certified Learners
+          description: Learners who earned at least one certificate this month. Withheld
+            when too few learners are in the group to report without identifying them.
         certified_learners:
           anyOf:
           - type: integer
           - type: 'null'
           title: Certified Learners
-          description: Learners who earned at least one certificate this month. Withheld
-            when too few learners are in the group to report without identifying them.
+          description: 'Deprecated: use newly_certified_learners, which this always
+            equals.'
+          deprecated: true
         total_videos_watched:
           anyOf:
           - type: integer
@@ -2628,6 +2645,7 @@ components:
       - new_enrollments
       - enrolling_learners
       - certificates_earned
+      - newly_certified_learners
       - certified_learners
       - total_videos_watched
       - video_watchers
@@ -2657,7 +2675,7 @@ components:
 
         work only. Enrolling or being issued a certificate does not make a learner
 
-        active, so ``enrolling_learners`` and ``certified_learners`` are not
+        active, so ``enrolling_learners`` and ``newly_certified_learners`` are not
 
         subsets of it, and a month can have enough of either with too few active
 
@@ -2696,9 +2714,9 @@ components:
 
         the wrong instrument — they are ``derived`` from ``enrolling_learners``
 
-        and ``certified_learners``, the distinct-learner counts they are actually
+        and ``newly_certified_learners``, the distinct-learner counts they are
 
-        attributable to, which do carry the floor.
+        actually attributable to, which do carry the floor.
 
 
         ``contributing_learners`` is Optional even though it is the primary —
@@ -2715,7 +2733,18 @@ components:
 
         hoc, after its own row gate already passed. See ``routers.organizations``
 
-        and ``ContractMonthlyEngagementTrend``.'
+        and ``ContractMonthlyEngagementTrend``.
+
+
+        ``certified_learners`` is the deprecated name for
+
+        ``newly_certified_learners``: always equal to it and floored the same way,
+
+        kept until clients read the new name. Every other dashboard endpoint uses
+
+        ``certified_learners`` for learners holding an unrevoked certificate, not
+
+        for the month''s newly certified ones.'
     OrgAnalyticsResponse_ContentEngagementDepth_:
       properties:
         organization_id:

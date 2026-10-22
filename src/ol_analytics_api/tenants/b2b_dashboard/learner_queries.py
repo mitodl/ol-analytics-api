@@ -129,10 +129,6 @@ def _needs_attention(today: datetime.date) -> str:
     return f"COALESCE(needs_attention_since <= {_date_literal(today)}, FALSE)"
 
 
-# Upstream stores "" rather than NULL for learners who never set a name. Null
-# blank names so they sort with the missing ones instead of before every name.
-_BLANK_AS_NULL_NAME = "NULLIF(TRIM(full_name), '')"
-
 # The four values of the MV's completion_status. One per row, so these buckets
 # never overlap; a row with withheld outcomes falls into none of them.
 _STATUSES = ("not_started", "in_progress", "passed", "certified")
@@ -242,8 +238,7 @@ def _records(
     if not include_inactive:
         scope.append("enrollment_is_active = TRUE")
     select = (
-        "SELECT user_pk, courserun_pk, user_global_id AS learner_id, email,"  # noqa: S608
-        f" {_BLANK_AS_NULL_NAME} AS full_name,"
+        "SELECT user_pk, courserun_pk, user_global_id AS learner_id, email, full_name,"  # noqa: S608
         " courserun_readable_id, courserun_title, courserun_start_on, courserun_end_on,"
         " enrollment_created_on AS enrolled_on, enrollment_is_active, enrollment_mode,"
         " completion_status, is_passing, grade_value AS grade,"
@@ -349,7 +344,7 @@ def learner_progress(filters: ProgressFilters, today: datetime.date) -> Progress
     shared = records.shared
 
     direction = "DESC" if filters.descending else "ASC"
-    # Nulls last either way (full_name is often null, and `records` nulls blank
+    # Nulls last either way (full_name is often null, and the view nulls blank
     # ones), then a unique tie-break so LIMIT/OFFSET paging is deterministic.
     order_by = (
         f"{filters.sort.value} IS NULL, {filters.sort.value} {direction}, user_pk, courserun_pk"
