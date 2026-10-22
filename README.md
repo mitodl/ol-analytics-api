@@ -317,3 +317,32 @@ Note that `docs/openapi/b2b-learner-records-v1.yaml` is a different artifact:
 a hand-written draft published so partners could review the record shape
 before it was built. `openapi/specs/b2b_learner_records.yaml` is generated
 from the running code and is the one a client is built from.
+
+### Breaking changes
+
+The `OpenAPI Diff` workflow runs on a PR that changes `openapi/specs/`. It
+runs `oasdiff breaking` over every spec present on both the base and the PR,
+and fails on a breaking change (e.g. a removed path), because a client
+generated from the last release would break against the new one. Deleting a
+spec file always fails, with or without the steps below.
+
+When a break is intended, the check passes only if the PR has both:
+
+- the `breaking-api-change` label, and
+- a new `changelog.d/` fragment with an entry under `### Removed` or
+  `### Changed` that contains `Breaking:` and names what breaks, e.g.
+
+  ```markdown
+  ### Removed
+
+  - `b2b_dashboard`: Breaking: `learners_certified` is no longer returned by `/contract-utilization`. Read `certified_learners` instead.
+  ```
+
+scriv has no breaking-change category, so the `Breaking:` marker is what ties
+the fragment to the break and puts it in the released changelog where a client
+maintainer will see it. The check reads the label from the PR when it runs and
+re-runs when a label is added or removed, so adding the label after the first
+failure is enough; there is no need to push again. With both present it still
+lists each breaking change (and posts the diff comment, on a PR from a branch
+of this repository), then passes with a notice naming the label and the
+fragment.

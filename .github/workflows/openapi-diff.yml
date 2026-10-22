@@ -5,13 +5,27 @@ name: OpenAPI Diff
 # here is a preview of a change to somebody else's build. This surfaces that
 # change as a comment and fails the PR on a breaking one, rather than leaving
 # it to whoever reads 1500 lines of YAML.
+#
+# An intended breaking change passes only when the PR both carries the
+# `breaking-api-change` label and adds a changelog.d/ fragment recording the
+# break (see "Breaking changes" in README.md). Before that, an intended break
+# left this check red with nothing recording why it was merged past (#36).
 
 on:
   pull_request:
+    # labeled/unlabeled so that adding or removing the label re-evaluates the
+    # check without a push.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
     paths:
       - "openapi/specs/**"
 
 permissions: {}
+
+# Label events can land while a push's run is still going. Only the newest run
+# should decide the check.
+concurrency:
+  group: openapi-diff-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   openapi-diff:
@@ -107,23 +121,31 @@ jobs:
           comment-id: ${{ steps.find_comment.outputs.comment-id }}
           body-path: comment_body.md
       - name: Check for breaking changes
+        id: breaking
         run: |
           # Breaking here means breaking a client someone else already
           # generated and shipped, so this fails the PR rather than warning.
-          # A spec removed outright is the most breaking change there is —
-          # deleting the whole published API for a tenant — so it's checked
-          # explicitly rather than relying on the -f guard to skip it.
+          # A spec removed outright is the most breaking change there is,
+          # deleting the whole published API for a tenant, so it's checked
+          # explicitly rather than relying on the -f guard to skip it, and the
+          # accepted-break path below does not cover it.
+          #
+          # oasdiff exits 1 when it finds a breaking change and 102 when it
+          # cannot load a spec. Only exit 1 is recorded for the accepted-break
+          # step; any other failure fails here.
           specs=$(
             {
               [ -d base/openapi/specs ] && (cd base/openapi/specs && ls -1 ./*.yaml)
               [ -d head/openapi/specs ] && (cd head/openapi/specs && ls -1 ./*.yaml)
             } 2>/dev/null | xargs -n1 basename | sort -u
           )
+          breaking=false
           for name in $specs; do
             base_spec="base/openapi/specs/$name"
             head_spec="head/openapi/specs/$name"
             if [ -f "$base_spec" ] && [ -f "$head_spec" ]; then
               echo "Checking $name for breaking changes..."
+              status=0
               docker run --rm \
                 --workdir "$GITHUB_WORKSPACE" \
                 --volume "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE:ro" \
@@ -131,9 +153,113 @@ jobs:
                 breaking \
                 --fail-on ERR \
                 --format githubactions \
-                "$base_spec" "$head_spec"
+                "$base_spec" "$head_spec" || status=$?
+              case "$status" in
+                0) ;;
+                1) breaking=true ;;
+                *) echo "::error::oasdiff exited $status on $name."; exit "$status" ;;
+              esac
             elif [ -f "$base_spec" ]; then
-              echo "::error::$name was removed — deleting a published spec is a breaking change."
+              echo "::error::$name was removed. Deleting a published spec is a breaking change."
               exit 1
             fi
           done
+          echo "breaking=$breaking" >> "$GITHUB_OUTPUT"
+      - name: Require an accepted breaking change
+        if: steps.breaking.outputs.breaking == 'true'
+        shell: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Labels and files come from the API rather than the event payload:
+          # a re-run replays the original payload, so a label added since
+          # would otherwise be missed. The files list is the PR's own diff
+          # against its merge base, so a fragment main already carries does
+          # not count.
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          LABEL = "breaking-api-change"
+          FRAGMENT_PATH = re.compile(r"changelog\.d/[\w.-]+\.md")
+          HEADER = re.compile(r"(#+) \s*(.+?)\s*")
+          # scriv's template ships every category inside an HTML comment.
+          COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+          MARKER = "Breaking:"
+
+          pr = f"repos/{os.environ['REPOSITORY']}/pulls/{os.environ['PR_NUMBER']}"
+
+
+          def gh_api(*args: str):
+              out = subprocess.run(
+                  ["gh", "api", *args],
+                  check=True,
+                  capture_output=True,
+                  text=True,
+              ).stdout
+              return json.loads(out)
+
+
+          live = gh_api(pr)
+          # The files list is the live PR's and the fragment text is this
+          # run's checkout, so a re-run of an older run would mix two commits.
+          if live["head"]["sha"] != os.environ["HEAD_SHA"]:
+              print("::error::The PR head has moved since this run started. The newest run decides.")
+              sys.exit(1)
+          labels = {label["name"] for label in live["labels"]}
+          added = [
+              f["filename"]
+              for page in gh_api("--paginate", "--slurp", f"{pr}/files")
+              for f in page
+              if f["status"] == "added" and FRAGMENT_PATH.fullmatch(f["filename"])
+          ]
+
+
+          def records_break(path: str) -> bool:
+              fragment = Path("head") / path
+              # A symlink could point at CHANGELOG.md, which records old breaks.
+              if fragment.is_symlink():
+                  return False
+              category = None
+              # scriv takes the first heading's level as the category level
+              # and reads a heading at any other level as entry text.
+              level = None
+              text = COMMENT.sub("", fragment.read_text())
+              for line in text.splitlines():
+                  header = HEADER.fullmatch(line)
+                  if header and level in {None, header.group(1)}:
+                      level = header.group(1)
+                      category = header.group(2)
+                  elif category in {"Removed", "Changed"} and MARKER in line:
+                      return True
+              return False
+
+
+          fragments = [path for path in added if records_break(path)]
+
+          missing = []
+          if LABEL not in labels:
+              missing.append(f"the `{LABEL}` label")
+          if not fragments:
+              missing.append(
+                  "a new changelog.d/ fragment with a Removed or Changed entry"
+                  f" containing `{MARKER}`"
+              )
+          if missing:
+              print(
+                  "::error::Breaking API change. If it is intended, the PR needs "
+                  + " and ".join(missing)
+                  + ". See \"Breaking changes\" in README.md."
+              )
+              sys.exit(1)
+
+          print(
+              f"::notice::Accepted breaking API change: label `{LABEL}`,"
+              f" fragment {', '.join(fragments)}."
+          )
