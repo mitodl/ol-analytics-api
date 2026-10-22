@@ -99,6 +99,7 @@ dev = [
     "pyyaml>=6.0.3",
     "types-pyyaml>=6.0.12.20260724",
     "cryptography>=44",
+    "sqlglot>=30.22.0",
 ]
 
 [build-system]
