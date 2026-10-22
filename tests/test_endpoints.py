@@ -433,30 +433,34 @@ async def test_content_engagement_withholds_certificates_that_name_the_uncertifi
     assert data["engaged_learners"] == 30
 
 
+# A month kept on its 13 contributing learners while only 3 were active.
+_QUIET_MONTH = {
+    "organization_key": "org-a",
+    "organization_name": "Org A",
+    "activity_year_and_month": "2026-07",
+    "monthly_active_learners": 3,
+    "new_enrollments": 0,
+    "enrolling_learners": 0,
+    "certificates_earned": 14,
+    "newly_certified_learners": 12,
+    "certified_learners": 12,
+    "total_videos_watched": 9,
+    "video_watchers": 3,
+    "total_problems_attempted": 0,
+    "problem_attempters": 0,
+    "total_chatbot_interactions": 0,
+    "chatbot_users": 0,
+    "contributing_learners": 13,
+}
+
+
 async def test_monthly_trend_keeps_a_month_with_too_few_active_learners(app):
     # Activity is course work, so a month can have enough certified or
     # enrolling learners and too few active ones. The row is gated on
     # contributing_learners, and monthly_active_learners is nulled like any
     # other sub-floor cohort. A month with too few learners of any kind is
     # still withheld whole.
-    quiet_month = {
-        "organization_key": "org-a",
-        "organization_name": "Org A",
-        "activity_year_and_month": "2026-07",
-        "monthly_active_learners": 3,
-        "new_enrollments": 0,
-        "enrolling_learners": 0,
-        "certificates_earned": 14,
-        "newly_certified_learners": 12,
-        "certified_learners": 12,
-        "total_videos_watched": 9,
-        "video_watchers": 3,
-        "total_problems_attempted": 0,
-        "problem_attempters": 0,
-        "total_chatbot_interactions": 0,
-        "chatbot_users": 0,
-        "contributing_learners": 13,
-    }
+    quiet_month = _QUIET_MONTH
     tiny_month = quiet_month | {
         "activity_year_and_month": "2026-08",
         "certificates_earned": 2,
@@ -654,22 +658,26 @@ def _trend_row(month="2026-07"):
     }
 
 
-def _contract_trend_row(contract, *, active, chatbot_users, chatbot_total, month="2026-07"):
-    """A contract-grained trend row, the grain the org row sums over."""
+def _contract_trend_row(
+    contract, *, active, contributing, chatbot_users, chatbot_total, month="2026-07"
+):
+    """A contract-grained trend row, the grain the org row sums over.
+
+    ``contributing`` is the row gate and has no default, so a row can clear
+    one of the two gates and not the other.
+    """
     return _trend_row(month) | {
         "contract_pk": f"pk-{contract}",
         "contract_id": contract,
         "b2b_contract_name": contract,
         "monthly_active_learners": active,
-        # The row gate. These contracts have no learner who only enrolled or
-        # was certified, so it equals the active count.
-        "contributing_learners": active,
+        "contributing_learners": contributing,
         "chatbot_users": chatbot_users,
         "total_chatbot_interactions": chatbot_total,
     }
 
 
-async def _get_trend(app, fetch_all):
+async def _get_trend(app, fetch_all, path="engagement-trend"):
     with (
         patch("ol_analytics_api.core.db.client.starrocks_pool.fetch_all", new=fetch_all),
         patch(
@@ -679,7 +687,7 @@ async def _get_trend(app, fetch_all):
     ):
         async with _client(app) as client:
             return await client.get(
-                f"/api/v1/analytics/organizations/{ORG_A_ID}/engagement-trend",
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/{path}",
                 headers={"X-Userinfo": _manager_header(ORG_A_ID)},
             )
 
@@ -690,8 +698,8 @@ async def test_org_trend_blanks_the_total_a_surviving_contract_row_withholds(app
     # the row with its chatbot total withheld. Leave the org total alone and
     # `517 - 500` hands that withheld 17 back, attributable to those 2 learners.
     finer = [
-        _contract_trend_row("C1", active=30, chatbot_users=2, chatbot_total=17),
-        _contract_trend_row("C2", active=25, chatbot_users=20, chatbot_total=500),
+        _contract_trend_row("C1", active=30, contributing=34, chatbot_users=2, chatbot_total=17),
+        _contract_trend_row("C2", active=25, contributing=28, chatbot_users=20, chatbot_total=500),
     ]
     response = await _get_trend(app, _fake_fetch_all([_trend_row()], finer_rows=finer))
 
@@ -722,8 +730,8 @@ async def test_org_trend_blanks_every_total_when_a_contract_row_is_dropped(app):
     # Below the row gate the contract contributes nothing visible at all, so
     # every column it fed into the org total is recoverable by subtraction.
     finer = [
-        _contract_trend_row("C1", active=2, chatbot_users=2, chatbot_total=17),
-        _contract_trend_row("C2", active=25, chatbot_users=20, chatbot_total=500),
+        _contract_trend_row("C1", active=2, contributing=4, chatbot_users=2, chatbot_total=17),
+        _contract_trend_row("C2", active=25, contributing=28, chatbot_users=20, chatbot_total=500),
     ]
     response = await _get_trend(app, _fake_fetch_all([_trend_row()], finer_rows=finer))
 
@@ -753,8 +761,8 @@ async def test_org_trend_blanks_the_headline_count_disjoint_contracts_would_reve
     # was supposed to be safe from, on the assumption contracts overlap.
     org_row = _trend_row() | {"monthly_active_learners": 27}
     finer = [
-        _contract_trend_row("C1", active=2, chatbot_users=1, chatbot_total=3),
-        _contract_trend_row("C2", active=25, chatbot_users=20, chatbot_total=500),
+        _contract_trend_row("C1", active=2, contributing=4, chatbot_users=1, chatbot_total=3),
+        _contract_trend_row("C2", active=25, contributing=28, chatbot_users=20, chatbot_total=500),
     ]
     response = await _get_trend(app, _fake_fetch_all([org_row], finer_rows=finer))
 
@@ -769,8 +777,6 @@ async def test_org_trend_blanks_the_active_count_a_published_contract_row_withho
     # withholds only its active count. C2 shares no learners with it. Left
     # alone, the org's `28 - 25` hands back C1's withheld 3.
     quiet = {
-        "monthly_active_learners": 3,
-        "contributing_learners": 13,
         "newly_certified_learners": 10,
         "certified_learners": 10,
         "certificates_earned": 10,
@@ -782,8 +788,9 @@ async def test_org_trend_blanks_the_active_count_a_published_contract_row_withho
         "total_problems_attempted": 0,
     }
     finer = [
-        _contract_trend_row("C1", active=3, chatbot_users=0, chatbot_total=0) | quiet,
-        _contract_trend_row("C2", active=25, chatbot_users=20, chatbot_total=500),
+        _contract_trend_row("C1", active=3, contributing=13, chatbot_users=0, chatbot_total=0)
+        | quiet,
+        _contract_trend_row("C2", active=25, contributing=28, chatbot_users=20, chatbot_total=500),
     ]
     org_row = _trend_row() | {"monthly_active_learners": 28}
     response = await _get_trend(app, _fake_fetch_all([org_row], finer_rows=finer))
@@ -791,13 +798,17 @@ async def test_org_trend_blanks_the_active_count_a_published_contract_row_withho
     assert response.status_code == 200
     (data,) = response.json()["data"]
     assert data["monthly_active_learners"] is None
-    # No contract total is withheld, so the org totals stay.
+    # No contract total is withheld, so the org totals stay. These two are what
+    # pin the row gate to contributing_learners: gated on its 3 active
+    # learners, C1 would be dropped and every org total blanked with it.
     assert data["total_videos_watched"] == 500
     assert data["certificates_earned"] == 30
 
 
 async def test_org_trend_untouched_when_the_contract_grain_publishes_in_full(app):
-    finer = [_contract_trend_row("C1", active=40, chatbot_users=15, chatbot_total=60)]
+    finer = [
+        _contract_trend_row("C1", active=40, contributing=45, chatbot_users=15, chatbot_total=60)
+    ]
     response = await _get_trend(app, _fake_fetch_all([_trend_row()], finer_rows=finer))
 
     assert response.status_code == 200
@@ -811,9 +822,15 @@ async def test_org_trend_untouched_when_the_contract_grain_publishes_in_full(app
 async def test_org_trend_blanks_only_the_months_the_contract_grain_withholds(app):
     rows = [_trend_row("2026-06"), _trend_row("2026-07")]
     finer = [
-        _contract_trend_row("C1", active=40, chatbot_users=15, chatbot_total=60, month="2026-06"),
-        _contract_trend_row("C1", active=30, chatbot_users=2, chatbot_total=17, month="2026-07"),
-        _contract_trend_row("C2", active=25, chatbot_users=20, chatbot_total=500, month="2026-07"),
+        _contract_trend_row(
+            "C1", active=40, contributing=45, chatbot_users=15, chatbot_total=60, month="2026-06"
+        ),
+        _contract_trend_row(
+            "C1", active=30, contributing=34, chatbot_users=2, chatbot_total=17, month="2026-07"
+        ),
+        _contract_trend_row(
+            "C2", active=25, contributing=28, chatbot_users=20, chatbot_total=500, month="2026-07"
+        ),
     ]
     response = await _get_trend(app, _fake_fetch_all(rows, finer_rows=finer))
 
@@ -1287,6 +1304,69 @@ async def test_contract_endpoint_suppresses_below_the_floor(app):
     assert "contributing_learners" not in data
 
 
+async def test_contract_trend_keeps_a_month_with_too_few_active_learners(app):
+    # The contract grain inherits the org grain's cohort_policy, gate included:
+    # 13 contributing learners keep the month, and its 3 active learners are
+    # nulled as a sub-floor secondary count rather than withholding the row.
+    row = _QUIET_MONTH | {
+        "contract_pk": "contract-pk-1",
+        "contract_id": 101,
+        "b2b_contract_name": "C1",
+    }
+    response = await _get_trend(
+        app, _fake_fetch_all_with_contract([row]), "contracts/101/engagement-trend"
+    )
+    assert response.status_code == 200
+    (data,) = response.json()["data"]
+    assert "contributing_learners" not in data
+    assert data["monthly_active_learners"] is None
+    assert data["certified_learners"] == 12
+    assert data["certificates_earned"] == 14
+    assert data["video_watchers"] is None
+    assert data["total_videos_watched"] is None
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["engagement-trend", "contracts/101/engagement-trend"],
+    ids=["org", "contract"],
+)
+async def test_trend_count_query_gates_on_contributing_learners(app, path):
+    # total_count has to gate on the same cohort as the rows. Gated on the
+    # active count, it would leave out every month kept on its enrolling or
+    # certified learners, so a client paging up to total_count would stop
+    # short of rows the endpoint does return.
+    captured = {}
+
+    async def fetch_all(query, params):
+        if "information_schema" in query:
+            return [{"as_of": _AS_OF}]
+        if query.startswith("SELECT 1 "):
+            return [{"1": 1}]
+        if _is_count_query(query):
+            captured["query"] = query
+            captured["params"] = params
+            return [{"total_count": 0}]
+        return []
+
+    with (
+        patch("ol_analytics_api.core.db.client.starrocks_pool.fetch_all", new=fetch_all),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/{path}",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
+            )
+    assert response.status_code == 200
+    assert "contributing_learners >= %s" in captured["query"]
+    assert "monthly_active_learners" not in captured["query"]
+    assert captured["params"][-1] == 5
+
+
 async def test_contract_endpoint_rejects_a_non_numeric_contract_id(app):
     """contract_id is an integer column, so a non-numeric path segment is a
     request error rather than a lookup that could never match."""
@@ -1318,7 +1398,9 @@ async def test_org_trend_fails_closed_when_the_finer_grain_scan_is_truncated(app
     # is the exact failure the guard exists to prevent, so the request fails.
     limit = organizations._GRAIN_SCAN_LIMIT  # noqa: SLF001
     finer = [
-        _contract_trend_row(f"C{index}", active=30, chatbot_users=15, chatbot_total=60)
+        _contract_trend_row(
+            f"C{index}", active=30, contributing=34, chatbot_users=15, chatbot_total=60
+        )
         for index in range(limit)
     ]
     with pytest.raises(RuntimeError, match="cross-grain guard cannot be applied"):
