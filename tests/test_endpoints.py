@@ -805,18 +805,22 @@ async def test_org_trend_blanks_a_total_a_contract_row_withholds_above_its_activ
     # inside the active learners, so C1 withholds them and the 40 videos
     # derived from them. Left alone, the org's 140 minus C2's 100 hands the
     # 40 back.
-    contract_1 = _contract_trend_row("C1", active=3, chatbot_users=0, chatbot_total=0) | {
-        "contributing_learners": 12,
+    contract_1 = _contract_trend_row(
+        "C1", active=3, contributing=12, chatbot_users=0, chatbot_total=0
+    ) | {
         "video_watchers": 6,
         "total_videos_watched": 40,
         "problem_attempters": 0,
         "total_problems_attempted": 0,
         "enrolling_learners": 0,
         "new_enrollments": 0,
+        "newly_certified_learners": 9,
         "certified_learners": 9,
         "certificates_earned": 9,
     }
-    contract_2 = _contract_trend_row("C2", active=30, chatbot_users=15, chatbot_total=60) | {
+    contract_2 = _contract_trend_row(
+        "C2", active=30, contributing=34, chatbot_users=15, chatbot_total=60
+    ) | {
         "video_watchers": 20,
         "total_videos_watched": 100,
     }
