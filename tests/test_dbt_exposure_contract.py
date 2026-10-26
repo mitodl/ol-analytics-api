@@ -7,11 +7,15 @@ in ``tests/dbt_exposures/`` are copies of those; CI fails when they differ from
 ol-data-platform main, so a dbt change to a view this service reads reaches
 this test.
 
-Two things are checked for every declarative b2b_dashboard endpoint: every
-column the endpoint reads exists in the view, and the model's CohortPolicy says
-what the dbt declaration next to the SQL says. The second matters because the
+Three things are checked for every declarative b2b_dashboard endpoint: every
+column the endpoint reads exists in the view, the model's CohortPolicy says
+what the dbt declaration next to the SQL says, and each field's description is
+the column's ``config.meta.api_description``. The second matters because the
 two are written independently, and a column one side calls a cohort while the
-other calls it a measure is a floor that is not applied.
+other calls it a measure is a floor that is not applied. The third keeps the
+published wording in one place: dbt describes a column for analysts in its
+``description`` and for this API's readers in ``api_description``, and a
+change to the API's wording lands in ol-data-platform first.
 
 The hand-written queries (b2b_learner_records, and the dashboard's
 learner_queries.py behind the learner and needs-attention routers) get the
@@ -38,7 +42,7 @@ from sqlglot import exp
 from sqlglot.errors import OptimizeError
 from sqlglot.optimizer.qualify import qualify
 from sqlglot.optimizer.scope import Scope, traverse_scope
-from sqlmodel import SQLModel
+from sqlmodel import Field, SQLModel
 
 from ol_analytics_api.core.anonymization import CohortPolicy
 from ol_analytics_api.tenants.b2b_dashboard import auth, learner_queries
@@ -153,6 +157,71 @@ def test_cohort_policy_matches_the_dbt_declarations(read):
     assert _api_policy(read.model.cohort_policy) == _dbt_policy(read.mv, fields), (
         f"{read.label}: {model_name}.cohort_policy and config.meta.cohort on {read.mv} disagree"
     )
+
+
+def _description_mismatches(
+    label: str, model: type[SQLModel], view: dict[str, dict[str, Any]]
+) -> list[str]:
+    """One message per field whose description is not its column's api_description.
+
+    A field is read from the view column of the same name, as the endpoints
+    select them.
+    """
+    mismatches = []
+    for name in sorted(set(model.model_fields) & set(view)):
+        field = model.model_fields[name].description
+        column = view[name].get("api_description")
+        if field != column:
+            mismatches.append(
+                f"{label}: {model.__name__}.{name} is described as {field!r}, but"
+                f" config.meta.api_description on column {name} is {column!r}"
+            )
+    return mismatches
+
+
+@_reads
+def test_field_descriptions_are_the_dbt_api_descriptions(read):
+    mismatches = _description_mismatches(read.label, read.model, _DASHBOARD[read.mv])
+    assert not mismatches, (
+        "Change the wording in ol-data-platform's model YAML first, then copy the"
+        " exported file into tests/dbt_exposures/:\n" + "\n".join(mismatches)
+    )
+
+
+class _Drifted(SQLModel):
+    organization_key: str = Field(description="Internal identifier for the organization.")
+    contract_pk: str = Field(description="Surrogate key of the contract.")
+
+
+def test_a_description_that_differs_from_dbt_is_reported():
+    # Guards the check above: a helper that compared the wrong things would
+    # pass every endpoint.
+    view = _DASHBOARD["mv_b2b_contract_utilization"]
+    assert _description_mismatches("guard", _Drifted, view) == [
+        (
+            "guard: _Drifted.contract_pk is described as 'Surrogate key of the contract.',"
+            " but config.meta.api_description on column contract_pk is"
+            " 'Internal identifier for the contract.'"
+        )
+    ]
+
+
+def test_a_column_without_an_api_description_is_reported():
+    view = {
+        name: {key: value for key, value in column.items() if key != "api_description"}
+        for name, column in _DASHBOARD["mv_b2b_contract_utilization"].items()
+    }
+    assert _description_mismatches("guard", _Drifted, view) == [
+        (
+            "guard: _Drifted.contract_pk is described as 'Surrogate key of the contract.',"
+            " but config.meta.api_description on column contract_pk is None"
+        ),
+        (
+            "guard: _Drifted.organization_key is described as"
+            " 'Internal identifier for the organization.', but config.meta.api_description"
+            " on column organization_key is None"
+        ),
+    ]
 
 
 def test_contract_membership_oracle_has_its_filter_columns():
