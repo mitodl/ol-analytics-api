@@ -34,6 +34,16 @@ class CoreSettings(BaseSettings):
     starrocks_pool_min_size: int = 1
     starrocks_pool_max_size: int = 10
 
+    # Name the StarRocks FE's TLS certificate is issued for (the cluster's
+    # public domain, e.g. lakehouse.starrocks.ol.mit.edu). When set, every
+    # connection upgrades to TLS and verifies the FE certificate against this
+    # name, because the host dialed in-cluster is the FE Service's DNS name,
+    # which the certificate doesn't cover. Empty (local dev, where StarRocks
+    # has no keystore) connects in plaintext. aiomysql also stays in plaintext
+    # if the FE stops offering TLS; the FE's ssl_force_secure_transport is what
+    # rejects that. See core/db/client.py.
+    starrocks_tls_server_name: str = ""
+
     # DoS-surface bounds on the shared StarRocks pool. Without these a single
     # heavy/hung query holds a pooled connection indefinitely; enough of them
     # exhaust the fixed-size pool and every subsequent acquire — including the

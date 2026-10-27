@@ -1195,6 +1195,7 @@ source = { editable = "." }
 dependencies = [
     { name = "aiomysql" },
     { name = "cachetools" },
+    { name = "certifi" },
     { name = "fastapi" },
     { name = "granian", extra = ["reload", "uvloop"] },
     { name = "httpx" },
@@ -1241,6 +1242,7 @@ release = [
 requires-dist = [
     { name = "aiomysql", specifier = ">=0.2.0" },
     { name = "cachetools", specifier = ">=5.5" },
+    { name = "certifi", specifier = ">=2026.10.19" },
     { name = "fastapi", specifier = ">=0.142.2" },
     { name = "granian", extras = ["reload", "uvloop"], specifier = ">=2.7" },
     { name = "httpx", specifier = ">=0.27" },
