@@ -73,6 +73,11 @@ class PoolAcquireTimeoutError(Exception):
     otherwise cascade the whole pod out of rotation)."""
 
 
+class PlaintextConnectionError(Exception):
+    """A pooled connection skipped TLS although
+    ``starrocks_tls_server_name`` is set (see StarRocksPool.cursor)."""
+
+
 class StarRocksPool:
     def __init__(self) -> None:
         self._pool: aiomysql.Pool | None = None
@@ -146,6 +151,14 @@ class StarRocksPool:
             )
             raise PoolAcquireTimeoutError(msg) from exc
         try:
+            # aiomysql upgrades to TLS only when the FE greeting offers it, and
+            # otherwise carries on in plaintext, so an on-path peer can strip
+            # TLS by clearing that flag. Refuse such a connection before any
+            # query goes over it. aiomysql exposes no public flag for this.
+            if settings.starrocks_tls_server_name and not conn._secure:  # noqa: SLF001
+                conn.close()
+                msg = "StarRocks FE did not negotiate TLS; refusing a plaintext connection"
+                raise PlaintextConnectionError(msg)
             async with conn.cursor() as cur:
                 yield cur
         finally:

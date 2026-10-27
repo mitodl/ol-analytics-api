@@ -6,6 +6,7 @@ import pytest
 
 from ol_analytics_api.core.config import settings
 from ol_analytics_api.core.db.client import (
+    PlaintextConnectionError,
     PoolAcquireTimeoutError,
     StarRocksPool,
     starrocks_ssl_context,
@@ -112,6 +113,50 @@ def test_ssl_context_checks_the_configured_name_not_the_dialed_host():
         server_hostname="lakehouse-starrocks-fe-service.starrocks.svc.cluster.local",
     )
     assert ssl_object.server_hostname == "lakehouse.starrocks.ol.mit.edu"
+
+
+def _pool_handing_out(conn):
+    fake_pool = MagicMock()
+    fake_pool.acquire = AsyncMock(return_value=conn)
+    fake_pool.release = MagicMock()
+    pool = StarRocksPool()
+    pool._pool = fake_pool  # noqa: SLF001
+    return pool, fake_pool
+
+
+async def test_cursor_refuses_a_plaintext_connection_when_tls_is_configured():
+    # aiomysql silently stays in plaintext when the FE greeting doesn't offer
+    # TLS (or something on the path strips the flag); no query may run on it.
+    conn = MagicMock(_secure=False)
+    pool, fake_pool = _pool_handing_out(conn)
+    with (
+        patch.object(settings, "starrocks_tls_server_name", "lakehouse.starrocks.ol.mit.edu"),
+        pytest.raises(PlaintextConnectionError),
+    ):
+        async with pool.cursor():
+            pass
+    conn.cursor.assert_not_called()
+    conn.close.assert_called_once()
+    fake_pool.release.assert_called_once_with(conn)
+
+
+async def test_cursor_accepts_a_tls_connection_when_tls_is_configured():
+    conn = MagicMock(_secure=True)
+    conn.cursor.return_value.__aenter__ = AsyncMock()
+    conn.cursor.return_value.__aexit__ = AsyncMock(return_value=False)
+    pool, _ = _pool_handing_out(conn)
+    with patch.object(settings, "starrocks_tls_server_name", "lakehouse.starrocks.ol.mit.edu"):
+        async with pool.cursor():
+            pass
+    conn.close.assert_not_called()
+
+
+async def test_aiomysql_still_tracks_tls_on_the_connection():
+    # cursor() reads aiomysql's private _secure flag; fail here, not in QA,
+    # if an aiomysql upgrade drops it.
+    import aiomysql  # noqa: PLC0415
+
+    assert aiomysql.Connection()._secure is False  # noqa: SLF001
 
 
 async def test_cursor_raises_pool_acquire_timeout_when_pool_saturated():

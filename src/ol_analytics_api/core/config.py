@@ -39,9 +39,10 @@ class CoreSettings(BaseSettings):
     # connection upgrades to TLS and verifies the FE certificate against this
     # name, because the host dialed in-cluster is the FE Service's DNS name,
     # which the certificate doesn't cover. Empty (local dev, where StarRocks
-    # has no keystore) connects in plaintext. aiomysql also stays in plaintext
-    # if the FE stops offering TLS; the FE's ssl_force_secure_transport is what
-    # rejects that. See core/db/client.py.
+    # has no keystore) connects in plaintext. When set, a connection that comes
+    # up without TLS (the FE stopped offering it, or something on the path
+    # stripped it) is refused before any query runs on it. See
+    # core/db/client.py.
     starrocks_tls_server_name: str = ""
 
     # DoS-surface bounds on the shared StarRocks pool. Without these a single
