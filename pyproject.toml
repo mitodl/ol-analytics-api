@@ -79,7 +79,7 @@ mitol-drf-lint = "0d"
 prek = "0d"
 
 [dependency-groups]
-prek = ["prek==0.5.4"]
+prek = ["prek==0.5.5"]
 # scriv sits in its own group so the release task can install it without the
 # rest of the dev toolchain (see pre_commit_hooks under [tool.bumpversion]).
 release = [
