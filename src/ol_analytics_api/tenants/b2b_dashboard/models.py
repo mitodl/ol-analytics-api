@@ -566,6 +566,12 @@ class ContentEngagementDepth(SQLModel):
     PR #2982 every row of the progress fact carries the one contract the
     learner enrolled under, so a run offered under two contracts does not
     double the SUM.
+
+    That attribution also makes the contract rows for a run sum to its org
+    row, so the org endpoint guards what the contract endpoint withholds (see
+    ``ContractContentEngagementDepth``). A run with a contract row withheld
+    whole is withheld whole here too, and a count a contract row withholds is
+    withheld here with the totals and rates computed over it.
     """
 
     cohort_policy: ClassVar[CohortPolicy] = CohortPolicy(
@@ -785,16 +791,22 @@ class ContractContentEngagementDepth(ContentEngagementDepth):
     The contract-scoped sibling of ``ContentEngagementDepth``, inherited for
     the same reason as ``ContractMonthlyEngagementTrend``.
 
-    Unlike the trend view, these rows ARE a strict partition of the org-level
-    view: a course run belongs to exactly one contract, so naming the contract
-    labels a row rather than splitting it, and every count here equals its
-    org-level counterpart for the same course run.
+    Unlike the trend view, these rows partition the org-level view's rows.
+    Since ol-data-platform PR #2982 each learner's course run is attributed to
+    the one contract they enrolled under. A run offered under one of an org's
+    contracts is only labelled, and its counts equal its org-level ones. A run
+    offered under two is split, and its contract rows sum to the org row,
+    learner counts included.
 
-    That equality is why this pair needs no cross-grain guard, where the trend
-    pair does. Nothing is aggregated away going from contract grain to org
-    grain, so there is no remainder to subtract: a course run's org row and its
-    contract row hold the same numbers, the floor makes the same call on both,
-    and a caller reading one learns nothing the other withholds.
+    So the pair needs a cross-grain guard, as the trend pair does: a contract
+    row withheld here is recoverable as the org row minus the published
+    contract rows for the run, and the org row's rates can pin it too. The org
+    endpoint scans this view and drops the org row for a run whose contract
+    row is withheld whole, and blanks any count a published contract row
+    withholds, with the totals and rates computed over it (see
+    ``routers.organizations._FinerGrain``). For a run under one contract the
+    two rows hold the same numbers, the floor makes the same call on both, and
+    the guard changes nothing.
     """
 
     contract_pk: str = Field(description="Internal identifier for the contract.")

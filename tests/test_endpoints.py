@@ -70,13 +70,16 @@ def _is_count_query(query):
     return "COUNT(*)" in query
 
 
-_CONTRACT_TREND_MV = "mv_b2b_contract_monthly_engagement_trend"
+_CONTRACT_GRAIN_MVS = (
+    "mv_b2b_contract_monthly_engagement_trend",
+    "mv_b2b_contract_content_engagement_depth",
+)
 
 
 def _is_grain_scan(query):
-    # The cross-grain guard's read of the contract-grained sibling. It is the
-    # only query naming that MV on an org-scoped request.
-    return _CONTRACT_TREND_MV in query
+    # The cross-grain guard's read of the contract-grained sibling. A contract
+    # endpoint pages the same MV, but the scan takes no OFFSET.
+    return any(mv in query for mv in _CONTRACT_GRAIN_MVS) and "OFFSET" not in query
 
 
 def _fake_fetch_all(data_rows, total_count=0, finer_rows=None):
@@ -839,9 +842,11 @@ async def test_org_trend_blanks_only_the_months_the_contract_grain_withholds(app
     assert july["total_chatbot_interactions"] is None
 
 
-async def test_org_endpoints_without_a_finer_grain_issue_no_scan(app):
-    # Only the trend endpoint aggregates across an org's contracts. Scanning on
-    # the other four would be a round trip per request buying nothing.
+@pytest.mark.parametrize("path", ["contract-utilization", "enrollment-funnel", "program-funnel"])
+async def test_org_endpoints_without_a_finer_grain_issue_no_scan(app, path):
+    # Only the trend and content engagement aggregate across an org's
+    # contracts. The other three carry a contract per row, so scanning on them
+    # would be a round trip per request buying nothing.
     queries = []
 
     async def fetch_all(query, *_args):
@@ -861,12 +866,168 @@ async def test_org_endpoints_without_a_finer_grain_issue_no_scan(app):
     ):
         async with _client(app) as client:
             response = await client.get(
-                f"/api/v1/analytics/organizations/{ORG_A_ID}/content-engagement",
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/{path}",
                 headers={"X-Userinfo": _manager_header(ORG_A_ID)},
             )
 
     assert response.status_code == 200
     assert not any(_is_grain_scan(query) for query in queries)
+
+
+def _depth_row(run, *, enrolled, engaged, chatbot_users, contract=None, **columns):
+    """A content-engagement row with consistent rates and totals. Every
+    activity cohort but the chatbot one equals the engaged learners, so its
+    complement is 0 and only the chatbot count can be withheld on its own.
+    ``columns`` overrides any column after that."""
+    row = {
+        "organization_key": "org-a",
+        "organization_name": "Org A",
+        "courserun_readable_id": run,
+        "courserun_title": run,
+        "total_enrolled_learners": enrolled,
+        "engaged_learners": engaged,
+        "engagement_rate_pct": round(100.0 * engaged / enrolled, 1),
+        "total_videos_watched": 3 * engaged,
+        "video_watchers": engaged,
+        "avg_videos_per_engaged_learner": 3.0,
+        "total_problems_attempted": 2 * engaged,
+        "problem_attempters": engaged,
+        "avg_problems_per_engaged_learner": 2.0,
+        "total_chatbot_interactions": 2 * chatbot_users,
+        "chatbot_users": chatbot_users,
+        "chatbot_adoption_pct": round(100.0 * chatbot_users / enrolled, 1),
+        "certificates_earned": 0,
+    }
+    if contract is not None:
+        row |= {"contract_pk": f"pk-{contract}", "contract_id": 1, "b2b_contract_name": contract}
+    return row | columns
+
+
+def _depth_fetch_all(org_rows, contract_rows, queries):
+    """Answers the content-engagement page and count queries the way StarRocks
+    would, from their bound params: the org filter, then any keys the guard
+    excludes, then the floor (count) or LIMIT and OFFSET (page). So a count
+    that disagrees with the rows returned shows up as a wrong number here.
+
+    A NULL key follows SQL: ``NULL NOT IN (...)`` is not true, so any NOT IN
+    leaves it out, and so does ``IS NOT NULL``."""
+
+    def survives(row, excluded, query):
+        key = row["courserun_readable_id"]
+        if key is None:
+            return not excluded and "IS NOT NULL" not in query
+        return key not in excluded
+
+    async def fetch_all(query, params):
+        if "information_schema" in query:
+            return [{"as_of": _AS_OF}]
+        if _is_grain_scan(query):
+            return list(contract_rows)
+        queries.append(query)
+        if _is_count_query(query):
+            _org, *excluded, floor = params
+            visible = [
+                row
+                for row in org_rows
+                if survives(row, excluded, query) and row["total_enrolled_learners"] >= floor
+            ]
+            return [{"total_count": len(visible)}]
+        _org, *excluded, limit, offset = params
+        rows = [row for row in org_rows if survives(row, excluded, query)]
+        return rows[offset : offset + limit]
+
+    return fetch_all
+
+
+async def _get_depth(app, org_rows, contract_rows, queries=None, params=None):
+    fetch_all = _depth_fetch_all(org_rows, contract_rows, [] if queries is None else queries)
+    with (
+        patch("ol_analytics_api.core.db.client.starrocks_pool.fetch_all", new=fetch_all),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/content-engagement",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
+                params=params,
+            )
+    assert response.status_code == 200
+    return response.json()
+
+
+async def test_content_engagement_drops_a_run_whose_contract_row_is_dropped(app):
+    # run-1 is offered under two contracts. A's row (3 enrolled) is under the
+    # row gate and B's (20) is published, so the org's 23 enrolled minus B's 20
+    # returns A's 3, and the org's rounded rates pin A's engaged and chatbot
+    # counts next to B's. The org row for run-1 goes. run-2 is untouched.
+    org_rows = [
+        _depth_row("run-1", enrolled=23, engaged=12, chatbot_users=6),
+        _depth_row("run-2", enrolled=30, engaged=20, chatbot_users=10),
+    ]
+    contract_rows = [
+        _depth_row("run-1", enrolled=3, engaged=2, chatbot_users=1, contract="A"),
+        _depth_row("run-1", enrolled=20, engaged=10, chatbot_users=5, contract="B"),
+        _depth_row("run-2", enrolled=30, engaged=20, chatbot_users=10, contract="C"),
+    ]
+    queries = []
+    body = await _get_depth(app, org_rows, contract_rows, queries)
+
+    (data,) = body["data"]
+    assert data["courserun_readable_id"] == "run-2"
+    assert data["chatbot_users"] == 10
+    # Excluded in SQL from the page and the count alike, so the count is the
+    # number of rows any page returns.
+    assert body["total_count"] == 1
+    assert all("courserun_readable_id NOT IN (%s)" in query for query in queries)
+
+
+async def test_content_engagement_blanks_a_cohort_a_published_contract_row_withholds(app):
+    # Both contract rows clear the row gate, but A has 2 chatbot users and
+    # withholds them. The org's 12 minus B's 10 would return them, and so
+    # would the org's adoption rate next to its published enrollment. Only the
+    # chatbot columns go; the org row and its other columns stay.
+    org_rows = [_depth_row("run-1", enrolled=45, engaged=25, chatbot_users=12)]
+    contract_rows = [
+        _depth_row("run-1", enrolled=20, engaged=10, chatbot_users=2, contract="A"),
+        _depth_row("run-1", enrolled=25, engaged=15, chatbot_users=10, contract="B"),
+    ]
+    queries = []
+    body = await _get_depth(app, org_rows, contract_rows, queries)
+
+    (data,) = body["data"]
+    assert data["chatbot_users"] is None
+    assert data["chatbot_adoption_pct"] is None
+    assert data["total_chatbot_interactions"] is None
+    assert data["total_enrolled_learners"] == 45
+    assert data["engaged_learners"] == 25
+    assert data["engagement_rate_pct"] == 55.6
+    assert data["video_watchers"] == 25
+    assert data["total_videos_watched"] == 75
+    assert data["avg_videos_per_engaged_learner"] == 3.0
+    assert data["certificates_earned"] == 0
+    assert body["total_count"] == 1
+    assert not any("NOT IN" in query for query in queries)
+
+
+async def test_content_engagement_one_contract_run_is_unchanged(app):
+    # A run offered under one contract has a contract row holding the org
+    # row's numbers, so the floor makes the same call on both and the guard
+    # has nothing to add. The chatbot count here is withheld by the org row's
+    # own floor either way.
+    org_rows = [_depth_row("run-1", enrolled=30, engaged=20, chatbot_users=2)]
+    contract_rows = [_depth_row("run-1", enrolled=30, engaged=20, chatbot_users=2, contract="A")]
+
+    guarded = await _get_depth(app, org_rows, contract_rows)
+    unguarded = await _get_depth(app, org_rows, [])
+
+    assert guarded == unguarded
+    (data,) = guarded["data"]
+    assert data["chatbot_users"] is None
+    assert data["engaged_learners"] == 20
+    assert guarded["total_count"] == 1
 
 
 async def test_org_endpoint_403_for_member_who_is_not_a_manager(app):
@@ -1405,3 +1566,200 @@ async def test_org_trend_fails_closed_when_the_finer_grain_scan_is_truncated(app
     ]
     with pytest.raises(RuntimeError, match="cross-grain guard cannot be applied"):
         await _get_trend(app, _fake_fetch_all([_trend_row()], finer_rows=finer))
+
+
+async def test_content_engagement_drops_a_null_keyed_run_beside_a_string_key(app):
+    # Two dropped keys, one of them NULL. Sorting them together raised a
+    # TypeError and a 500. The NULL key is excluded with IS NOT NULL, the
+    # string key with NOT IN, and the count still matches the rows.
+    org_rows = [
+        _depth_row(None, enrolled=23, engaged=12, chatbot_users=6),
+        _depth_row("run-1", enrolled=23, engaged=12, chatbot_users=6),
+        _depth_row("run-2", enrolled=30, engaged=20, chatbot_users=10),
+    ]
+    contract_rows = [
+        _depth_row(None, enrolled=3, engaged=2, chatbot_users=1, contract="A"),
+        _depth_row(None, enrolled=20, engaged=10, chatbot_users=5, contract="B"),
+        _depth_row("run-1", enrolled=3, engaged=2, chatbot_users=1, contract="A"),
+        _depth_row("run-1", enrolled=20, engaged=10, chatbot_users=5, contract="B"),
+        _depth_row("run-2", enrolled=30, engaged=20, chatbot_users=10, contract="C"),
+    ]
+    queries = []
+    body = await _get_depth(app, org_rows, contract_rows, queries)
+
+    (data,) = body["data"]
+    assert data["courserun_readable_id"] == "run-2"
+    assert body["total_count"] == 1
+    for query in queries:
+        assert "courserun_readable_id NOT IN (%s)" in query
+        assert "courserun_readable_id IS NOT NULL" in query
+
+
+async def test_content_engagement_drops_a_null_keyed_run_on_its_own(app):
+    # Only the NULL key is dropped, so there is no NOT IN list to leave it out
+    # by accident. IS NOT NULL is what keeps its org row off the page and out
+    # of the count.
+    org_rows = [
+        _depth_row(None, enrolled=23, engaged=12, chatbot_users=6),
+        _depth_row("run-1", enrolled=30, engaged=20, chatbot_users=10),
+    ]
+    contract_rows = [
+        _depth_row(None, enrolled=3, engaged=2, chatbot_users=1, contract="A"),
+        _depth_row(None, enrolled=20, engaged=10, chatbot_users=5, contract="B"),
+        _depth_row("run-1", enrolled=30, engaged=20, chatbot_users=10, contract="C"),
+    ]
+    queries = []
+    body = await _get_depth(app, org_rows, contract_rows, queries)
+
+    (data,) = body["data"]
+    assert data["courserun_readable_id"] == "run-1"
+    assert body["total_count"] == 1
+    for query in queries:
+        assert "NOT IN" not in query
+        assert "courserun_readable_id IS NOT NULL" in query
+
+
+async def test_content_engagement_blanks_an_average_whose_total_a_contract_row_withholds(app):
+    # A publishes its video watchers but not its video total. The current view
+    # coalesces totals to 0, so this guards a view that changes. The org
+    # total goes because it is additive, and the org average goes with it:
+    # times the published engaged learners it would return the total.
+    org_rows = [_depth_row("run-1", enrolled=45, engaged=25, chatbot_users=12)]
+    contract_rows = [
+        _depth_row(
+            "run-1",
+            enrolled=20,
+            engaged=10,
+            chatbot_users=5,
+            contract="A",
+            total_videos_watched=None,
+            avg_videos_per_engaged_learner=None,
+        ),
+        _depth_row("run-1", enrolled=25, engaged=15, chatbot_users=7, contract="B"),
+    ]
+    body = await _get_depth(app, org_rows, contract_rows)
+
+    (data,) = body["data"]
+    assert data["total_videos_watched"] is None
+    assert data["avg_videos_per_engaged_learner"] is None
+    assert data["video_watchers"] == 25
+    assert data["engaged_learners"] == 25
+    assert data["avg_problems_per_engaged_learner"] == 2.0
+
+
+async def test_content_engagement_blanks_what_each_of_three_contracts_withholds(app):
+    # Three contracts publish a row each. A withholds its 2 chatbot users and
+    # B its 3 video watchers. The org row withholds both, with the totals and
+    # rates computed from them, and publishes the rest.
+    org_rows = [
+        _depth_row(
+            "run-1",
+            enrolled=75,
+            engaged=45,
+            chatbot_users=22,
+            video_watchers=33,
+            total_videos_watched=99,
+        )
+    ]
+    contract_rows = [
+        _depth_row("run-1", enrolled=20, engaged=10, chatbot_users=2, contract="A"),
+        _depth_row(
+            "run-1",
+            enrolled=25,
+            engaged=15,
+            chatbot_users=10,
+            contract="B",
+            video_watchers=3,
+            total_videos_watched=9,
+        ),
+        _depth_row("run-1", enrolled=30, engaged=20, chatbot_users=10, contract="C"),
+    ]
+    body = await _get_depth(app, org_rows, contract_rows)
+
+    (data,) = body["data"]
+    for column in (
+        "chatbot_users",
+        "chatbot_adoption_pct",
+        "total_chatbot_interactions",
+        "video_watchers",
+        "total_videos_watched",
+        "avg_videos_per_engaged_learner",
+    ):
+        assert data[column] is None, column
+    assert data["total_enrolled_learners"] == 75
+    assert data["engaged_learners"] == 45
+    assert data["engagement_rate_pct"] == 60.0
+    assert data["problem_attempters"] == 45
+    assert data["total_problems_attempted"] == 90
+    assert data["avg_problems_per_engaged_learner"] == 2.0
+    assert body["total_count"] == 1
+
+
+async def test_content_engagement_blanks_engaged_learners_a_contract_withholds_on_its_complement(
+    app,
+):
+    # Contract 2 has 17 engaged of 20 enrolled, which names the 3 who were
+    # not, so it withholds engaged_learners and everything computed over it.
+    # Nothing in it is under the floor on its own. The org row withholds the
+    # engaged count, the engagement rate and both averages.
+    org_rows = [
+        _depth_row(
+            "run-1",
+            enrolled=50,
+            engaged=37,
+            chatbot_users=10,
+            video_watchers=30,
+            problem_attempters=30,
+        )
+    ]
+    contract_rows = [
+        _depth_row("run-1", enrolled=30, engaged=20, chatbot_users=5, contract="1"),
+        _depth_row(
+            "run-1",
+            enrolled=20,
+            engaged=17,
+            chatbot_users=5,
+            contract="2",
+            video_watchers=10,
+            problem_attempters=10,
+        ),
+    ]
+    body = await _get_depth(app, org_rows, contract_rows)
+
+    (data,) = body["data"]
+    for column in (
+        "engaged_learners",
+        "engagement_rate_pct",
+        "avg_videos_per_engaged_learner",
+        "avg_problems_per_engaged_learner",
+    ):
+        assert data[column] is None, column
+    assert data["total_enrolled_learners"] == 50
+    assert data["video_watchers"] == 30
+    assert data["total_videos_watched"] == 111
+    assert data["chatbot_users"] == 10
+
+
+async def test_content_engagement_pages_past_a_dropped_run(app):
+    # run-2's contract A is under the row gate, so its org row is dropped.
+    # Excluding it in SQL keeps the pages full and the count at the rows the
+    # pages return between them.
+    org_rows = [
+        _depth_row("run-1", enrolled=30, engaged=20, chatbot_users=10),
+        _depth_row("run-2", enrolled=23, engaged=12, chatbot_users=6),
+        _depth_row("run-3", enrolled=30, engaged=20, chatbot_users=10),
+        _depth_row("run-4", enrolled=30, engaged=20, chatbot_users=10),
+    ]
+    contract_rows = [
+        _depth_row("run-1", enrolled=30, engaged=20, chatbot_users=10, contract="C"),
+        _depth_row("run-2", enrolled=3, engaged=2, chatbot_users=1, contract="A"),
+        _depth_row("run-2", enrolled=20, engaged=10, chatbot_users=5, contract="B"),
+        _depth_row("run-3", enrolled=30, engaged=20, chatbot_users=10, contract="C"),
+        _depth_row("run-4", enrolled=30, engaged=20, chatbot_users=10, contract="C"),
+    ]
+    first = await _get_depth(app, org_rows, contract_rows, params={"limit": 2, "offset": 0})
+    second = await _get_depth(app, org_rows, contract_rows, params={"limit": 2, "offset": 2})
+
+    assert [row["courserun_readable_id"] for row in first["data"]] == ["run-1", "run-3"]
+    assert [row["courserun_readable_id"] for row in second["data"]] == ["run-4"]
+    assert first["total_count"] == second["total_count"] == 3
