@@ -6,6 +6,23 @@ the switch to scriv were reconstructed from the git history.
 
 <!-- scriv-insert-here -->
 
+<a id='changelog-2026.10.28.1'></a>
+## 2026.10.28.1 (2026-10-28)
+
+### Added
+
+- `b2b_dashboard`: `/engagement-trend` and `/contracts/{contract_id}/engagement-trend` return `newly_certified_learners`, the learners who earned a certificate in the month. Every other dashboard endpoint uses `certified_learners` for learners holding an unrevoked certificate, so the trend count gets its own name. Requires `mv_b2b_monthly_engagement_trend` and `mv_b2b_contract_monthly_engagement_trend` built from ol-data-platform#3076 or later.
+
+- `OL_ANALYTICS_API_STARROCKS_TLS_SERVER_NAME` turns on TLS to the StarRocks FE and verifies its certificate against that name instead of the in-cluster host the pool dials. A pooled connection that comes up without TLS is refused with `PlaintextConnectionError` before any query runs on it. Unset, the pool connects in plaintext as before.
+
+### Changed
+
+- `b2b_learner_records` reads `certificates_earned` from `mv_b2b_learner` instead of adding `courses_certified` and `program_certificates_earned` here, and both tenants read `full_name` as `mv_b2b_learner` and `mv_b2b_learner_enrollment` publish it, with blank names already null, instead of applying `NULLIF(TRIM(full_name), '')`. The `contract_id` and `include_inactive` recompute still adds the program certificates to the course certificates it counts from `mv_b2b_learner_enrollment`. Responses are unchanged. Requires the views from ol-data-platform#3068. Deployed before that build, the default `b2b_learner_records` `/learners` returns a 500 on the unknown `certificates_earned` column, and every other learner read (`/enrollments`, `/learners` with `contract_id` or `include_inactive`, and `b2b_dashboard`'s `/learner-progress` and `/learners`) returns untrimmed names and a blank name for nameless learners, which sorts before every name. Check first that `DESC b2b_learner_records.mv_b2b_learner` in production lists `certificates_earned`.
+
+### Deprecated
+
+- `b2b_dashboard`: `certified_learners` on `/engagement-trend` and `/contracts/{contract_id}/engagement-trend`. It always equals `newly_certified_learners` and is withheld with it; it will be removed once MIT Learn reads `newly_certified_learners`.
+
 <a id='changelog-2026.10.20.1'></a>
 ## 2026.10.20.1 (2026-10-20)
 
