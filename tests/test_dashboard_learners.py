@@ -66,6 +66,10 @@ def _row(**overrides):
         "certificate_issued_on": None,
         "certificate_is_revoked": None,
         "last_active_on": "2026-09-01",
+        "days_active": 3,
+        "videos_watched": 5,
+        "problems_attempted": 4,
+        "chatbot_interactions": 1,
         "needs_attention": 0,
         **overrides,
     }
@@ -153,6 +157,9 @@ async def test_a_withheld_enrollment_is_gated_inside_the_nesting(app):
     enrollment = (await _get(app, _FakePool(rows=rows))).json()["data"][0]["enrollments"][0]
     assert (enrollment["completion_status"], enrollment["grade"]) == (None, None)
     assert enrollment["needs_attention"] is None
+    # _row carries nonzero activity counts, so these nulls are the gate's.
+    assert enrollment["videos_watched"] is None
+    assert enrollment["chatbot_interactions"] is None
 
 
 async def test_limit_and_offset_bind_last_and_count_learners(app):
@@ -300,6 +307,10 @@ _ENROLLMENT_MV_COLUMNS = (
     "content_progress",
     "certificate_issued_on",
     "last_active_on",
+    "days_active",
+    "videos_played",
+    "problems_attempted",
+    "chatbot_interactions",
     "needs_attention_since",
     "outcomes_shared",
 )
