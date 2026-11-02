@@ -86,7 +86,7 @@ class CohortPolicy:
         many, and when that is nonzero and below the floor the subset is nulled.
         Declare the tightest container that holds; ancestors are walked
         transitively, so ``video_watchers -> engaged_learners ->
-        total_enrolled_learners`` checks the complement against both.
+        actively_enrolled_learners`` checks the complement against both.
     ``uncontained``
         Secondary counts deliberately subject to no complement rule, each of
         which must be justified in the declaring model's docstring. Two things
