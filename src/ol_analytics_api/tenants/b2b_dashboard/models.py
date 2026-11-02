@@ -278,7 +278,7 @@ class EnrollmentCompletionFunnel(SQLModel):
             "active_rate_pct": ("actively_enrolled_learners",),
             "completion_rate_pct": ("certified_learners",),
         },
-        # All three are counted off the enrollment row itself — grades and
+        # All four are counted off the enrollment row itself — grades and
         # certificates join on `(user, course_run)` from the enrollment — so
         # each names a subset of the enrolled learners. They are declared flat
         # under the primary rather than chained (certified inside passing
@@ -730,8 +730,8 @@ class MitAdminContractHealth(SQLModel):
         primary="seats_consumed",
         secondary=("actively_enrolled_learners", "active_learners", "certified_learners"),
         derived={"completion_rate_pct": ("certified_learners",)},
-        # Same shape as ContractUtilization: both are counted off the
-        # contract's own enrollment rows, so both are subsets of the seats
+        # Same shape as ContractUtilization: all three are counted off the
+        # contract's own enrollment rows, so each is a subset of the seats
         # consumed.
         contained_in={
             "actively_enrolled_learners": "seats_consumed",
