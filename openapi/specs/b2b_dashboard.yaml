@@ -2549,7 +2549,9 @@ components:
 
         view from ``b2b_contract_is_active``, ``seat_utilization_pct`` and
 
-        ``b2b_contract_end_date``.'
+        ``b2b_contract_end_date``, as of the view''s last refresh. The endpoint turns
+
+        it to at_risk per request from ``at_risk_since``, the view''s threshold date.'
     MonthlyEngagementTrend:
       properties:
         organization_key:

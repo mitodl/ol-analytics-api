@@ -676,7 +676,8 @@ class MitAdminContractHealth(SQLModel):
 
     Floored like ``ContractUtilization``. ``health_status`` is computed in the
     view from ``b2b_contract_is_active``, ``seat_utilization_pct`` and
-    ``b2b_contract_end_date``.
+    ``b2b_contract_end_date``, as of the view's last refresh. The endpoint turns
+    it to at_risk per request from ``at_risk_since``, the view's threshold date.
     """
 
     cohort_policy: ClassVar[CohortPolicy] = CohortPolicy(
@@ -740,6 +741,13 @@ class MitAdminContractHealth(SQLModel):
             "ends within 90 days), healthy (50% or more of seats in use), or early_stage "
             "(anything else)."
         )
+    )
+    # Selected so health_status can be derived from it, never returned.
+    at_risk_since: datetime.date | None = Field(
+        exclude=True,
+        description=(
+            "The date from which the contract counts as at risk. Empty if it can't be at risk."
+        ),
     )
 
 

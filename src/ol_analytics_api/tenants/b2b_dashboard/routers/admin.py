@@ -6,6 +6,7 @@ are relative to that mount point.
 
 from __future__ import annotations
 
+import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
@@ -38,6 +39,19 @@ _MV = "mv_b2b_mit_admin_contract_health"
 _ORDER_BY = ("organization_key", "contract_pk")
 
 
+def _with_at_risk(row: MitAdminContractHealth, today: datetime.date) -> MitAdminContractHealth:
+    """``row`` with ``health_status`` at_risk once ``at_risk_since`` has arrived.
+
+    The rule is the view's. ``at_risk_since`` is set only for a contract the
+    view would call at_risk on that date, so this overrides nothing but the
+    status the view froze at its last refresh. A contract without one keeps
+    the view's status.
+    """
+    if row.at_risk_since is not None and row.at_risk_since <= today:
+        return row.model_copy(update={"health_status": "at_risk"})
+    return row
+
+
 @router.get("/contract-health", operation_id="admin_contract_health_retrieve")
 async def contract_health(
     page: Annotated[Pagination, Depends(pagination)],
@@ -48,6 +62,7 @@ async def contract_health(
         MitAdminContractHealth,
         settings.anonymization_floor,
     )
+    today = datetime.datetime.now(datetime.UTC).date()
     return AdminAnalyticsResponse(
         # Per-MV freshness: this endpoint's own backing MV, not a schema-wide
         # MAX that a fresher, unrelated MV could inflate.
@@ -58,5 +73,5 @@ async def contract_health(
             build_count(settings.starrocks_schema, _MV, MitAdminContractHealth),
             (settings.anonymization_floor,),
         ),
-        data=rows,
+        data=[_with_at_risk(row, today) for row in rows],
     )
