@@ -1971,7 +1971,32 @@ components:
 
         ``completion_rate_pct`` are ``active_learners`` and ``certified_learners``
 
-        over ``enrolled_learners``, each nulled with its numerator.'
+        over ``enrolled_learners``, each nulled with its numerator.
+
+
+        The complement rule withholds ``active_learners`` when 1 to 4 learners have
+
+        unenrolled, and that hides nothing from an organization''s managers. The
+
+        content engagement endpoint publishes the same count of active enrollments
+
+        as ``total_enrolled_learners``, so the difference from ``enrolled_learners``
+
+        gives the withheld complement back. ``/learner-progress`` with
+
+        ``include_inactive=true`` already lists ``enrollment_is_active`` per learner
+
+        to the same callers, with no floor and no consent check, so guarding content
+
+        engagement would withhold its rows to protect a figure listed one endpoint
+
+        over. That difference is accepted. The rule still matters for
+
+        ``passing_learners`` and ``certified_learners``: those outcomes are
+
+        consent-gated per learner, so the learner endpoints don''t give their
+
+        complements.'
     HTTPValidationError:
       properties:
         detail:
