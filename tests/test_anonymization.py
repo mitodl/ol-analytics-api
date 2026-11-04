@@ -384,12 +384,16 @@ def test_a_finer_row_that_survives_but_nulls_its_total_still_hides_it():
 
 def test_a_dropped_finer_row_hides_every_additive_column():
     # Below the row gate, so it contributes nothing the caller can see and
-    # every column it fed into the coarse total is recoverable.
+    # every column it fed into the coarse total is recoverable. The primary is
+    # reported too: a surviving row always publishes it, so its name marks the
+    # key as one whose finer grain dropped a row.
     rows = [
         _finer_row("C1", active=2, watchers=2, videos=17),
         _finer_row("C2", active=25, watchers=20, videos=500),
     ]
-    assert _hidden(rows) == {"2026-07": frozenset({"total_videos_watched"})}
+    assert _hidden(rows) == {
+        "2026-07": frozenset({"total_videos_watched", "monthly_active_learners"})
+    }
 
 
 def test_a_finer_row_hidden_by_the_complement_rule_is_caught_too():
@@ -471,3 +475,62 @@ def test_cross_grain_does_not_mutate_input_rows():
     rows = [{"activity_year_and_month": "2026-07", "new_enrollments": 12}]
     suppress_cross_grain_additives(rows, _ADDITIVES, {"2026-07": frozenset({"new_enrollments"})})
     assert rows[0]["new_enrollments"] == 12
+
+
+# A coarse grain the finer rows partition, shaped like content engagement:
+# every cohort is exactly additive, so each is guarded on its own, and the
+# primary gates the row, so a dropped finer row drops the coarse row.
+_PARTITIONED = CrossGrainAdditives(
+    key_column="courserun_readable_id",
+    columns=("chatbot_users", "total_chatbot_interactions", "engaged_learners"),
+    derived={
+        "total_chatbot_interactions": ("chatbot_users",),
+        "chatbot_adoption_pct": ("chatbot_users",),
+        "engagement_rate_pct": ("engaged_learners",),
+    },
+    drop_when_hidden=("total_enrolled_learners",),
+)
+
+
+def _run_row(run):
+    return {
+        "courserun_readable_id": run,
+        "total_enrolled_learners": 23,
+        "engaged_learners": 12,
+        "engagement_rate_pct": 52.2,
+        "chatbot_users": 5,
+        "total_chatbot_interactions": 40,
+        "chatbot_adoption_pct": 21.7,
+    }
+
+
+def test_cross_grain_drops_the_coarse_row_when_its_primary_is_hidden():
+    rows = [_run_row("run-1"), _run_row("run-2")]
+    hidden = {"run-1": frozenset({"total_enrolled_learners", "chatbot_users"})}
+    (row,) = suppress_cross_grain_additives(rows, _PARTITIONED, hidden)
+    assert row["courserun_readable_id"] == "run-2"
+    assert _PARTITIONED.dropped_keys(hidden) == frozenset({"run-1"})
+
+
+def test_cross_grain_blanks_a_hidden_cohort_and_the_rates_computed_over_it():
+    # The finer rows all publish, but one withholds its chatbot users. The
+    # coarse count minus the visible ones gives them back, and so would the
+    # adoption rate next to the published enrollment.
+    (row,) = suppress_cross_grain_additives(
+        [_run_row("run-1")], _PARTITIONED, {"run-1": frozenset({"chatbot_users"})}
+    )
+    assert row["chatbot_users"] is None
+    assert row["chatbot_adoption_pct"] is None
+    assert row["total_chatbot_interactions"] is None
+    # Nothing guarded wholesale, so the other cohorts and rates stay.
+    assert row["total_enrolled_learners"] == 23
+    assert row["engaged_learners"] == 12
+    assert row["engagement_rate_pct"] == 52.2
+
+
+def test_cross_grain_without_drop_columns_drops_nothing():
+    rows = [{"activity_year_and_month": "2026-07", "monthly_active_learners": 40}]
+    hidden = {"2026-07": frozenset({"monthly_active_learners"})}
+    (row,) = suppress_cross_grain_additives(rows, _ADDITIVES, hidden)
+    assert row["monthly_active_learners"] is None
+    assert _ADDITIVES.dropped_keys(hidden) == frozenset()

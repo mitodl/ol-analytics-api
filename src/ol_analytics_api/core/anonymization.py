@@ -48,11 +48,21 @@ one comes back the same way a hidden event sum would. Nothing available here
 can tell overlapping contracts from disjoint ones, so cohort columns are
 guarded as if every finer grain were disjoint.
 
+Some finer grains are known to be disjoint: each learner is attributed to
+exactly one finer row per key, so the finer rows partition the coarse row and
+every cohort count, the primary included, is exactly additive. There the guard
+does not need to be wholesale. Each hidden cohort is blanked on its own, like
+an additive total, with the rates computed over it, and a key whose finer grain
+drops a row loses its coarse row, because the coarse primary would hand back
+the dropped row's headcount and the primary gates the row rather than being
+blanked.
+
 Rows alone cannot see any of that. ``hidden_additive_columns`` runs the finer
 grain through the suppression above — the same function, not a cheaper
 approximation of it — and reports which additive columns come back NULL per
 key; ``suppress_cross_grain_additives`` blanks exactly those at the coarse
-grain, plus every cohort column for any key with something hidden.
+grain, plus every guarded cohort column for any key with something hidden, and
+drops the coarse rows its ``drop_when_hidden`` columns name.
 """
 
 from __future__ import annotations
@@ -213,7 +223,9 @@ class CrossGrainAdditives:
     ``guarded_cohorts``
         The coarse grain's distinct-entity cohort columns (its ``primary`` and
         ``secondary`` policy fields) — blanked wholesale, all of them, for any
-        key the finer grain hides *anything* for.
+        key the finer grain hides *anything* for. Left empty when the finer
+        grain partitions the coarse one, since the cohorts are then exactly
+        additive and go in ``columns`` instead.
 
         These are not exactly additive across the finer rows in general — a
         learner active under two contracts is counted once at the coarse grain
@@ -225,11 +237,30 @@ class CrossGrainAdditives:
         a hidden event sum would. So every cohort column is blanked whenever
         anything is hidden for the key, at the cost of also blanking counts
         that overlap would have made safe to publish.
+    ``derived``
+        Maps a coarse column to every column it is computed from: the cohorts
+        its ``CohortPolicy.derived`` entry names, plus, for a rate or an
+        average, the total in its numerator. A coarse column computed from a
+        hidden column is blanked too: a rate next to its published
+        denominator gives its numerator back.
+    ``drop_when_hidden``
+        Columns that cannot be blanked, because the coarse row is gated on
+        them. A key whose hidden columns include one of these has its coarse
+        row dropped. ``hidden_additive_columns`` reports the finer primary for
+        a key whose finer grain drops a row, so naming the primary here drops
+        the coarse row whenever a finer row is dropped.
     """
 
     key_column: str
     columns: tuple[str, ...]
     guarded_cohorts: tuple[str, ...] = ()
+    derived: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    drop_when_hidden: tuple[str, ...] = ()
+
+    def dropped_keys(self, hidden_by_key: Mapping[Any, Collection[str]]) -> frozenset[Any]:
+        """The keys whose coarse row ``suppress_cross_grain_additives`` drops."""
+        drop_on = set(self.drop_when_hidden)
+        return frozenset(key for key, hidden in hidden_by_key.items() if drop_on & set(hidden))
 
 
 def hidden_additive_columns(
@@ -259,6 +290,10 @@ def hidden_additive_columns(
       containment pairs; a second implementation of it would drift, and the
       direction it drifts in is silently publishing.
 
+    A dropped row reports ``policy.primary`` as well as every additive column.
+    A surviving row always publishes its primary, so the primary's name in a
+    key's set means a finer row for that key was dropped.
+
     A column counts as hidden when it is NULL after suppression, whether the
     floor nulled it or the view never had a value. The caller cannot tell those
     apart either, so both leave a hole in the sum that the coarse row would
@@ -283,7 +318,7 @@ def hidden_additive_columns(
         # so splitting the call changes nothing but keeps the correspondence.
         kept = suppress_small_cohorts([row], policy, floor)
         columns = (
-            set(additive_columns)  # dropped whole: every additive column is gone
+            {*additive_columns, policy.primary}  # dropped whole: everything is gone
             if not kept
             else {
                 column
@@ -412,17 +447,35 @@ def suppress_cross_grain_additives(
     narrower blanking that stays safe under the disjoint-contract case
     ``CrossGrainAdditives`` documents.
 
+    ``additives.derived`` columns computed from a hidden column are blanked
+    with it, and a key hiding one of ``additives.drop_when_hidden`` loses its
+    row instead.
+
     Input rows are not mutated.
     """
     if not hidden_by_key:
         return rows
     guarded = set(additives.guarded_cohorts)
-    return [
-        {
-            column: (None if column in blanked or column in guarded else value)
-            for column, value in row.items()
+    dropped = additives.dropped_keys(hidden_by_key)
+    kept: list[dict[str, Any]] = []
+    for row in rows:
+        key = row.get(additives.key_column)
+        hidden = hidden_by_key.get(key)
+        if not hidden:
+            kept.append(row)
+            continue
+        if key in dropped:
+            continue
+        blanked = {
+            *hidden,
+            *guarded,
+            *(
+                column
+                for column, cohorts in additives.derived.items()
+                if any(cohort in hidden for cohort in cohorts)
+            ),
         }
-        if (blanked := hidden_by_key.get(row.get(additives.key_column)))
-        else row
-        for row in rows
-    ]
+        kept.append(
+            {column: (None if column in blanked else value) for column, value in row.items()}
+        )
+    return kept
