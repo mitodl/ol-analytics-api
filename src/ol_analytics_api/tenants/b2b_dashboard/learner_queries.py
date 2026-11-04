@@ -431,8 +431,12 @@ def learners(filters: LearnerFilters, today: datetime.date) -> ProgressQuery:
         " FROM records JOIN paged ON records.learner_id = paged.page_learner_id"
         f" ORDER BY {_LEARNER_ORDER}, courserun_readable_id, courserun_pk"
     )
+    # Consent is per learner per contract, so a withheld learner's rows all
+    # agree and this counts learners, like total_count.
     count = (
-        "SELECT COUNT(DISTINCT learner_id) AS total_count"  # noqa: S608
+        "SELECT COUNT(DISTINCT learner_id) AS total_count,"  # noqa: S608
+        f" COUNT(DISTINCT CASE WHEN NOT {records.shared} THEN learner_id END)"
+        " AS outcomes_withheld_count"
         f" FROM ({records.select}) records{where}"
     )
     return ProgressQuery(page, count, (*records.params, *where_params))

@@ -94,7 +94,7 @@ class _FakePool:
         if query.startswith("SELECT 1 "):
             return [{"1": 1}] if self.contract_exists else []
         if "COUNT(" in query:
-            return [{"total_count": self.total_count}]
+            return [{"total_count": self.total_count, "outcomes_withheld_count": 3}]
         return self.rows
 
     def page_call(self):
@@ -137,8 +137,14 @@ async def test_rows_nest_into_learners_under_a_learner_count(app):
     response = await _get(app, _FakePool(rows=rows, total_count=40))
     assert response.status_code == 200
     body = response.json()
-    assert set(body) == {"organization_id", "as_of", "total_count", "data"}
-    assert body["total_count"] == 40
+    assert set(body) == {
+        "organization_id",
+        "as_of",
+        "total_count",
+        "outcomes_withheld_count",
+        "data",
+    }
+    assert (body["total_count"], body["outcomes_withheld_count"]) == (40, 3)
     assert [(learner["learner_id"], learner["full_name"]) for learner in body["data"]] == [
         ("a", "Ann"),
         ("b", None),
@@ -511,6 +517,38 @@ def test_withheld_learners_are_reachable_only_through_unknown(mv, monkeypatch, f
     for needs_attention in (True, False):
         learners, _ = _run(mv, needs_attention=needs_attention)
         assert not set(_shape(learners)) & withheld
+
+
+def _counts(mv, **filters):
+    query = learner_queries.learners(
+        learner_queries.LearnerFilters(organization_id=ORG_ID, contract_id=CONTRACT_ID, **filters),
+        _TODAY,
+    )
+    row = mv.conn.execute(query.count.replace("%s", "?"), query.params).fetchone()
+    return row["total_count"], row["outcomes_withheld_count"]
+
+
+def test_withheld_count_counts_learners_and_agrees_with_unknown(mv):
+    mv.insert(("hal", "Hal", "hal@x", None), "run-1", _PASSED)
+    # eve has two withheld enrollments but counts once; hal is undecided.
+    assert _counts(mv) == (len(_ALL_ORDER) + 1, 2)
+    unknown_total, unknown_withheld = _counts(mv, completion_statuses=("unknown",))
+    assert unknown_total == unknown_withheld == 2
+    assert _counts(mv, courserun_readable_ids=("run-2",)) == (4, 1)
+    assert _counts(mv, search="eve") == (1, 1)
+
+
+@pytest.mark.parametrize(
+    "filters",
+    [
+        {"completion_statuses": ("passed",)},
+        {"completion_statuses": ("in_progress", "not_started")},
+        {"needs_attention": True},
+        {"needs_attention": False},
+    ],
+)
+def test_withheld_count_is_zero_under_outcome_filters(mv, filters):
+    assert _counts(mv, **filters)[1] == 0
 
 
 def test_the_projection_is_exactly_the_row_model(mv):

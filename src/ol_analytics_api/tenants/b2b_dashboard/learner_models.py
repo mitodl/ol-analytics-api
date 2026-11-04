@@ -388,8 +388,8 @@ class LearnerProgressResponse(BaseModel):
 
 class LearnersResponse(BaseModel):
     """The org envelope (``organization_id``, ``as_of``, ``total_count``,
-    ``data``), paged by learner. ``total_count`` counts learners, not
-    enrollments, and the envelope carries no other counts."""
+    ``data``), paged by learner, plus ``outcomes_withheld_count``. Both counts
+    count learners, not enrollments."""
 
     organization_id: str = Field(description="The organization's ID.")
     as_of: UtcDatetime | None = Field(
@@ -398,6 +398,13 @@ class LearnersResponse(BaseModel):
     total_count: int = Field(
         description=(
             "Learners with at least one enrollment that matches the filters, across all pages."
+        )
+    )
+    outcomes_withheld_count: int = Field(
+        description=(
+            "How many of those learners haven't agreed to share their progress. Always 0 "
+            "when filtering by a known completion status or by needs attention, because "
+            "their enrollments can't match those filters."
         )
     )
     data: list[LearnerWithEnrollments] = Field(description="This page of learners.")

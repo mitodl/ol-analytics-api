@@ -246,6 +246,7 @@ async def learners(  # noqa: PLR0913
         organization_id=organization_id,
         as_of=as_of,
         total_count=int(counts["total_count"]),
+        outcomes_withheld_count=int(counts["outcomes_withheld_count"]),
         data=LearnerWithEnrollments.from_rows(rows),
     )
 
