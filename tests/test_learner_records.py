@@ -36,6 +36,8 @@ OTHER_ORG_ID = "22222222-2222-2222-2222-222222222222"
 LEARNER_ID = "3e1a9c74-5b2d-4f88-9a01-7c6de2b4f019"
 OTHER_LEARNER_ID = "c04e8a17-3d62-4b95-a7e8-51fb2c8d9042"
 _AS_OF = datetime.datetime(2026, 8, 13, 6, 15)  # noqa: DTZ001 - StarRocks returns naive UTC
+# Before every cursor the retention window accepts.
+_LOG_START = datetime.datetime(2026, 5, 1)  # noqa: DTZ001
 _CONTRACT_PATH = (
     pathlib.Path(__file__).resolve().parents[1] / "docs/openapi/b2b-learner-records-v1.yaml"
 )
@@ -132,7 +134,7 @@ class _FakePool:
     """Answers the as_of probe, the count query and the page query, and records
     every call so a test can inspect the one it cares about."""
 
-    def __init__(self, rows=(), total_count=0, withheld=0, as_of_by_mv=None, log_start=None):
+    def __init__(self, rows=(), total_count=0, withheld=0, as_of_by_mv=None, log_start=_LOG_START):
         self.rows = list(rows)
         self.log_start = log_start
         self.counts = {"total_count": total_count, "outcomes_withheld_count": withheld}
@@ -180,8 +182,10 @@ def _pin_clock(monkeypatch):
 @pytest.fixture(autouse=True)
 def _clear_as_of_cache():
     _clear_cache()
+    organizations.clear_log_start_cache()
     yield
     _clear_cache()
+    organizations.clear_log_start_cache()
 
 
 async def _get(app, path, token=None, pool=None, monkeypatch=None):
@@ -947,6 +951,27 @@ async def test_updated_since_before_change_tracking_began_is_refused(
         assert response.json()["code"] == "invalid_parameter"
         assert "reload in full" in response.json()["detail"]
         assert not any("LIMIT %s OFFSET %s" in query for query, _ in pool.calls)
+
+
+async def test_an_empty_change_log_refuses_a_cursor(app, monkeypatch):
+    response = await _get(
+        app,
+        f"/organizations/{ORG_ID}/learners?updated_since=2026-08-01T00:00:00Z",
+        _partner_token(ORG_ID),
+        _FakePool(log_start=None),
+        monkeypatch,
+    )
+    assert response.status_code == 400
+    assert "no records yet" in response.json()["detail"]
+
+
+async def test_the_change_log_start_is_cached(app, monkeypatch):
+    pool = _FakePool()
+    path = f"/organizations/{ORG_ID}/learners?updated_since=2026-08-01T00:00:00Z"
+    for _ in range(2):
+        response = await _get(app, path, _partner_token(ORG_ID), pool, monkeypatch)
+        assert response.status_code == 200
+    assert sum("MIN(changed_on)" in query for query, _ in pool.calls) == 1
 
 
 async def test_a_full_read_does_not_consult_the_change_log_start(app, monkeypatch):

@@ -11,6 +11,7 @@ from collections.abc import Callable
 from enum import StrEnum
 from typing import Annotated, Any
 
+from cachetools import TTLCache
 from fastapi import APIRouter, Depends, Query, status
 from pydantic import AfterValidator, BaseModel
 
@@ -118,6 +119,29 @@ async def _as_of(sources: tuple[str, ...]) -> datetime.datetime | None:
     return min(known) if len(known) == len(refreshed) else None
 
 
+# The start moves only when a log is restamped or recreated, so this holds the
+# same staleness bound as as_of. For that long after a hand recreation, a cursor
+# from before it is still accepted.
+_LOG_START_CACHE_TTL_SECONDS = 300
+_log_start_cache: TTLCache[tuple[str, str], datetime.datetime | None] = TTLCache(
+    maxsize=8, ttl=_LOG_START_CACHE_TTL_SECONDS
+)
+
+
+async def _change_log_start(log: str) -> datetime.datetime | None:
+    key = (settings.starrocks_schema, log)
+    if key not in _log_start_cache:
+        rows = await starrocks_pool.fetch_all(queries.change_log_start(*key))
+        started: datetime.datetime | None = rows[0]["started"]
+        _log_start_cache[key] = started
+    return _log_start_cache[key]
+
+
+def clear_log_start_cache() -> None:
+    """Test hook: the cache is process-global."""
+    _log_start_cache.clear()
+
+
 async def _require_change_log_coverage(
     change_logs: tuple[str, ...], updated_since: datetime.datetime | None
 ) -> None:
@@ -125,26 +149,24 @@ async def _require_change_log_coverage(
 
     A record removed before the log existed (or before it was last recreated)
     has no row in it, so a sync from earlier would never learn of the removal.
+    An empty log has no start to compare, so it refuses every cursor.
     """
     if updated_since is None:
         return
+    since = updated_since if updated_since.tzinfo else updated_since.replace(tzinfo=datetime.UTC)
     for log in change_logs:
-        rows = await starrocks_pool.fetch_all(
-            queries.change_log_start(settings.starrocks_schema, log)
-        )
-        started = rows[0]["started"]
+        started = await _change_log_start(log)
         if started is None:
+            began = "change tracking has no records yet"
+        elif since < started.replace(tzinfo=datetime.UTC):
+            began = f"earlier than change tracking began ({started.isoformat()}Z)"
+        else:
             continue
-        since = (
-            updated_since if updated_since.tzinfo else updated_since.replace(tzinfo=datetime.UTC)
+        raise ApiError(
+            status.HTTP_400_BAD_REQUEST,
+            ErrorCode.INVALID_PARAMETER,
+            f"updated_since: {began}; reload in full without updated_since",
         )
-        if since < started.replace(tzinfo=datetime.UTC):
-            raise ApiError(
-                status.HTTP_400_BAD_REQUEST,
-                ErrorCode.INVALID_PARAMETER,
-                f"updated_since: earlier than change tracking began ({started.isoformat()}Z); "
-                "reload in full without updated_since",
-            )
 
 
 Build = Callable[[dict[str, Any]], BaseModel]
