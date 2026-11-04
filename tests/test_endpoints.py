@@ -1522,6 +1522,19 @@ async def test_contract_the_warehouse_has_not_loaded_is_404_not_403(app):
     assert all(is_membership_probe(query) for query in queries)
 
 
+async def test_contract_loaded_before_its_org_was_linked_is_404_not_403(app):
+    # MITx Online created the org's page before linking it to the Keycloak
+    # org, and a load landed in between: contract 101 is in the view, under a
+    # NULL org id. That is the same "wait for the next load" as no row at all.
+    response, _ = await _get_recording(
+        app,
+        f"/api/v1/analytics/organizations/{ORG_A_ID}/contracts/101/enrollment-funnel",
+        ((None, 101),),
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "contract_not_loaded"
+
+
 async def test_org_the_warehouse_has_not_loaded_is_404_not_an_empty_result(app):
     response, queries = await _get_recording(
         app, f"/api/v1/analytics/organizations/{ORG_A_ID}/contract-utilization", ()

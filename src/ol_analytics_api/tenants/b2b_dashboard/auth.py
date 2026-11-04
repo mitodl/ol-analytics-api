@@ -93,9 +93,13 @@ async def require_org_manager(
     return userinfo
 
 
-async def _in_membership_mv(filter_columns: tuple[str, ...], params: tuple[object, ...]) -> bool:
+async def _in_membership_mv(
+    filter_columns: tuple[str, ...],
+    params: tuple[object, ...],
+    excluded_columns: tuple[str, ...] = (),
+) -> bool:
     query = build_existence_check(
-        settings.starrocks_schema, _CONTRACT_MEMBERSHIP_MV, filter_columns
+        settings.starrocks_schema, _CONTRACT_MEMBERSHIP_MV, filter_columns, excluded_columns
     )
     return bool(await starrocks_pool.fetch_all(query, params))
 
@@ -131,7 +135,8 @@ async def require_org_loaded(organization_id: str) -> None:
 
 async def require_contract_in_org(organization_id: str, contract_id: int) -> None:
     """403 if `contract_id` belongs to another organization, 404
-    ``contract_not_loaded`` if the warehouse has no record of it at all.
+    ``contract_not_loaded`` if the warehouse has not loaded it under any
+    organization it can name.
 
     Mirrors MITx Online's IsOrganizationManager.has_object_permission, which
     authorizes at the org level and then checks the contract's ownership
@@ -153,6 +158,13 @@ async def require_contract_in_org(organization_id: str, contract_id: int) -> Non
     under some organization, which is no more than the id itself already says
     (contract ids are globally unique but not secret; see routers/contracts.py).
 
+    A contract loaded under an organization row with no ``sso_organization_id``
+    counts as not loaded too. MITx Online can create an organization's page
+    before linking it to its Keycloak organization, so a load that lands in
+    between gives the contract a NULL organization id until the next one. The
+    403 probe uses ``<>`` for that reason: a NULL never matches it, so only a
+    contract held by a different, named organization is refused.
+
     mv_b2b_contract_utilization is the membership oracle because dbt builds it
     from dim_contract with a LEFT JOIN to enrollments: every contract has a row
     there, including one nobody has enrolled in. Checking any activity-derived
@@ -169,7 +181,9 @@ async def require_contract_in_org(organization_id: str, contract_id: int) -> Non
         ("sso_organization_id", "contract_id"), (organization_id, contract_id)
     ):
         return
-    if await _in_membership_mv(("contract_id",), (contract_id,)):
+    if await _in_membership_mv(
+        ("contract_id",), (contract_id, organization_id), excluded_columns=("sso_organization_id",)
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
