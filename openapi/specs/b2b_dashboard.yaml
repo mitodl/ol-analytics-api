@@ -2718,6 +2718,13 @@ components:
           title: Total Count
           description: Learners with at least one enrollment that matches the filters,
             across all pages.
+        outcomes_withheld_count:
+          type: integer
+          title: Outcomes Withheld Count
+          description: How many of those learners haven't agreed to share their progress.
+            Always 0 when filtering exclusively by known completion statuses (without
+            unknown), or by needs attention either way, because withheld enrollments
+            can't match those filters.
         data:
           items:
             $ref: '#/components/schemas/LearnerWithEnrollments'
@@ -2729,13 +2736,14 @@ components:
       - organization_id
       - as_of
       - total_count
+      - outcomes_withheld_count
       - data
       title: LearnersResponse
       description: 'The org envelope (``organization_id``, ``as_of``, ``total_count``,
 
-        ``data``), paged by learner. ``total_count`` counts learners, not
+        ``data``), paged by learner, plus ``outcomes_withheld_count``. Both counts
 
-        enrollments, and the envelope carries no other counts.'
+        count learners, not enrollments.'
     MitAdminContractHealth:
       properties:
         organization_key:
