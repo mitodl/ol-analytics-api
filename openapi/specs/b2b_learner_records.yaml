@@ -50,9 +50,11 @@ paths:
           - type: string
             format: date-time
           - type: 'null'
-          description: Return only records changed at or after this instant.
+          description: Return only records changed at or after this instant, plus
+            removed records. At most 90 days ago.
           title: Updated Since
-        description: Return only records changed at or after this instant.
+        description: Return only records changed at or after this instant, plus removed
+          records. At most 90 days ago.
       - name: updated_before
         in: query
         required: false
@@ -98,7 +100,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/LearnerRecordsResponse_Learner_'
+                $ref: '#/components/schemas/LearnerRecordsResponse_Union_Learner__RemovedLearner__'
         '422':
           description: Validation Error
           content:
@@ -166,9 +168,11 @@ paths:
           - type: string
             format: date-time
           - type: 'null'
-          description: Return only records changed at or after this instant.
+          description: Return only records changed at or after this instant, plus
+            removed records. At most 90 days ago.
           title: Updated Since
-        description: Return only records changed at or after this instant.
+        description: Return only records changed at or after this instant, plus removed
+          records. At most 90 days ago.
       - name: updated_before
         in: query
         required: false
@@ -214,7 +218,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/LearnerRecordsResponse_Enrollment_'
+                $ref: '#/components/schemas/LearnerRecordsResponse_Union_Enrollment__RemovedEnrollment__'
         '422':
           description: Validation Error
           content:
@@ -444,6 +448,11 @@ components:
         so no consent gate.'
     Enrollment:
       properties:
+        removed:
+          type: boolean
+          const: false
+          title: Removed
+          description: Always false on a full record; see RemovedLearner and RemovedEnrollment.
         learner_id:
           type: string
           format: uuid
@@ -565,8 +574,7 @@ components:
           description: 'Share of the run''s current course content the learner has
             completed, between 0 and 1. Times 100 it is the completion percent on
             the course''s progress page. Not an input to completion_status: a certified
-            learner can be below 1. Null where the run has no content to count. Changes
-            to it do not move updated_since.'
+            learner can be below 1. Null where the run has no content to count.'
         certificate_issued_on:
           anyOf:
           - type: string
@@ -590,40 +598,36 @@ components:
           title: Last Active On
           description: Most recent day with tracked activity in this course run. A
             date in the course platform's local day, not a UTC day. Null with no activity.
-            Changes to it do not move updated_since; a full reload picks them up.
         days_active:
           anyOf:
           - type: integer
           - type: 'null'
           title: Days Active
-          description: Distinct days with tracked activity in this course run. Changes
-            to it do not move updated_since; a full reload picks them up.
+          description: Distinct days with tracked activity in this course run.
         videos_watched:
           anyOf:
           - type: integer
           - type: 'null'
           title: Videos Watched
           description: 'Video blocks played, counted once per day: a block played
-            on two days counts twice. Changes to it do not move updated_since; a full
-            reload picks them up.'
+            on two days counts twice.'
         problems_attempted:
           anyOf:
           - type: integer
           - type: 'null'
           title: Problems Attempted
           description: 'Problem blocks checked, counted once per day: a block attempted
-            on two days counts twice. Viewing an answer is not an attempt. Changes
-            to it do not move updated_since; a full reload picks them up.'
+            on two days counts twice. Viewing an answer is not an attempt.'
         chatbot_interactions:
           anyOf:
           - type: integer
           - type: 'null'
           title: Chatbot Interactions
           description: Chatbot submits in this course run, counting each (session,
-            block) once per day. Changes to it do not move updated_since; a full reload
-            picks them up.
+            block) once per day.
       type: object
       required:
+      - removed
       - learner_id
       - email
       - full_name
@@ -665,6 +669,11 @@ components:
       title: HTTPValidationError
     Learner:
       properties:
+        removed:
+          type: boolean
+          const: false
+          title: Removed
+          description: Always false on a full record; see RemovedLearner and RemovedEnrollment.
         learner_id:
           type: string
           format: uuid
@@ -749,8 +758,7 @@ components:
             problem check, navigation, discussion or chatbot submit) across the enrollments
             the request covers: active ones only, unless include_inactive is set.
             A date in the course platform''s local day, not a UTC day. Null with no
-            activity. Changes to it do not move updated_since; a full reload picks
-            them up.'
+            activity.'
         courses_in_progress:
           anyOf:
           - type: integer
@@ -758,8 +766,7 @@ components:
           title: Courses In Progress
           description: 'Distinct course runs whose completion_status is in_progress:
             not passed or certified, with a nonzero grade or any tracked activity.
-            Active enrollments only, unless include_inactive is set. Changes to it
-            do not move updated_since; a full reload picks them up.'
+            Active enrollments only, unless include_inactive is set.'
         courses_passed:
           anyOf:
           - type: integer
@@ -782,6 +789,7 @@ components:
             so are not in courses_certified.
       type: object
       required:
+      - removed
       - learner_id
       - email
       - full_name
@@ -840,7 +848,7 @@ components:
       - outcomes_withheld_count
       - data
       title: LearnerRecordsResponse[CourseRun]
-    LearnerRecordsResponse_Enrollment_:
+    LearnerRecordsResponse_Union_Enrollment__RemovedEnrollment__:
       properties:
         organization_id:
           type: string
@@ -866,7 +874,9 @@ components:
             0 on endpoints with no consent gate.'
         data:
           items:
-            $ref: '#/components/schemas/Enrollment'
+            anyOf:
+            - $ref: '#/components/schemas/Enrollment'
+            - $ref: '#/components/schemas/RemovedEnrollment'
           type: array
           title: Data
           description: The requested page of records.
@@ -877,8 +887,8 @@ components:
       - total_count
       - outcomes_withheld_count
       - data
-      title: LearnerRecordsResponse[Enrollment]
-    LearnerRecordsResponse_Learner_:
+      title: LearnerRecordsResponse[Union[Enrollment, RemovedEnrollment]]
+    LearnerRecordsResponse_Union_Learner__RemovedLearner__:
       properties:
         organization_id:
           type: string
@@ -904,7 +914,9 @@ components:
             0 on endpoints with no consent gate.'
         data:
           items:
-            $ref: '#/components/schemas/Learner'
+            anyOf:
+            - $ref: '#/components/schemas/Learner'
+            - $ref: '#/components/schemas/RemovedLearner'
           type: array
           title: Data
           description: The requested page of records.
@@ -915,7 +927,7 @@ components:
       - total_count
       - outcomes_withheld_count
       - data
-      title: LearnerRecordsResponse[Learner]
+      title: LearnerRecordsResponse[Union[Learner, RemovedLearner]]
     MembershipSource:
       type: string
       enum:
@@ -931,6 +943,78 @@ components:
         but absent from the roster (usually a provisioning lag). ``both`` = the
 
         expected state.'
+    RemovedEnrollment:
+      properties:
+        learner_id:
+          type: string
+          format: uuid
+          title: Learner Id
+          description: The learner_id of the removed record.
+        organization_id:
+          type: string
+          format: uuid
+          title: Organization Id
+          description: The organization's Keycloak organization UUID.
+        contract_id:
+          type: integer
+          format: int64
+          title: Contract Id
+          description: Numeric identifier of the B2B contract the enrollment was attributed
+            to.
+        courserun_id:
+          type: string
+          title: Courserun Id
+          description: Readable course-run identifier.
+        removed:
+          type: boolean
+          const: true
+          title: Removed
+          description: Always true. Returned only with updated_since, for a record
+            the previous sync could have held. Drop the record it names.
+      type: object
+      required:
+      - learner_id
+      - organization_id
+      - contract_id
+      - courserun_id
+      - removed
+      title: RemovedEnrollment
+      description: 'An enrollment that no longer exists. A deactivated enrollment
+        is not removed:
+
+        it reads enrollment_is_active false, under include_inactive. Only the identity
+
+        remains.'
+    RemovedLearner:
+      properties:
+        learner_id:
+          type: string
+          format: uuid
+          title: Learner Id
+          description: The learner_id of the removed record.
+        organization_id:
+          type: string
+          format: uuid
+          title: Organization Id
+          description: The organization's Keycloak organization UUID.
+        removed:
+          type: boolean
+          const: true
+          title: Removed
+          description: Always true. Returned only with updated_since, for a record
+            the previous sync could have held. Drop the record it names.
+      type: object
+      required:
+      - learner_id
+      - organization_id
+      - removed
+      title: RemovedLearner
+      description: 'A learner no longer associated with the organization in the scope
+        requested:
+
+        off its roster and holding no enrollment under its contracts (under contract_id,
+
+        no enrollment in that contract). Only the identity remains.'
     ValidationError:
       properties:
         loc:

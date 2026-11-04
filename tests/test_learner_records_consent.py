@@ -5,6 +5,7 @@ rule that matters is about rows: a recorded decision wins over
 ``consent_fail_open``, and the setting only covers learners with none.
 """
 
+import datetime
 import sqlite3
 import uuid
 
@@ -16,8 +17,12 @@ from ol_analytics_api.tenants.b2b_learner_records.config import settings
 SCHEMA = "b2b_learner_records"
 ORG_ID = "8f14e45f-ceea-467a-9c1b-2f4b9c0a3d21"
 CONSENT_ON = "2026-02-03T14:20:04.000000"
+# Every fixture row is stamped into its change log at this time.
+STAMPED = datetime.datetime(2026, 8, 1, 6, 0, 0, tzinfo=datetime.UTC)
+LATER = datetime.datetime(2026, 8, 12, 6, 0, 0, tzinfo=datetime.UTC)
 
 _ENROLLMENT_MV_COLUMNS = (
+    "contract_pk",
     "user_pk",
     "user_global_id",
     "email",
@@ -54,6 +59,7 @@ _ENROLLMENT_MV_COLUMNS = (
     "record_updated_on",
 )
 _LEARNER_MV_COLUMNS = (
+    "organization_key",
     "user_pk",
     "user_global_id",
     "email",
@@ -90,6 +96,7 @@ def _enroll(conn, name, contract_id, *, decision, consent_on=None, full_name=Non
         conn,
         queries.ENROLLMENT_MV,
         _ENROLLMENT_MV_COLUMNS,
+        contract_pk=f"contract-{contract_id}",
         user_pk=name,
         user_global_id=name,
         full_name=full_name,
@@ -113,6 +120,7 @@ def _roster(conn, name, *, decision, consent_on=None, full_name=None):
         conn,
         queries.LEARNER_MV,
         _LEARNER_MV_COLUMNS,
+        organization_key="org",
         user_pk=name,
         user_global_id=name,
         full_name=full_name,
@@ -148,6 +156,8 @@ def conn():
         f"CREATE TABLE {SCHEMA}.{queries.ENROLLMENT_MV} ({', '.join(_ENROLLMENT_MV_COLUMNS)})"
     )
     conn.execute(f"CREATE TABLE {SCHEMA}.{queries.LEARNER_MV} ({', '.join(_LEARNER_MV_COLUMNS)})")
+    for log, columns in queries.CHANGE_LOG_COLUMNS.items():
+        conn.execute(f"CREATE TABLE {SCHEMA}.{log} ({', '.join(columns)})")
 
     _enroll(conn, "all_in", 42, decision=True, consent_on=CONSENT_ON)
     _enroll(conn, "declined", 42, decision=False)
@@ -161,8 +171,47 @@ def conn():
     _roster(conn, "undecided", decision=None)
     _roster(conn, "consented", decision=None)
     _roster(conn, "mixed", decision=False)
+    for mv in (queries.LEARNER_MV, queries.ENROLLMENT_MV):
+        _stamp_all(conn, mv)
     yield conn
     conn.close()
+
+
+def _stamp_all(conn, mv):
+    """Log every row of *mv* as unchanged since STAMPED, as a stamp would."""
+    log = f"{mv}{queries.CHANGE_LOG_SUFFIX}"
+    columns = [c for c in queries.CHANGE_LOG_COLUMNS[log] if c not in ("changed_on", "is_deleted")]
+    selected = ", ".join("'hash'" if c == "row_hash" else c for c in columns)
+    conn.execute(
+        f"INSERT INTO {SCHEMA}.{log} ({', '.join(columns)}, changed_on, is_deleted)"  # noqa: S608
+        f" SELECT DISTINCT {selected}, ?, FALSE FROM {SCHEMA}.{mv}",
+        (_sql_value(STAMPED),),
+    )
+
+
+def _restamp(conn, log, changed_on, *, is_deleted=False, **key):
+    where = " AND ".join(f"{column} = ?" for column in key)
+    conn.execute(
+        f"UPDATE {SCHEMA}.{log} SET changed_on = ?, is_deleted = ? WHERE {where}",  # noqa: S608
+        (_sql_value(changed_on), is_deleted, *key.values()),
+    )
+
+
+def _sql_value(value):
+    # sqlite has no DATETIME. Zone-less UTC ISO text compares in order, as the
+    # change log's zone-less UTC DATETIME does in StarRocks.
+    # The queries bind zone-less UTC already; astimezone would read that as local.
+    if not isinstance(value, datetime.datetime):
+        return value
+    if value.tzinfo is not None:
+        value = value.astimezone(datetime.UTC).replace(tzinfo=None)
+    return value.isoformat(" ")
+
+
+def _run(conn, sql, params):
+    # sqlite spells StarRocks' null-safe <=> as IS.
+    sql = sql.replace("%s", "?").replace("<=>", "IS")
+    return conn.execute(sql, [_sql_value(param) for param in params])
 
 
 def _filters(**overrides):
@@ -171,16 +220,16 @@ def _filters(**overrides):
 
 def _enrollments(conn, **filters):
     query = queries.enrollments(SCHEMA, _filters(**filters))
-    rows = conn.execute(query.page.replace("%s", "?"), (*query.params, 100, 0)).fetchall()
-    count = conn.execute(query.count.replace("%s", "?"), query.params).fetchone()
+    rows = _run(conn, query.page, (*query.params, 100, 0)).fetchall()
+    count = _run(conn, query.count, query.params).fetchone()
     by_key = {(row["learner_id"], row["contract_id"]): row for row in rows}
     return by_key, count["outcomes_withheld_count"]
 
 
 def _learners(conn, **filters):
     query = queries.learners(SCHEMA, _filters(**filters))
-    rows = conn.execute(query.page.replace("%s", "?"), (*query.params, 100, 0)).fetchall()
-    count = conn.execute(query.count.replace("%s", "?"), query.params).fetchone()
+    rows = _run(conn, query.page, (*query.params, 100, 0)).fetchall()
+    count = _run(conn, query.count, query.params).fetchone()
     return {row["learner_id"]: row for row in rows}, count["outcomes_withheld_count"]
 
 
@@ -426,3 +475,121 @@ def test_full_name_is_returned_as_the_views_publish_it(conn, endpoint, filters):
         rows, _ = _learners(conn, **filters)
     assert rows["named"]["full_name"] == "Ann Lee"
     assert rows["nameless"]["full_name"] is None
+
+
+def _remove_enrollment(conn, name, contract_id, changed_on):
+    conn.execute(
+        f"DELETE FROM {SCHEMA}.{queries.ENROLLMENT_MV} WHERE user_pk = ? AND contract_id = ?",  # noqa: S608
+        (name, contract_id),
+    )
+    _restamp(
+        conn,
+        queries.ENROLLMENT_CHANGES,
+        changed_on,
+        is_deleted=True,
+        user_pk=name,
+        contract_id=contract_id,
+    )
+
+
+def _remove_from_roster(conn, name, changed_on):
+    conn.execute(f"DELETE FROM {SCHEMA}.{queries.LEARNER_MV} WHERE user_pk = ?", (name,))  # noqa: S608
+    _restamp(conn, queries.LEARNER_CHANGES, changed_on, is_deleted=True, user_pk=name)
+
+
+def test_updated_since_compares_the_change_logs_changed_on(conn):
+    _restamp(conn, queries.ENROLLMENT_CHANGES, LATER, user_pk="declined", contract_id=42)
+    _restamp(conn, queries.LEARNER_CHANGES, LATER, user_pk="undecided")
+    enrollments, _ = _enrollments(conn, updated_since=LATER)
+    assert set(enrollments) == {("declined", 42)}
+    learners, _ = _learners(conn, updated_since=LATER)
+    assert set(learners) == {"undecided"}
+    # Inclusive, and exact to the stamp: a microsecond later the change is behind it.
+    later, _ = _enrollments(conn, updated_since=LATER + datetime.timedelta(microseconds=1))
+    assert later == {}
+
+
+def test_a_row_the_log_has_not_stamped_comes_back_on_a_full_read_only(conn):
+    _enroll(conn, "new", 42, decision=None)
+    full, _ = _enrollments(conn)
+    assert ("new", 42) in full
+    incremental, _ = _enrollments(conn, updated_since=STAMPED)
+    assert ("new", 42) not in incremental
+
+
+def test_a_removed_enrollment_is_sent_as_its_identity_and_withholds_nothing(conn):
+    _remove_enrollment(conn, "mixed", 43, LATER)
+    rows, withheld = _enrollments(conn, updated_since=LATER)
+    assert set(rows) == {("mixed", 43)}
+    row = rows["mixed", 43]
+    assert row["removed"]
+    assert (row["organization_id"], row["courserun_id"]) == (ORG_ID, "run-43")
+    assert row["email"] is None
+    assert row["grade"] is None
+    assert withheld == 0
+    full, _ = _enrollments(conn)
+    assert ("mixed", 43) not in full
+    assert not any(row["removed"] for row in full.values())
+
+
+def test_a_status_filter_gets_no_removed_records(conn):
+    _remove_enrollment(conn, "mixed", 43, LATER)
+    rows, _ = _enrollments(conn, updated_since=LATER, completion_statuses=("unknown",))
+    assert ("mixed", 43) not in rows
+
+
+def test_a_removal_whose_identity_is_live_again_is_not_sent(conn):
+    # A warehouse surrogate re-keyed: the old key left, the same learner,
+    # contract and run came back under a new one.
+    _remove_enrollment(conn, "mixed", 43, LATER)
+    _insert(
+        conn,
+        queries.ENROLLMENT_MV,
+        _ENROLLMENT_MV_COLUMNS,
+        contract_pk="contract-43",
+        user_pk="mixed-rekeyed",
+        user_global_id="mixed",
+        sso_organization_id=ORG_ID,
+        contract_id=43,
+        courserun_pk="run-43",
+        courserun_readable_id="run-43",
+        enrollment_is_active=True,
+    )
+    rows, _ = _enrollments(conn, updated_since=LATER)
+    assert not any(row["removed"] for row in rows.values())
+
+
+def test_a_learner_off_the_roster_is_sent_as_removed(conn):
+    _remove_from_roster(conn, "declined", LATER)
+    rows, withheld = _learners(conn, updated_since=LATER)
+    assert set(rows) == {"declined"}
+    assert rows["declined"]["removed"]
+    assert rows["declined"]["email"] is None
+    assert withheld == 0
+
+
+def test_a_contract_rollup_removes_a_learner_left_with_no_enrollment_in_it(conn):
+    _remove_enrollment(conn, "mixed", 43, LATER)
+    in_43, _ = _learners(conn, contract_id=43, updated_since=LATER)
+    assert set(in_43) == {"mixed"}
+    assert in_43["mixed"]["removed"]
+    # Still enrolled under 42, where nothing changed.
+    in_42, _ = _learners(conn, contract_id=42, updated_since=LATER)
+    assert "mixed" not in in_42
+
+
+def test_a_deleted_enrollment_moves_the_recomputed_rollups_cursor(conn):
+    _remove_enrollment(conn, "mixed", 43, LATER)
+    rows, _ = _learners(conn, include_inactive=True, updated_since=LATER)
+    assert set(rows) == {"mixed"}
+    assert not rows["mixed"]["removed"]
+    assert rows["mixed"]["courses_enrolled"] == 1
+
+
+def test_include_inactive_removes_a_learner_only_once_gone_from_both_views(conn):
+    _remove_from_roster(conn, "declined", LATER)
+    still_enrolled, _ = _learners(conn, include_inactive=True, updated_since=LATER)
+    assert not still_enrolled["declined"]["removed"]
+    _remove_enrollment(conn, "declined", 42, LATER)
+    gone, _ = _learners(conn, include_inactive=True, updated_since=LATER)
+    assert gone["declined"]["removed"]

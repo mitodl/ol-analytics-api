@@ -18,7 +18,7 @@ from __future__ import annotations
 import datetime
 import uuid
 from enum import StrEnum
-from typing import Annotated, Self
+from typing import Annotated, Literal, Self
 
 from pydantic import AfterValidator, BaseModel, Field, model_validator
 
@@ -34,11 +34,6 @@ def _assume_utc(value: datetime.datetime) -> datetime.datetime:
 
 
 UtcDatetime = Annotated[datetime.datetime, AfterValidator(_assume_utc)]
-
-# record_updated_on carries no activity: a day's activity first appears at a
-# refresh after that day began, so a cursor derived from it would already sort
-# below the updated_since a partner passes and the change would never be sent.
-_ACTIVITY_NOT_SYNCED = "Changes to it do not move updated_since; a full reload picks them up."
 
 
 def _withhold_outcomes[RecordT: BaseModel](record: RecordT, fields: tuple[str, ...]) -> RecordT:
@@ -113,9 +108,42 @@ class CourseRun(BaseModel):
     courserun_end_on: UtcDatetime | None = Field(description="Null for self-paced runs.")
 
 
+_NOT_REMOVED = "Always false on a full record; see RemovedLearner and RemovedEnrollment."
+_REMOVED = (
+    "Always true. Returned only with updated_since, for a record the previous sync could "
+    "have held. Drop the record it names."
+)
+
+
+class RemovedLearner(BaseModel):
+    """A learner no longer associated with the organization in the scope requested:
+    off its roster and holding no enrollment under its contracts (under contract_id,
+    no enrollment in that contract). Only the identity remains."""
+
+    learner_id: uuid.UUID = Field(description="The learner_id of the removed record.")
+    organization_id: uuid.UUID = Field(description="The organization's Keycloak organization UUID.")
+    removed: Literal[True] = Field(description=_REMOVED)
+
+
+class RemovedEnrollment(BaseModel):
+    """An enrollment that no longer exists. A deactivated enrollment is not removed:
+    it reads enrollment_is_active false, under include_inactive. Only the identity
+    remains."""
+
+    learner_id: uuid.UUID = Field(description="The learner_id of the removed record.")
+    organization_id: uuid.UUID = Field(description="The organization's Keycloak organization UUID.")
+    contract_id: int = Field(
+        description="Numeric identifier of the B2B contract the enrollment was attributed to.",
+        json_schema_extra={"format": "int64"},
+    )
+    courserun_id: str = Field(description="Readable course-run identifier.")
+    removed: Literal[True] = Field(description=_REMOVED)
+
+
 class Learner(BaseModel):
     """One learner's association with the organization."""
 
+    removed: Literal[False] = Field(description=_NOT_REMOVED)
     learner_id: uuid.UUID = Field(
         description=(
             "Stable opaque identifier, consistent across endpoints and stable across email "
@@ -170,15 +198,14 @@ class Learner(BaseModel):
             "Most recent day with tracked course activity (video play, problem check, "
             "navigation, discussion or chatbot submit) across the enrollments the request "
             "covers: active ones only, unless include_inactive is set. A date in the course "
-            "platform's local day, not a UTC day. Null with no activity. "
-            f"{_ACTIVITY_NOT_SYNCED}"
+            "platform's local day, not a UTC day. Null with no activity."
         )
     )
     courses_in_progress: int | None = Field(
         description=(
             "Distinct course runs whose completion_status is in_progress: not passed or "
             "certified, with a nonzero grade or any tracked activity. Active enrollments "
-            f"only, unless include_inactive is set. {_ACTIVITY_NOT_SYNCED}"
+            "only, unless include_inactive is set."
         )
     )
     courses_passed: int | None = Field(
@@ -212,6 +239,7 @@ class Learner(BaseModel):
 class Enrollment(BaseModel):
     """One learner's enrollment in one course run under one contract."""
 
+    removed: Literal[False] = Field(description=_NOT_REMOVED)
     learner_id: uuid.UUID = Field(
         description=(
             "Stable opaque identifier, consistent across endpoints and stable across email "
@@ -275,7 +303,7 @@ class Enrollment(BaseModel):
             "Share of the run's current course content the learner has completed, between 0 "
             "and 1. Times 100 it is the completion percent on the course's progress page. Not "
             "an input to completion_status: a certified learner can be below 1. Null where the "
-            "run has no content to count. Changes to it do not move updated_since."
+            "run has no content to count."
         )
     )
     certificate_issued_on: UtcDatetime | None = Field(
@@ -291,30 +319,26 @@ class Enrollment(BaseModel):
     last_active_on: datetime.date | None = Field(
         description=(
             "Most recent day with tracked activity in this course run. A date in the course "
-            f"platform's local day, not a UTC day. Null with no activity. {_ACTIVITY_NOT_SYNCED}"
+            "platform's local day, not a UTC day. Null with no activity."
         )
     )
     days_active: int | None = Field(
-        description=(
-            f"Distinct days with tracked activity in this course run. {_ACTIVITY_NOT_SYNCED}"
-        )
+        description=("Distinct days with tracked activity in this course run.")
     )
     videos_watched: int | None = Field(
         description=(
-            "Video blocks played, counted once per day: a block played on two days counts "
-            f"twice. {_ACTIVITY_NOT_SYNCED}"
+            "Video blocks played, counted once per day: a block played on two days counts twice."
         )
     )
     problems_attempted: int | None = Field(
         description=(
             "Problem blocks checked, counted once per day: a block attempted on two days "
-            f"counts twice. Viewing an answer is not an attempt. {_ACTIVITY_NOT_SYNCED}"
+            "counts twice. Viewing an answer is not an attempt."
         )
     )
     chatbot_interactions: int | None = Field(
         description=(
-            "Chatbot submits in this course run, counting each (session, block) once per day. "
-            f"{_ACTIVITY_NOT_SYNCED}"
+            "Chatbot submits in this course run, counting each (session, block) once per day."
         )
     )
 

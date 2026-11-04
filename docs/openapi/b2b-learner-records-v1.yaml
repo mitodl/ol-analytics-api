@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: MIT Open Learning — B2B Learner Records API
-  version: 1.0.0-draft.2
+  version: 1.0.0-draft.3
   summary: >-
     Machine-to-machine, read-only, organization-scoped learner progress records
     for B2B site-license partners and their contracted training providers.
@@ -31,14 +31,16 @@ info:
       `/exports` returns.
     * **`as_of` is the data's freshness.** Records come from materialized views
       refreshed on a schedule. For incremental sync, pass the previous sync's
-      `as_of` as `updated_since` together with `include_inactive=true`. A
-      consent withdrawal arrives as a changed record with
-      `outcomes_shared: false` and outcome fields nulled, a deactivated
-      enrollment with `enrollment_is_active: false`, and a learner who left the
-      organization with `is_current: false`. A client that upserts drops what
-      it held. Activity (`last_active_on`, `days_active`, the counters, and
-      the `in_progress` status and count they drive) and `content_progress`
-      do not move `updated_since`; a full reload picks them up.
+      `as_of` as `updated_since` together with `include_inactive=true`. Any
+      change to a record's fields, activity and `content_progress` included,
+      returns it. A consent withdrawal arrives as a changed record with
+      `outcomes_shared: false` and outcome fields nulled, and a deactivated
+      enrollment with `enrollment_is_active: false`. A record that no longer
+      exists (a learner who left the organization, a deleted enrollment)
+      arrives as a removed record: its identity fields and `removed: true`,
+      nothing else. A client that upserts drops what it held. Removed records
+      are kept for 90 days, so `updated_since` can be at most 90 days old;
+      sync more often than that, or reload in full.
     * **Paging is stable within one refresh.** Every collection has a unique
       order, but a refresh between two pages can shift rows across the offset.
       If `as_of` changes between pages, restart from offset 0.
@@ -103,7 +105,10 @@ paths:
                     properties:
                       data:
                         type: array
-                        items: { $ref: '#/components/schemas/Learner' }
+                        items:
+                          oneOf:
+                            - $ref: '#/components/schemas/Learner'
+                            - $ref: '#/components/schemas/RemovedLearner'
               examples:
                 default:
                   value:
@@ -112,13 +117,13 @@ paths:
                     total_count: 47
                     outcomes_withheld_count: 11
                     data:
-                      - learner_id: 3e1a9c74-5b2d-4f88-9a01-7c6de2b4f019
+                      - removed: false
+                        learner_id: 3e1a9c74-5b2d-4f88-9a01-7c6de2b4f019
                         email: rgarcia@contoso.example
                         full_name: R. Garcia
                         organization_id: 8f14e45f-ceea-467a-9c1b-2f4b9c0a3d21
                         organization_name: Contoso Manufacturing
                         membership_source: both
-                        is_current: true
                         is_organization_manager: false
                         first_enrolled_on: '2026-02-03T14:22:11Z'
                         last_enrolled_on: '2026-05-19T09:04:52Z'
@@ -131,13 +136,13 @@ paths:
                         courses_passed: 3
                         courses_certified: 3
                         certificates_earned: 3
-                      - learner_id: c04e8a17-3d62-4b95-a7e8-51fb2c8d9042
+                      - removed: false
+                        learner_id: c04e8a17-3d62-4b95-a7e8-51fb2c8d9042
                         email: jlin@contoso.example
                         full_name: J. Lin
                         organization_id: 8f14e45f-ceea-467a-9c1b-2f4b9c0a3d21
                         organization_name: Contoso Manufacturing
                         membership_source: both
-                        is_current: true
                         is_organization_manager: false
                         first_enrolled_on: '2026-03-11T10:02:44Z'
                         last_enrolled_on: '2026-03-11T10:02:44Z'
@@ -187,7 +192,10 @@ paths:
                     properties:
                       data:
                         type: array
-                        items: { $ref: '#/components/schemas/Enrollment' }
+                        items:
+                          oneOf:
+                            - $ref: '#/components/schemas/Enrollment'
+                            - $ref: '#/components/schemas/RemovedEnrollment'
               examples:
                 default:
                   value:
@@ -196,7 +204,8 @@ paths:
                     total_count: 163
                     outcomes_withheld_count: 38
                     data:
-                      - learner_id: 3e1a9c74-5b2d-4f88-9a01-7c6de2b4f019
+                      - removed: false
+                        learner_id: 3e1a9c74-5b2d-4f88-9a01-7c6de2b4f019
                         email: rgarcia@contoso.example
                         full_name: R. Garcia
                         organization_id: 8f14e45f-ceea-467a-9c1b-2f4b9c0a3d21
@@ -224,7 +233,8 @@ paths:
                         videos_watched: 212
                         problems_attempted: 88
                         chatbot_interactions: 14
-                      - learner_id: c04e8a17-3d62-4b95-a7e8-51fb2c8d9042
+                      - removed: false
+                        learner_id: c04e8a17-3d62-4b95-a7e8-51fb2c8d9042
                         email: jlin@contoso.example
                         full_name: J. Lin
                         organization_id: 8f14e45f-ceea-467a-9c1b-2f4b9c0a3d21
@@ -446,13 +456,14 @@ components:
       in: query
       required: false
       description: >-
-        Return only records changed at or after this instant. Pass the previous
-        sync's `as_of`. A record's change time is the latest of its enrollment,
-        grade, certificate, organization membership and consent changes.
-        Activity doesn't move it. Deactivated enrollments and
-        learners no longer in the organization are changes too, but
-        `include_inactive` still filters them, so pass
-        `include_inactive=true` when syncing.
+        Return only records changed at or after this instant, plus the records
+        removed since then. Pass the previous sync's `as_of`. A record changes
+        when any of its fields does. Deactivated enrollments are changes too,
+        but `include_inactive` still filters them, so pass
+        `include_inactive=true` when syncing. At most 90 days ago, which is how
+        long removed records are kept; an older value is a 400 and the client
+        reloads in full. A `completion_status` filter returns no removed
+        records, which have no status.
       schema: { type: string, format: date-time }
       example: '2026-08-12T06:15:00Z'
 
@@ -464,7 +475,7 @@ components:
         On `/enrollments`, includes deactivated enrollments (unenrolled,
         refunded, transferred). On `/learners`: rollups count deactivated
         enrollments too; learners whose only enrollments are deactivated are
-        included; learners with `is_current: false` are included; and a roster
+        included; and a roster
         member whose only enrollment is deactivated reads
         `membership_source: both` rather than `roster`. Roster members with no
         enrollments at all are included either way.
@@ -520,13 +531,13 @@ components:
         One learner's association with the organization. Fields below
         `outcomes_shared` are null unless it is true.
       required:
+        - removed
         - learner_id
         - email
         - full_name
         - organization_id
         - organization_name
         - membership_source
-        - is_current
         - is_organization_manager
         - first_enrolled_on
         - last_enrolled_on
@@ -540,6 +551,10 @@ components:
         - courses_certified
         - certificates_earned
       properties:
+        removed:
+          const: false
+          description: Always false on a full record; see `RemovedLearner`.
+          x-data-readiness: available
         learner_id:
           type: string
           format: uuid
@@ -563,16 +578,6 @@ components:
           x-data-readiness: available
         membership_source:
           $ref: '#/components/schemas/MembershipSource'
-        is_current:
-          type: boolean
-          description: >-
-            False once the learner is no longer associated with the
-            organization: off the roster and holding no enrollment under its
-            contracts. The record stays so a syncing client learns of the
-            removal; it is returned only with `include_inactive=true`.
-            Identity is still populated. Erasure requests are handled
-            separately and not yet specified.
-          x-data-readiness: pending-model
         is_organization_manager:
           type: boolean
           description: Administers the organization in MITx Online.
@@ -656,6 +661,7 @@ components:
         organization's contracts. Fields below `outcomes_shared` are null
         unless it is true.
       required:
+        - removed
         - learner_id
         - email
         - full_name
@@ -685,6 +691,10 @@ components:
         - problems_attempted
         - chatbot_interactions
       properties:
+        removed:
+          const: false
+          description: Always false on a full record; see `RemovedEnrollment`.
+          x-data-readiness: available
         learner_id:
           type: string
           format: uuid
@@ -789,7 +799,7 @@ components:
             completed. Times 100 it is the completion percent on the course's
             progress page. Not an input to `completion_status`: a certified
             learner can be below 1. Null where the run has no content to
-            count. Changes to it do not move `updated_since`.
+            count.
           x-data-readiness: available
         certificate_issued_on:
           type: [string, 'null']
@@ -834,6 +844,55 @@ components:
           description: >-
             Chatbot submits in this course run, counting each (session, block)
             once per day.
+          x-data-readiness: available
+
+    RemovedLearner:
+      type: object
+      description: >-
+        A learner no longer associated with the organization in the scope
+        requested: off its roster and holding no enrollment under its
+        contracts (under `contract_id`, no enrollment in that contract).
+        Returned only with `updated_since`. Drop the learner it names.
+      required: [removed, learner_id, organization_id]
+      properties:
+        removed:
+          const: true
+          x-data-readiness: available
+        learner_id:
+          type: string
+          format: uuid
+          x-data-readiness: available
+        organization_id:
+          type: string
+          format: uuid
+          x-data-readiness: available
+
+    RemovedEnrollment:
+      type: object
+      description: >-
+        An enrollment that no longer exists. A deactivated enrollment is not
+        removed: it reads `enrollment_is_active: false`, under
+        `include_inactive=true`. Returned only with `updated_since`. Drop the
+        enrollment it names.
+      required: [removed, learner_id, organization_id, contract_id, courserun_id]
+      properties:
+        removed:
+          const: true
+          x-data-readiness: available
+        learner_id:
+          type: string
+          format: uuid
+          x-data-readiness: available
+        organization_id:
+          type: string
+          format: uuid
+          x-data-readiness: available
+        contract_id:
+          type: integer
+          format: int64
+          x-data-readiness: available
+        courserun_id:
+          type: string
           x-data-readiness: available
 
     CourseRun:

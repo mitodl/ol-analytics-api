@@ -7,11 +7,12 @@ from __future__ import annotations
 
 import datetime
 import uuid
+from collections.abc import Callable
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
+from pydantic import AfterValidator, BaseModel
 
 from ol_analytics_api.core.db.client import starrocks_pool
 from ol_analytics_api.core.db.refresh_metadata import latest_refresh_timestamp
@@ -23,6 +24,8 @@ from ol_analytics_api.tenants.b2b_learner_records.models import (
     Enrollment,
     Learner,
     LearnerRecordsResponse,
+    RemovedEnrollment,
+    RemovedLearner,
 )
 
 router = APIRouter(
@@ -60,9 +63,37 @@ LearnerIds = Annotated[
         default_factory=list,
     ),
 ]
+_RETENTION_DAYS = queries.REMOVED_RECORD_RETENTION.days
+
+
+def _utc_now() -> datetime.datetime:
+    return datetime.datetime.now(datetime.UTC)
+
+
+def _within_retention(value: datetime.datetime | None) -> datetime.datetime | None:
+    # Removed records are kept this long. An older cursor could have missed one,
+    # and an upsert-only client would keep the record forever, so it reloads.
+    if value is None:
+        return value
+    aware = value if value.tzinfo is not None else value.replace(tzinfo=datetime.UTC)
+    if aware < _utc_now() - queries.REMOVED_RECORD_RETENTION:
+        msg = (
+            f"older than the {_RETENTION_DAYS} days removed records are kept; "
+            "reload in full without updated_since"
+        )
+        raise ValueError(msg)
+    return value
+
+
 UpdatedSince = Annotated[
     datetime.datetime | None,
-    Query(description="Return only records changed at or after this instant."),
+    Query(
+        description=(
+            "Return only records changed at or after this instant, plus removed records. "
+            f"At most {_RETENTION_DAYS} days ago."
+        )
+    ),
+    AfterValidator(_within_retention),
 ]
 UpdatedBefore = Annotated[
     datetime.datetime | None,
@@ -85,9 +116,24 @@ async def _as_of(sources: tuple[str, ...]) -> datetime.datetime | None:
     return min(known) if len(known) == len(refreshed) else None
 
 
+Build = Callable[[dict[str, Any]], BaseModel]
+
+
+def _record(model: type[BaseModel], removed: type[BaseModel]) -> Build:
+    def build(row: dict[str, Any]) -> BaseModel:
+        # The driver returns a BOOLEAN as 0 or 1, which Literal[False] refuses.
+        is_removed = bool(row["removed"])
+        return (removed if is_removed else model)(**{**row, "removed": is_removed})
+
+    return build
+
+
 async def _respond(
-    query: queries.RecordQuery, organization_id: uuid.UUID, page: Page, model: type[BaseModel]
-) -> LearnerRecordsResponse[BaseModel]:
+    query: queries.RecordQuery,
+    organization_id: uuid.UUID,
+    page: Page,
+    build: Build,
+) -> LearnerRecordsResponse[Any]:
     # Freshness first. A refresh landing between this and the record queries then
     # labels newer rows with the older as_of, so the next sync re-sends them
     # rather than skipping them.
@@ -100,7 +146,7 @@ async def _respond(
         total_count=int(counts["total_count"]),
         # SUM over zero rows is NULL.
         outcomes_withheld_count=int(counts["outcomes_withheld_count"] or 0),
-        data=[model(**row) for row in rows],
+        data=[build(row) for row in rows],
     )
 
 
@@ -108,7 +154,7 @@ async def _respond(
     "/learners",
     operation_id="listLearners",
     tags=["learners"],
-    response_model=LearnerRecordsResponse[Learner],
+    response_model=LearnerRecordsResponse[Learner | RemovedLearner],
     summary="Learner roster with progress rollups",
 )
 async def list_learners(  # noqa: PLR0913
@@ -120,7 +166,7 @@ async def list_learners(  # noqa: PLR0913
     updated_since: UpdatedSince = None,
     updated_before: UpdatedBefore = None,
     include_inactive: IncludeInactive = False,
-) -> LearnerRecordsResponse[BaseModel]:
+) -> LearnerRecordsResponse[Any]:
     filters = queries.RecordFilters(
         organization_id=organization_id,
         contract_id=contract_id,
@@ -130,7 +176,10 @@ async def list_learners(  # noqa: PLR0913
         include_inactive=include_inactive,
     )
     return await _respond(
-        queries.learners(settings.starrocks_schema, filters), organization_id, page, Learner
+        queries.learners(settings.starrocks_schema, filters),
+        organization_id,
+        page,
+        _record(Learner, RemovedLearner),
     )
 
 
@@ -138,7 +187,7 @@ async def list_learners(  # noqa: PLR0913
     "/enrollments",
     operation_id="listEnrollments",
     tags=["enrollments"],
-    response_model=LearnerRecordsResponse[Enrollment],
+    response_model=LearnerRecordsResponse[Enrollment | RemovedEnrollment],
     summary="Learner-by-course-run enrollment and completion records",
 )
 async def list_enrollments(  # noqa: PLR0913
@@ -152,7 +201,7 @@ async def list_enrollments(  # noqa: PLR0913
     updated_since: UpdatedSince = None,
     updated_before: UpdatedBefore = None,
     include_inactive: IncludeInactive = False,
-) -> LearnerRecordsResponse[BaseModel]:
+) -> LearnerRecordsResponse[Any]:
     filters = queries.RecordFilters(
         organization_id=organization_id,
         contract_id=contract_id,
@@ -164,7 +213,10 @@ async def list_enrollments(  # noqa: PLR0913
         include_inactive=include_inactive,
     )
     return await _respond(
-        queries.enrollments(settings.starrocks_schema, filters), organization_id, page, Enrollment
+        queries.enrollments(settings.starrocks_schema, filters),
+        organization_id,
+        page,
+        _record(Enrollment, RemovedEnrollment),
     )
 
 
@@ -197,7 +249,7 @@ async def list_courses(  # noqa: PLR0913
         datetime.datetime | None,
         Query(description="Return only course runs starting strictly before this instant."),
     ] = None,
-) -> LearnerRecordsResponse[BaseModel]:
+) -> LearnerRecordsResponse[Any]:
     filters = queries.RecordFilters(
         organization_id=organization_id,
         contract_id=contract_id,
@@ -207,5 +259,8 @@ async def list_courses(  # noqa: PLR0913
         courserun_starts_before=courserun_starts_before,
     )
     return await _respond(
-        queries.courses(settings.starrocks_schema, filters), organization_id, page, CourseRun
+        queries.courses(settings.starrocks_schema, filters),
+        organization_id,
+        page,
+        lambda row: CourseRun(**row),
     )

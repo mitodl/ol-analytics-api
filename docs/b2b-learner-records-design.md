@@ -62,10 +62,8 @@ Resolved by the second: `afact_learner_courserun_daily_activity`
 (ol-data-platform#2672) feeds `last_active_on`, `days_active` and the per-run
 counters in both learner-records MVs (ol-data-platform#2693). The counters sum
 the fact's per-day distinct counts, so a block used on two days counts twice,
-as the `b2b_dashboard` totals do. Activity does not move `record_updated_on`: a
-day's activity first appears at a refresh after that day began, so a cursor
-taken from it would already sort below the `updated_since` a partner passes.
-Partners pick activity up from a full reload.
+as the `b2b_dashboard` totals do. Activity moves `updated_since` like any other
+field, through the MV change logs (gap 9).
 
 **3. `organization_key` is unreliable for activity attribution.** In
 `organization_administration_report` it is
@@ -107,32 +105,34 @@ asset. "Last active" is as stale as the last refresh. The `as_of` envelope the
 existing tenant already returns carries this honestly.
 
 **9. Incremental sync needs a per-row change timestamp.** `as_of` is one
-timestamp for the whole view, so it can't say which rows changed. Each
-learner-grain model needs a `record_updated_on` column that `updated_since` is
-compared against: the latest of the enrollment's created and updated times, the
-grade's updated time and the certificate's updated time, rolled up per learner
-on the learner model. Consent's change timestamp (§4) and removal time (gap 10)
-feed it when they land. Activity doesn't: a day's activity first appears at a
-refresh after that day began, so a timestamp derived from it would already sort
-below the `updated_since` a client passes. Activity changes reach a partner only
-through a full reload, and the spec says so on each activity field.
+timestamp for the whole view, so it can't say which rows changed. Resolved by
+the MV change logs (ol-data-platform#2862): after each refresh the Dagster job
+rewrites `mv_b2b_learner_changes` and `mv_b2b_learner_enrollment_changes`, one
+row per key the MV has held, with a hash of every other column and a
+`changed_on` that moves when the hash does. `updated_since` is compared with
+`changed_on`, so any field moves it, activity included. A source timestamp
+(the earlier `record_updated_on`) couldn't carry activity: a day's activity
+first appears at a refresh after that day began, so it would already sort below
+the `updated_since` a client passes. `changed_on` is stamped after the refresh
+that exposed the change, so it is at or after any `as_of` the client holds.
 
 **10. Removals don't reach a syncing client.** A record that stops appearing
 sends no signal to a client applying changes: the partner's copy keeps it
 forever. Three cases:
 
 - *Deactivated enrollment* (unenrolled, refunded, reassigned seat). Already a
-  state change: `enrollment_is_active` flips and `record_updated_on` moves.
+  state change: `enrollment_is_active` flips and the record's `changed_on` moves.
   It is filtered out by default, so a syncing client has to pass
   `include_inactive=true` to receive it.
 - *Learner removed from the organization.* `bridge_user_organization` is
   current state, so the row vanishes. A learner removed from the roster who
   still holds a contract enrollment stays on `/learners` as
   `membership_source: enrollment`. A roster-only learner drops out entirely.
-  The learner model needs to keep that row with `is_current: false`, using
-  `snapshot_mitxonline_b2b_userorganization`, which closes a removed
-  membership's version (`hard_deletes: invalidate`, one-run resolution) rather
-  than deleting it. `dbt_valid_to` becomes the row's `record_updated_on`.
+  Its change-log row stays with `is_deleted` set, and under `updated_since`
+  the API returns it as a removed record: the identity and `removed: true`.
+  A deleted enrollment is returned the same way. The logs keep removed rows
+  for 90 days, so the API refuses an older `updated_since` and the client
+  reloads in full.
 - *Erasure request.* Not covered. A non-current row still carries email and
   name, which an erasure has to remove. How retirement reaches the warehouse,
   and what a departed row keeps afterward, is an open gap.
@@ -225,8 +225,8 @@ Three collections, all org-scoped, all read-only:
 
 Plus `updated_since` incremental sync on the two record collections, because a
 partner mirroring into their own LMS should not re-read the whole licence daily.
-Sync delivers changes and removals (§1 gaps 9 and 10), not activity, so partners
-still reload in full periodically.
+Sync delivers changes and removals (§1 gaps 9 and 10). A partner that goes
+more than 90 days between syncs reloads in full.
 
 **Two delivery channels over one schema.** The REST API above, and a
 per-organization bulk export written to S3 on each refresh by a batch job
@@ -309,8 +309,8 @@ is worse on every axis that matters here:
   suppression a withdrawal is simply a changed record with `outcomes_shared:
   false` and nulled outcomes; a client that upserts normally drops the data it
   held, with no extra object type and no retention window to reason about.
-  Learners who leave the organization follow the same pattern: a changed record
-  with `is_current: false` (§1 gap 10).
+  Learners who leave the organization are the exception: their record is gone
+  from the view, so they do arrive as a removed record (§1 gap 10).
 
 That third point is the one that would have been expensive to discover late.
 
