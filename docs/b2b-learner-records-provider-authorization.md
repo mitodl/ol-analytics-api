@@ -41,19 +41,22 @@ client listing the same organization keeps reading the same rows, so ending one
 provider's access means removing that provider's clients, not the
 organization's.
 
-**Access ends with the contract, as a backstop.** A client provisioned with
-`contract_end_date` carries it as the `learner_records_contract_end_date`
-claim, and the API refuses the client's tokens once that date has passed. The
+**Access ends on the client's access end date, as a backstop.** A client
+provisioned with `access_end_date` carries it as the
+`learner_records_access_end_date` claim, and the API refuses the client's
+tokens once that date has passed. It is the last day the partner may read
+learner records, which need not be the contract's end date: a contract that
+keeps its data available after enrollment closes gets the later date. The
 date is inclusive and read as Anywhere on Earth (UTC-12): access runs through
 the end of the end date wherever the partner is, and stops at 12:00 UTC the
 following day. A client provisioned without an end date is open-ended. A claim
 that is present but isn't a `YYYY-MM-DD` string refuses every token, since
 reading it as "no end date" would fail open.
 
-This does not replace removing the client when the contract ends. It is what
+This does not replace removing the client when its access ends. It is what
 stops a client whose cleanup PR was forgotten, and when it fires the API logs
-`learner_records_contract_ended` at warning level, which means that cleanup is
-overdue. Every authorized request also logs the client's `contract_end_date`
+`learner_records_access_ended` at warning level, which means that cleanup is
+overdue. Every authorized request also logs the client's `access_end_date`
 beside `learner_records_access`, so an alert can raise the renewal
 conversation before a partner's sync breaks.
 
@@ -76,7 +79,7 @@ In `tenants/b2b_learner_records/auth.py`, per request:
    populated.
 
 Before any of that, `token.py` verifies the token and refuses one whose
-contract end date has passed (above).
+access end date has passed (above).
 
 No call to mitxonline or any other service, and no access store. The client
 definition is the only place access is recorded.

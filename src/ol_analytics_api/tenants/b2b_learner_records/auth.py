@@ -27,7 +27,7 @@ from fastapi.security import OAuth2
 from ol_analytics_api.tenants.b2b_learner_records.config import settings
 from ol_analytics_api.tenants.b2b_learner_records.errors import ApiError, ErrorCode
 from ol_analytics_api.tenants.b2b_learner_records.token import (
-    CONTRACT_END_DATE_CLAIM,
+    ACCESS_END_DATE_CLAIM,
     verified_claims,
 )
 
@@ -97,5 +97,5 @@ def require_organization_grant(
         "learner_records_access",
         client_id=claims.get("azp") or claims.get("client_id"),
         organization_id=str(organization_id),
-        contract_end_date=claims.get(CONTRACT_END_DATE_CLAIM),
+        access_end_date=claims.get(ACCESS_END_DATE_CLAIM),
     )

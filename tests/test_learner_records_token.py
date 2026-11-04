@@ -31,11 +31,11 @@ from ol_analytics_api.tenants.b2b_learner_records.config import (
     settings,
 )
 from ol_analytics_api.tenants.b2b_learner_records.token import (
+    ACCESS_END_DATE_CLAIM,
+    ACCESS_ENDED_DETAIL,
     ACCESS_TOKEN_TYPE,
-    CONTRACT_END_DATE_CLAIM,
-    CONTRACT_ENDED_DETAIL,
     INVALID_TOKEN_DETAIL,
-    contract_access_through,
+    access_through,
     jwks_cache,
 )
 from tests.conftest import (
@@ -463,37 +463,37 @@ def test_the_default_realm_is_accepted_where_it_is_the_right_one(monkeypatch, en
     assert B2BLearnerRecordsSettings(issuer=PRODUCTION_ISSUER).issuer == PRODUCTION_ISSUER
 
 
-def _with_contract_end(value: object) -> dict:
-    return {**PARTNER_CLAIMS, CONTRACT_END_DATE_CLAIM: value}
+def _with_access_end(value: object) -> dict:
+    return {**PARTNER_CLAIMS, ACCESS_END_DATE_CLAIM: value}
 
 
-async def test_a_token_past_its_contract_end_is_refused(app, realm_keys):  # noqa: ARG001
+async def test_a_token_past_its_access_end_is_refused(app, realm_keys):  # noqa: ARG001
     ended = (datetime.now(UTC).date() - timedelta(days=2)).isoformat()
     with structlog.testing.capture_logs() as logs:
-        response = await _get(app, bearer(mint(_with_contract_end(ended))))
+        response = await _get(app, bearer(mint(_with_access_end(ended))))
     assert response.status_code == 401
     assert response.json() == {
         "code": "unauthorized",
-        "detail": f"{CONTRACT_ENDED_DETAIL} on {ended}",
+        "detail": f"{ACCESS_ENDED_DETAIL} on {ended}",
     }
-    # The alert for a client that outlived its contract keys on this event.
-    assert [entry for entry in logs if entry["event"] == "learner_records_contract_ended"] == [
+    # The alert for a client that outlived its access keys on this event.
+    assert [entry for entry in logs if entry["event"] == "learner_records_access_ended"] == [
         {
-            "event": "learner_records_contract_ended",
+            "event": "learner_records_access_ended",
             "log_level": "warning",
             "client_id": PARTNER_CLAIMS["azp"],
-            "contract_end_date": ended,
+            "access_end_date": ended,
         }
     ]
 
 
-async def test_a_token_before_its_contract_end_is_accepted(app, realm_keys):  # noqa: ARG001
+async def test_a_token_before_its_access_end_is_accepted(app, realm_keys):  # noqa: ARG001
     ends = (datetime.now(UTC).date() + timedelta(days=2)).isoformat()
-    response = await _get(app, bearer(mint(_with_contract_end(ends))))
+    response = await _get(app, bearer(mint(_with_access_end(ends))))
     assert response.status_code == 200
 
 
-async def test_a_token_with_no_contract_end_is_accepted(app, realm_keys):  # noqa: ARG001
+async def test_a_token_with_no_access_end_is_accepted(app, realm_keys):  # noqa: ARG001
     """Clients provisioned without an end date are open-ended by design.
     Reading absence as expired would revoke all of them on deploy."""
     response = await _get(app, bearer(mint(PARTNER_CLAIMS)))
@@ -514,10 +514,10 @@ async def test_a_token_with_no_contract_end_is_accepted(app, realm_keys):  # noq
         ["2027-06-30"],
     ],
 )
-async def test_a_malformed_contract_end_is_refused(app, realm_keys, value):  # noqa: ARG001
+async def test_a_malformed_access_end_is_refused(app, realm_keys, value):  # noqa: ARG001
     """Anything other than the mapper's YYYY-MM-DD refuses, because reading it
     as "no end date" is the direction that fails open."""
-    response = await _get(app, bearer(mint(_with_contract_end(value))))
+    response = await _get(app, bearer(mint(_with_access_end(value))))
     assert response.status_code == 401
     assert response.json()["detail"] == INVALID_TOKEN_DETAIL
 
@@ -538,20 +538,20 @@ async def test_access_runs_to_the_end_of_the_date_anywhere_on_earth(
     accepted,
 ):
     monkeypatch.setattr(token_module, "_now", lambda: now)
-    response = await _get(app, bearer(mint(_with_contract_end("2027-06-30"))))
+    response = await _get(app, bearer(mint(_with_access_end("2027-06-30"))))
     assert response.status_code == (200 if accepted else 401)
 
 
 def test_the_last_day_representable_is_an_end_date_not_an_error():
-    through = contract_access_through({CONTRACT_END_DATE_CLAIM: date.max.isoformat()})
+    through = access_through({ACCESS_END_DATE_CLAIM: date.max.isoformat()})
     assert through is not None
     assert datetime.now(UTC) < through
 
 
-async def test_the_access_log_carries_the_contract_end_date(app, realm_keys):  # noqa: ARG001
+async def test_the_access_log_carries_the_access_end_date(app, realm_keys):  # noqa: ARG001
     ends = (datetime.now(UTC).date() + timedelta(days=2)).isoformat()
     with structlog.testing.capture_logs() as logs:
-        response = await _get(app, bearer(mint(_with_contract_end(ends))))
+        response = await _get(app, bearer(mint(_with_access_end(ends))))
     assert response.status_code == 200
     access = [entry for entry in logs if entry["event"] == "learner_records_access"]
-    assert [entry["contract_end_date"] for entry in access] == [ends]
+    assert [entry["access_end_date"] for entry in access] == [ends]
