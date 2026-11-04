@@ -32,6 +32,11 @@ developer detail lives here instead:
   nonzero grade or any tracked activity.
 - ``last_active_on`` is NULL, whatever ``outcomes_shared`` says, until the
   learner has any tracked activity.
+- ``days_active``, ``videos_watched``, ``problems_attempted`` and
+  ``chatbot_interactions`` come from the view zero-filled, so NULL means
+  withheld, never "none". The three per-type counts sum per-day distinct
+  blocks, matching the learner-records tenant and the b2b_analytics totals.
+  ``chatbot_interactions`` counts Open edX chat-drawer submits only.
 - ``outcomes_withheld_count`` counts the rows in ``total_count`` whose
   ``outcomes_shared`` is false. ``completion_status_counts`` buckets the rest
   by status; the two together add up to ``total_count``, since
@@ -89,6 +94,10 @@ _OUTCOME_FIELDS = (
     "certificate_issued_on",
     "certificate_is_revoked",
     "last_active_on",
+    "days_active",
+    "videos_watched",
+    "problems_attempted",
+    "chatbot_interactions",
     "needs_attention",
 )
 
@@ -198,6 +207,28 @@ class LearnerEnrollment(BaseModel):
         description=(
             f"The last day the learner did anything in the course. Empty if they haven't yet. "
             f"{_HIDDEN}"
+        )
+    )
+    days_active: int | None = Field(
+        description=f"How many different days the learner did anything in the course. {_HIDDEN}"
+    )
+    videos_watched: int | None = Field(
+        description=(
+            "How many videos the learner played, counted once per day, so a video played on "
+            f"two different days counts twice. {_HIDDEN}"
+        )
+    )
+    problems_attempted: int | None = Field(
+        description=(
+            "How many problems the learner submitted an answer to, counted once per day, so a "
+            "problem attempted on two different days counts twice. Viewing the answer isn't an "
+            f"attempt. {_HIDDEN}"
+        )
+    )
+    chatbot_interactions: int | None = Field(
+        description=(
+            "How many times the learner sent the course's chatbot a message, counting each "
+            f"conversation at each place in the course once per day. {_HIDDEN}"
         )
     )
     needs_attention: bool | None = Field(

@@ -67,6 +67,10 @@ def _row(**overrides):
         "certificate_issued_on": None,
         "certificate_is_revoked": None,
         "last_active_on": None,
+        "days_active": None,
+        "videos_watched": None,
+        "problems_attempted": None,
+        "chatbot_interactions": None,
         "needs_attention": None,
         **overrides,
     }
@@ -601,8 +605,11 @@ async def test_non_manager_is_refused_before_any_query(app):
 
 
 def test_models_null_outcomes_a_row_carries_when_not_shared():
-    progress = LearnerProgress(**_row(completion_status="certified", is_passing=1, grade=0.91))
+    progress = LearnerProgress(
+        **_row(completion_status="certified", is_passing=1, grade=0.91, videos_watched=7)
+    )
     assert (progress.completion_status, progress.is_passing, progress.grade) == (None, None, None)
+    assert progress.videos_watched is None
 
 
 def test_every_outcome_column_is_consent_gated_in_the_query():
@@ -616,6 +623,10 @@ def test_every_outcome_column_is_consent_gated_in_the_query():
         "letter_grade",
         "content_progress",
         "last_active_on",
+        "days_active",
+        "videos_watched",
+        "problems_attempted",
+        "chatbot_interactions",
     ):
         assert f"CASE WHEN {_CLOSED} THEN {name} END AS {name}" in query.page
     # needs_attention is derived, not selected, so the same gate wraps an
@@ -677,6 +688,10 @@ _ENROLLMENT_MV_COLUMNS = (
     "content_progress",
     "certificate_issued_on",
     "last_active_on",
+    "days_active",
+    "videos_played",
+    "problems_attempted",
+    "chatbot_interactions",
     "needs_attention_since",
     "outcomes_shared",
 )
@@ -708,6 +723,10 @@ def test_recorded_decision_is_read_from_the_view(monkeypatch, fail_open, disclos
             "completion_status": "passed",
             "is_passing": True,
             "grade_value": 0.8,
+            "days_active": 3,
+            "videos_played": 7,
+            "problems_attempted": 5,
+            "chatbot_interactions": 2,
             "outcomes_shared": decision,
         }
         conn.execute(
@@ -729,6 +748,10 @@ def test_recorded_decision_is_read_from_the_view(monkeypatch, fail_open, disclos
     rows, count = run()
     assert {name for name, row in rows.items() if row["grade"] is not None} == disclosed
     assert {name for name, row in rows.items() if row["needs_attention"] is not None} == disclosed
+    activity = ("days_active", "videos_watched", "problems_attempted", "chatbot_interactions")
+    assert {name: tuple(row[column] for column in activity) for name, row in rows.items()} == {
+        name: (3, 7, 5, 2) if name in disclosed else (None,) * 4 for name in rows
+    }
     assert count["outcomes_withheld_count"] == 3 - len(disclosed)
     assert count["passed"] == len(disclosed)
     # The recorded decision itself is reported whatever the default resolved to.

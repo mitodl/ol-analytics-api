@@ -154,6 +154,10 @@ _OUTCOMES = (
     "certificate_issued_on",
     "certificate_is_revoked",
     "last_active_on",
+    "days_active",
+    "videos_watched",
+    "problems_attempted",
+    "chatbot_interactions",
 )
 
 
@@ -243,7 +247,8 @@ def _records(
         " enrollment_created_on AS enrolled_on, enrollment_is_active, enrollment_mode,"
         " completion_status, is_passing, grade_value AS grade,"
         " letter_grade, content_progress, certificate_issued_on, certificate_is_revoked,"
-        " last_active_on,"
+        " last_active_on, days_active, videos_played AS videos_watched, problems_attempted,"
+        " chatbot_interactions,"
         " needs_attention_since, outcomes_shared AS outcomes_decision"
         f" FROM {table} WHERE {' AND '.join(scope)}"
     )
@@ -458,7 +463,7 @@ def needs_attention_aggregate(
     whole query. ``learner_progress``'s ``needs_attention_count`` is a
     ``SUM(CASE WHEN ...)`` over a learner x course-run grain, so a learner
     stale in three of the contract's courses counts three times. That cannot
-    back a tile sitting beside ``active_learners``, which is itself a
+    back a tile sitting beside ``actively_enrolled_learners``, which is itself a
     distinct-learner count: two adjacent tiles would read as learner counts
     while using different units. Here that learner counts once.
 
