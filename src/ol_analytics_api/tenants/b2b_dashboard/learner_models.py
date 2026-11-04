@@ -404,7 +404,7 @@ class LearnersResponse(BaseModel):
         description=(
             "How many of those learners haven't agreed to share their progress. Always 0 "
             "when filtering exclusively by known completion statuses (without unknown), "
-            "or by either needs_attention value, because withheld enrollments can't match "
+            "or by needs attention either way, because withheld enrollments can't match "
             "those filters."
         )
     )
