@@ -22,6 +22,7 @@ from ol_analytics_api.core.db.client import starrocks_pool
 from ol_analytics_api.core.db.query import build_existence_check
 from ol_analytics_api.tenants.b2b_dashboard.config import settings
 from ol_analytics_api.tenants.b2b_dashboard.mitxonline_client import mitxonline_client
+from ol_analytics_api.tenants.b2b_dashboard.models import DataNotLoaded, DataNotLoadedResponse
 
 UserInfo = Annotated[dict[str, Any], Depends(get_userinfo)]
 
@@ -29,6 +30,15 @@ UserInfo = Annotated[dict[str, Any], Depends(get_userinfo)]
 # require_contract_in_org for why that property is what makes it the right
 # oracle.
 _CONTRACT_MEMBERSHIP_MV = "mv_b2b_contract_utilization"
+
+# For every router gated by require_org_loaded or require_contract_in_org, so
+# the published spec (and the client generated from it) types the 404 body.
+NOT_LOADED_RESPONSES: dict[int | str, dict[str, Any]] = {
+    status.HTTP_404_NOT_FOUND: {
+        "model": DataNotLoadedResponse,
+        "description": "The organization or contract has not been loaded into the warehouse yet",
+    }
+}
 
 
 async def require_org_manager(
@@ -83,8 +93,50 @@ async def require_org_manager(
     return userinfo
 
 
+async def _in_membership_mv(
+    filter_columns: tuple[str, ...],
+    params: tuple[object, ...],
+    excluded_columns: tuple[str, ...] = (),
+) -> bool:
+    query = build_existence_check(
+        settings.starrocks_schema, _CONTRACT_MEMBERSHIP_MV, filter_columns, excluded_columns
+    )
+    return bool(await starrocks_pool.fetch_all(query, params))
+
+
+def _not_loaded(reason: DataNotLoaded) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=reason.model_dump())
+
+
+async def require_org_loaded(organization_id: str) -> None:
+    """404 ``organization_not_loaded`` unless the warehouse holds this org.
+
+    Runs after require_org_manager. MITx Online answers the manager check from
+    its own database, so an organization created there since the last
+    warehouse load passes it with nothing behind it here. Without this gate
+    every panel answers ``data: []``, which reads as an organization with no
+    activity rather than one whose data has not arrived.
+
+    Uses the same oracle as require_contract_in_org: an organization holding
+    any contract has a row in it whether or not anyone has enrolled. An
+    organization that holds no contract at all is reported as not loaded too;
+    it has nothing to show either way.
+    """
+    if not await _in_membership_mv(("sso_organization_id",), (organization_id,)):
+        raise _not_loaded(
+            DataNotLoaded(
+                code="organization_not_loaded",
+                message=(
+                    f"No analytics data has been loaded for organization '{organization_id}' yet"
+                ),
+            )
+        )
+
+
 async def require_contract_in_org(organization_id: str, contract_id: int) -> None:
-    """403 unless `contract_id` belongs to `organization_id`.
+    """403 if `contract_id` belongs to another organization, 404
+    ``contract_not_loaded`` if the warehouse has not loaded it under any
+    organization it can name.
 
     Mirrors MITx Online's IsOrganizationManager.has_object_permission, which
     authorizes at the org level and then checks the contract's ownership
@@ -96,31 +148,54 @@ async def require_contract_in_org(organization_id: str, contract_id: int) -> Non
     no data yet, and a weaker answer than the one MITx Online gives for the
     same request.
 
+    A contract missing from the view under every organization is a different
+    case. MITx Online created it, the dashboard linked to it, and the warehouse
+    has not loaded it yet. Refusing that with a 403 tells a real manager they
+    are not allowed, when what they need to hear is that the data is on its
+    way. This service cannot confirm the contract is the caller's until it is
+    loaded, but a 404 exposes nothing either way: nobody's data is behind it
+    yet. Telling the two misses apart does reveal that a contract id exists
+    under some organization, which is no more than the id itself already says
+    (contract ids are globally unique but not secret; see routers/contracts.py).
+
+    A contract loaded under an organization row with no ``sso_organization_id``
+    counts as not loaded too. MITx Online can create an organization's page
+    before linking it to its Keycloak organization, so a load that lands in
+    between gives the contract a NULL organization id until the next one. The
+    403 probe uses ``<>`` for that reason: a NULL never matches it, so only a
+    contract held by a different, named organization is refused.
+
     mv_b2b_contract_utilization is the membership oracle because dbt builds it
     from dim_contract with a LEFT JOIN to enrollments: every contract has a row
     there, including one nobody has enrolled in. Checking any activity-derived
     view instead would 403 a real but empty contract.
 
-    This is the one read in the tenant that does not go through
-    fetch_and_suppress, and it stays outside the anonymization chokepoint
-    deliberately: it selects no cohort and returns no row, only whether a
-    (org, contract) pair exists — which the caller learned from the MITx Online
-    dashboard that sent them here. Keep it that way; selecting a count would
-    put an unfloored aggregate on an unsuppressed path.
+    These are the only reads in the tenant that do not go through
+    fetch_and_suppress, and they stay outside the anonymization chokepoint
+    deliberately: they select no cohort and return no row, only whether a
+    contract exists — which the caller learned from the MITx Online dashboard
+    that sent them here. Keep it that way; selecting a count would put an
+    unfloored aggregate on an unsuppressed path.
     """
-    query = build_existence_check(
-        settings.starrocks_schema,
-        _CONTRACT_MEMBERSHIP_MV,
-        ("sso_organization_id", "contract_id"),
-    )
-    rows = await starrocks_pool.fetch_all(query, (organization_id, contract_id))
-    if not rows:
+    if await _in_membership_mv(
+        ("sso_organization_id", "contract_id"), (organization_id, contract_id)
+    ):
+        return
+    if await _in_membership_mv(
+        ("contract_id",), (contract_id, organization_id), excluded_columns=("sso_organization_id",)
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
                 f"Contract '{contract_id}' does not belong to organization '{organization_id}'"
             ),
         )
+    raise _not_loaded(
+        DataNotLoaded(
+            code="contract_not_loaded",
+            message=f"No analytics data has been loaded for contract '{contract_id}' yet",
+        )
+    )
 
 
 def require_mit_admin(userinfo: UserInfo) -> dict[str, Any]:

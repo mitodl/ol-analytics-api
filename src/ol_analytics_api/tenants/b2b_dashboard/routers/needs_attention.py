@@ -32,7 +32,9 @@ from ol_analytics_api.core.db.query import fetch_and_suppress, fetch_visible_cou
 from ol_analytics_api.core.db.refresh_metadata import latest_refresh_timestamp
 from ol_analytics_api.tenants.b2b_dashboard import learner_queries
 from ol_analytics_api.tenants.b2b_dashboard.auth import (
+    NOT_LOADED_RESPONSES,
     require_contract_in_org,
+    require_org_loaded,
     require_org_manager,
 )
 from ol_analytics_api.tenants.b2b_dashboard.config import settings
@@ -46,6 +48,7 @@ router = APIRouter(
     prefix="/organizations/{organization_id}",
     tags=["needs-attention"],
     dependencies=[Depends(require_org_manager)],
+    responses=NOT_LOADED_RESPONSES,
 )
 
 _SUMMARY = "Learners who may need a nudge, counted once each, per contract"
@@ -101,6 +104,7 @@ async def _respond(
     name="organization_needs_attention",
     operation_id="organizations_needs_attention_retrieve",
     summary=_SUMMARY,
+    dependencies=[Depends(require_org_loaded)],
 )
 async def organization_needs_attention(
     *, organization_id: str, page: Annotated[Pagination, Depends(pagination)]
