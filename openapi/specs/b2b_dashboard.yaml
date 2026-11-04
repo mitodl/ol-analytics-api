@@ -2038,7 +2038,32 @@ components:
 
         names. ``monthly_active_learners`` on the engagement trends counts learners
 
-        who did course work, not this enrollment measure.'
+        who did course work, not this enrollment measure.
+
+
+        The complement rule withholds ``actively_enrolled_learners`` when 1 to 4
+
+        learners have unenrolled, and that hides nothing from an organization''s
+
+        managers. The content engagement endpoint publishes the same count of
+
+        active enrollments as ``actively_enrolled_learners``, so the difference
+
+        from ``enrolled_learners`` gives the withheld complement back.
+
+        ``/learner-progress`` with ``include_inactive=true`` already lists
+
+        ``enrollment_is_active`` per learner to the same callers, with no floor and
+
+        no consent check, so guarding content engagement would withhold its rows to
+
+        protect a figure listed one endpoint over. That difference is accepted. The
+
+        rule still matters for ``passing_learners`` and ``certified_learners``:
+
+        those outcomes are consent-gated per learner, so the learner endpoints
+
+        don''t give their complements.'
     HTTPValidationError:
       properties:
         detail:
@@ -2163,6 +2188,38 @@ components:
           description: The last day the learner did anything in the course. Empty
             if they haven't yet. Hidden if the learner hasn't agreed to share their
             progress.
+        days_active:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Days Active
+          description: How many different days the learner did anything in the course.
+            Hidden if the learner hasn't agreed to share their progress.
+        videos_watched:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Videos Watched
+          description: How many videos the learner played, counted once per day, so
+            a video played on two different days counts twice. Hidden if the learner
+            hasn't agreed to share their progress.
+        problems_attempted:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Problems Attempted
+          description: How many problems the learner submitted an answer to, counted
+            once per day, so a problem attempted on two different days counts twice.
+            Viewing the answer isn't an attempt. Hidden if the learner hasn't agreed
+            to share their progress.
+        chatbot_interactions:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Chatbot Interactions
+          description: How many times the learner sent the course's chatbot a message,
+            counting each conversation at each place in the course once per day. Hidden
+            if the learner hasn't agreed to share their progress.
         needs_attention:
           anyOf:
           - type: boolean
@@ -2192,6 +2249,10 @@ components:
       - certificate_issued_on
       - certificate_is_revoked
       - last_active_on
+      - days_active
+      - videos_watched
+      - problems_attempted
+      - chatbot_interactions
       - needs_attention
       title: LearnerEnrollment
       description: 'One enrollment in one course run under the contract.
@@ -2333,6 +2394,38 @@ components:
           description: The last day the learner did anything in the course. Empty
             if they haven't yet. Hidden if the learner hasn't agreed to share their
             progress.
+        days_active:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Days Active
+          description: How many different days the learner did anything in the course.
+            Hidden if the learner hasn't agreed to share their progress.
+        videos_watched:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Videos Watched
+          description: How many videos the learner played, counted once per day, so
+            a video played on two different days counts twice. Hidden if the learner
+            hasn't agreed to share their progress.
+        problems_attempted:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Problems Attempted
+          description: How many problems the learner submitted an answer to, counted
+            once per day, so a problem attempted on two different days counts twice.
+            Viewing the answer isn't an attempt. Hidden if the learner hasn't agreed
+            to share their progress.
+        chatbot_interactions:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Chatbot Interactions
+          description: How many times the learner sent the course's chatbot a message,
+            counting each conversation at each place in the course once per day. Hidden
+            if the learner hasn't agreed to share their progress.
         needs_attention:
           anyOf:
           - type: boolean
@@ -2365,6 +2458,10 @@ components:
       - certificate_issued_on
       - certificate_is_revoked
       - last_active_on
+      - days_active
+      - videos_watched
+      - problems_attempted
+      - chatbot_interactions
       - needs_attention
       title: LearnerProgress
       description: One learner's enrollment in one course run under the contract.

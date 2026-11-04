@@ -263,6 +263,19 @@ class EnrollmentCompletionFunnel(SQLModel):
     equal to them and floored the same way, kept until clients read the new
     names. ``monthly_active_learners`` on the engagement trends counts learners
     who did course work, not this enrollment measure.
+
+    The complement rule withholds ``actively_enrolled_learners`` when 1 to 4
+    learners have unenrolled, and that hides nothing from an organization's
+    managers. The content engagement endpoint publishes the same count of
+    active enrollments as ``actively_enrolled_learners``, so the difference
+    from ``enrolled_learners`` gives the withheld complement back.
+    ``/learner-progress`` with ``include_inactive=true`` already lists
+    ``enrollment_is_active`` per learner to the same callers, with no floor and
+    no consent check, so guarding content engagement would withhold its rows to
+    protect a figure listed one endpoint over. That difference is accepted. The
+    rule still matters for ``passing_learners`` and ``certified_learners``:
+    those outcomes are consent-gated per learner, so the learner endpoints
+    don't give their complements.
     """
 
     cohort_policy: ClassVar[CohortPolicy] = CohortPolicy(
