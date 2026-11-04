@@ -30,8 +30,10 @@ from ol_analytics_api.main import create_app
 from ol_analytics_api.tenants.b2b_dashboard import learner_queries
 from ol_analytics_api.tenants.b2b_dashboard.config import settings
 from ol_analytics_api.tenants.b2b_dashboard.models import ContractNeedsAttention
+from tests.membership import answer_membership_probe, is_membership_probe
 
 ORG_ID = "11111111-1111-1111-1111-111111111111"
+OTHER_ORG_ID = "22222222-2222-2222-2222-222222222222"
 CONTRACT_ID = 101
 ORG_PATH = f"/api/v1/analytics/organizations/{ORG_ID}/needs-attention"
 CONTRACT_PATH = f"/api/v1/analytics/organizations/{ORG_ID}/contracts/{CONTRACT_ID}/needs-attention"
@@ -359,10 +361,10 @@ class _FakePool:
     """Answers the cutoff probe, the as_of probe, the contract gate, the gated
     count and the aggregate itself, recording every call."""
 
-    def __init__(self, rows=(), total_count=0, *, contract_exists=True):
+    def __init__(self, rows=(), total_count=0, *, loaded=((ORG_ID, CONTRACT_ID),)):
         self.rows = list(rows)
         self.total_count = total_count
-        self.contract_exists = contract_exists
+        self.loaded = loaded
         self.calls = []
 
     async def fetch_all(self, query, params=()):
@@ -371,8 +373,8 @@ class _FakePool:
             return [{"today": _TODAY}]
         if "information_schema" in query:
             return [{"as_of": _AS_OF}]
-        if query.startswith("SELECT 1 "):
-            return [{"1": 1}] if self.contract_exists else []
+        if is_membership_probe(query):
+            return answer_membership_probe(query, params, self.loaded)
         if "COUNT(*)" in query:
             return [{"total_count": self.total_count}]
         return self.rows
@@ -497,9 +499,17 @@ async def test_cutoff_is_resolved_once_and_shared_by_the_page_and_the_count(app)
 
 
 async def test_contract_not_in_org_is_403(app):
-    pool = _FakePool(contract_exists=False)
+    pool = _FakePool(loaded=((OTHER_ORG_ID, CONTRACT_ID),))
     response = await _get(app, pool)
     assert response.status_code == 403
+
+
+async def test_org_route_404s_an_org_the_warehouse_has_not_loaded(app):
+    pool = _FakePool(loaded=())
+    response = await _get(app, pool, path=ORG_PATH)
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "organization_not_loaded"
+    assert all(learner_queries.ENROLLMENT_MV not in query for query, _ in pool.calls)
 
 
 async def test_non_manager_is_403_on_both_routes(app):

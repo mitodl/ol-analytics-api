@@ -111,8 +111,18 @@ def build_count(
     return f"SELECT COUNT(*) AS total_count FROM {schema_table} WHERE {scope_filter}{cohort_gate}"  # noqa: S608
 
 
-def build_existence_check(schema: str, table: str, filter_columns: tuple[str, ...]) -> str:
+def build_existence_check(
+    schema: str,
+    table: str,
+    filter_columns: tuple[str, ...],
+    excluded_columns: tuple[str, ...] = (),
+) -> str:
     """A ``SELECT 1 ... LIMIT 1`` membership probe.
+
+    ``filter_columns`` must equal their bound values and ``excluded_columns``
+    must differ from theirs, bound in that order. An excluded column that is
+    NULL matches neither way, which is SQL's ``<>`` and what the b2b_dashboard
+    contract gate relies on.
 
     Deliberately not routed through ``build_select``/``build_count``: it takes
     no model and reads no column, so the cohort-policy gate those enforce has
@@ -129,7 +139,10 @@ def build_existence_check(schema: str, table: str, filter_columns: tuple[str, ..
         msg = "build_existence_check needs at least one filter column"
         raise ValueError(msg)
     schema_table = f"{validate_sql_identifier(schema)}.{validate_sql_identifier(table)}"
-    predicates = " AND ".join(f"{validate_sql_identifier(name)} = %s" for name in filter_columns)
+    predicates = " AND ".join(
+        [f"{validate_sql_identifier(name)} = %s" for name in filter_columns]
+        + [f"{validate_sql_identifier(name)} <> %s" for name in excluded_columns]
+    )
     # Same justification as build_select: identifiers validated, values bound.
     return f"SELECT 1 FROM {schema_table} WHERE {predicates} LIMIT 1"  # noqa: S608
 

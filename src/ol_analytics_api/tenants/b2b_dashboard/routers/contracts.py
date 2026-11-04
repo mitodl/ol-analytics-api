@@ -38,6 +38,7 @@ from ol_analytics_api.core.db.query import (
 )
 from ol_analytics_api.core.db.refresh_metadata import latest_refresh_timestamp
 from ol_analytics_api.tenants.b2b_dashboard.auth import (
+    NOT_LOADED_RESPONSES,
     require_contract_in_org,
     require_org_manager,
 )
@@ -59,6 +60,7 @@ router = APIRouter(
     # no part of this org never reaches the query that would tell them whether
     # a given contract exists.
     dependencies=[Depends(require_org_manager), Depends(require_contract_in_org)],
+    responses=NOT_LOADED_RESPONSES,
 )
 
 _SCHEMA = settings.starrocks_schema

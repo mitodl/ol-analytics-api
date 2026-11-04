@@ -17,8 +17,10 @@ from httpx import ASGITransport, AsyncClient
 from ol_analytics_api.core.db.refresh_metadata import _clear_cache
 from ol_analytics_api.main import create_app
 from ol_analytics_api.tenants.b2b_dashboard.learner_models import CourseRun, CourseRunsResponse
+from tests.membership import answer_membership_probe, is_membership_probe
 
 ORG_ID = "11111111-1111-1111-1111-111111111111"
+OTHER_ORG_ID = "22222222-2222-2222-2222-222222222222"
 CONTRACT_ID = 101
 PATH = f"/api/v1/analytics/organizations/{ORG_ID}/contracts/{CONTRACT_ID}/course-runs"
 _AS_OF = datetime.datetime(2026, 9, 15, 6, 0)  # noqa: DTZ001 - StarRocks returns naive UTC
@@ -44,18 +46,18 @@ class _FakePool:
     query, recording every call. Course runs carry no PII, so there's no
     consent or status-count bucketing to fake, unlike learner-progress's pool."""
 
-    def __init__(self, rows=(), total_count=0, *, contract_exists=True):
+    def __init__(self, rows=(), total_count=0, *, loaded=((ORG_ID, CONTRACT_ID),)):
         self.rows = list(rows)
         self.total_count = total_count
-        self.contract_exists = contract_exists
+        self.loaded = loaded
         self.calls = []
 
     async def fetch_all(self, query, params=()):
         self.calls.append((query, params))
         if "information_schema" in query:
             return [{"as_of": _AS_OF}]
-        if query.startswith("SELECT 1 "):
-            return [{"1": 1}] if self.contract_exists else []
+        if is_membership_probe(query):
+            return answer_membership_probe(query, params, self.loaded)
         if "COUNT(*)" in query:
             return [{"total_count": self.total_count}]
         return self.rows
@@ -137,7 +139,7 @@ async def test_nulls_start_date_sorts_last(app):
 
 
 async def test_contract_not_in_org_is_403(app):
-    pool = _FakePool(contract_exists=False)
+    pool = _FakePool(loaded=((OTHER_ORG_ID, CONTRACT_ID),))
     response = await _get(app, pool)
     assert response.status_code == 403
     assert not any("mv_b2b_contract_courserun" in query for query, _ in pool.calls)

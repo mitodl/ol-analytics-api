@@ -35,7 +35,7 @@ with the new text here.
 from __future__ import annotations
 
 import datetime
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from pydantic import BaseModel
 from sqlmodel import Field, SQLModel
@@ -69,7 +69,9 @@ class OrgAnalyticsResponse[RowT: SQLModel](BaseModel):
     ``as_of`` is the last MV-refresh time (None until the first refresh
     finishes); the dashboard displays it so a manager knows how fresh the
     numbers are. ``data`` is post-suppression — a manager-authorized org
-    with no (or only sub-floor) rows returns ``data: []``, not a 404.
+    with no (or only sub-floor) rows in this view returns ``data: []``. Only
+    an organization or contract the warehouse has not loaded at all is a 404,
+    described by ``DataNotLoadedResponse``.
 
     ``total_count`` is how many rows this org has in the backing view *after*
     the anonymization floor, i.e. across every page. Without it a client
@@ -95,6 +97,27 @@ class AdminAnalyticsResponse[RowT: SQLModel](BaseModel):
     as_of: datetime.datetime | None
     total_count: int
     data: list[RowT]
+
+
+class DataNotLoaded(BaseModel):
+    """Why a manager-authorized request has nothing to read yet.
+
+    MITx Online is the source of truth for who manages an organization and
+    which contracts it holds, and it knows about both as soon as they are
+    created. The warehouse learns of them on its next load, so for a while a
+    real manager can ask about an organization or contract this service has
+    never seen. ``code`` says which, so a client can tell the manager the data
+    is on its way instead of reporting a failure.
+    """
+
+    code: Literal["organization_not_loaded", "contract_not_loaded"]
+    message: str
+
+
+class DataNotLoadedResponse(BaseModel):
+    """The 404 body for an organization or contract with no analytics data loaded."""
+
+    detail: DataNotLoaded
 
 
 class ContractUtilization(SQLModel):
