@@ -27,7 +27,7 @@ from ol_analytics_api.tenants.b2b_dashboard.models import (
     MitAdminContractHealth,
     MonthlyEngagementTrend,
 )
-from ol_analytics_api.tenants.b2b_dashboard.routers import organizations
+from ol_analytics_api.tenants.b2b_dashboard.routers import admin, organizations
 
 _AS_OF = datetime.datetime(2026, 7, 2, 4, 0, 0)  # noqa: DTZ001
 
@@ -1113,29 +1113,79 @@ async def test_org_endpoint_authorized_but_empty_returns_empty_data_not_404(app)
     assert body["as_of"].startswith("2026-07-02T04:00:00")
 
 
-async def test_admin_endpoint_envelope_has_no_organization_key(app):
+_CONTRACT_HEALTH_ROW = {
+    "organization_key": "org-a",
+    "organization_name": "Org A",
+    "contract_pk": "contract-pk-1",
+    "contract_id": 101,
+    "b2b_contract_name": "C1",
+    "b2b_contract_is_active": True,
+    "b2b_contract_start_date": None,
+    "b2b_contract_end_date": None,
+    "seat_limit": 100,
+    "b2b_contract_membership_type": "seat",
+    "seats_consumed": 40,
+    "actively_enrolled_learners": 30,
+    "active_learners": 30,
+    "certified_learners": 10,
+    "seat_utilization_pct": 40.0,
+    "completion_rate_pct": 25.0,
+    "health_status": "healthy",
+    "at_risk_since": None,
+}
+
+
+@pytest.mark.parametrize(
+    ("at_risk_since", "health_status"),
+    [
+        (datetime.date(2000, 1, 2), "at_risk"),
+        (datetime.date(2999, 10, 3), "early_stage"),
+        (None, "early_stage"),
+    ],
+)
+async def test_admin_health_status_follows_at_risk_since_and_does_not_return_it(
+    app, at_risk_since, health_status
+):
     row = {
-        "organization_key": "org-a",
-        "organization_name": "Org A",
-        "contract_pk": "contract-pk-1",
-        "contract_id": 101,
-        "b2b_contract_name": "C1",
-        "b2b_contract_is_active": True,
-        "b2b_contract_start_date": None,
-        "b2b_contract_end_date": None,
-        "seat_limit": 100,
-        "b2b_contract_membership_type": "seat",
-        "seats_consumed": 40,
-        "actively_enrolled_learners": 30,
-        "active_learners": 30,
-        "certified_learners": 10,
-        "seat_utilization_pct": 40.0,
-        "completion_rate_pct": 25.0,
-        "health_status": "healthy",
+        **_CONTRACT_HEALTH_ROW,
+        "health_status": "early_stage",
+        "at_risk_since": at_risk_since,
     }
     with patch(
         "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
-        new=_fake_fetch_all([row], total_count=12),
+        new=_fake_fetch_all([row], total_count=1),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                "/api/v1/analytics/admin/contract-health",
+                headers={"X-Userinfo": _admin_header()},
+            )
+    assert response.status_code == 200
+    (returned,) = response.json()["data"]
+    assert returned["health_status"] == health_status
+    assert "at_risk_since" not in returned
+
+
+@pytest.mark.parametrize(
+    ("days_until", "health_status"),
+    [(-1, "at_risk"), (0, "at_risk"), (1, "early_stage")],
+)
+def test_at_risk_includes_the_day_at_risk_since_arrives(days_until, health_status):
+    today = datetime.date(2026, 11, 2)
+    row = MitAdminContractHealth(
+        **{
+            **_CONTRACT_HEALTH_ROW,
+            "health_status": "early_stage",
+            "at_risk_since": today + datetime.timedelta(days=days_until),
+        }
+    )
+    assert admin._with_at_risk(row, today).health_status == health_status  # noqa: SLF001
+
+
+async def test_admin_endpoint_envelope_has_no_organization_key(app):
+    with patch(
+        "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
+        new=_fake_fetch_all([_CONTRACT_HEALTH_ROW], total_count=12),
     ):
         async with _client(app) as client:
             response = await client.get(
