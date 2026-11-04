@@ -82,9 +82,10 @@ CHANGE_LOG_COLUMNS = {
     ),
 }
 
-# How long the change logs keep a removed record. ol-data-platform purges older
-# ones, so an updated_since before this could miss a removal; the router refuses
-# it and the client reloads in full. Changing it means changing the purge too.
+# How long the API serves a removed record. An updated_since older than this is
+# refused and the client reloads in full, so the change logs need keep removed
+# rows only this long; the purge that will drop older ones is
+# tk-purge-learner-records-change-log-tombstones-olde-76e06b in ol-data-platform.
 REMOVED_RECORD_RETENTION = datetime.timedelta(days=90)
 
 
@@ -173,24 +174,28 @@ class RecordFilters:
 class RecordQuery:
     """``params`` binds ``count``; ``page`` takes ``params`` plus LIMIT and OFFSET.
 
-    ``sources`` names the MVs read, for the envelope's ``as_of``."""
+    ``sources`` names the MVs read, for the envelope's ``as_of``.
+    ``change_logs`` names the change logs read, whose start bounds how far back
+    ``updated_since`` can reach (see ``change_log_start``)."""
 
     page: str
     count: str
     params: tuple[Any, ...]
     sources: tuple[str, ...]
+    change_logs: tuple[str, ...] = ()
 
 
 def _placeholders(count: int) -> str:
     return ", ".join(["%s"] * count)
 
 
-def _cursor_value(value: datetime.datetime, *, round_up: bool = False) -> str:
-    """Render a datetime for comparison against an MV timestamp column.
+def _whole_second(value: datetime.datetime, *, round_up: bool = False) -> datetime.datetime:
+    """A zone-less UTC bound, rounded to the whole second toward re-sending.
 
     The MVs store every MITx Online timestamp as a zone-less UTC ISO-8601
-    string, so the comparison is lexicographic and only whole-second precision
-    survives. For an inclusive lower bound (the default, ``round_up=False``),
+    string, compared lexicographically, and the change logs stamp
+    ``changed_on`` from ``utc_timestamp()``; only whole seconds are compared
+    safely against either. For an inclusive lower bound (the default, ``round_up=False``),
     truncating down makes the bound a prefix of any stored value in the same
     second, so a record at the boundary is matched by ``>=`` rather than
     skipped — the record may be re-sent by the next window too, which a
@@ -207,10 +212,13 @@ def _cursor_value(value: datetime.datetime, *, round_up: bool = False) -> str:
     if value.tzinfo is not None:
         value = value.astimezone(datetime.UTC).replace(tzinfo=None)
     if round_up and value.microsecond:
-        value = value.replace(microsecond=0) + datetime.timedelta(seconds=1)
-    else:
-        value = value.replace(microsecond=0)
-    return value.isoformat()
+        return value.replace(microsecond=0) + datetime.timedelta(seconds=1)
+    return value.replace(microsecond=0)
+
+
+def _cursor_value(value: datetime.datetime, *, round_up: bool = False) -> str:
+    """``_whole_second`` as the ISO-8601 text an MV timestamp string compares with."""
+    return _whole_second(value, round_up=round_up).isoformat()
 
 
 def _assemble(  # noqa: PLR0913, PLR0917
@@ -222,6 +230,7 @@ def _assemble(  # noqa: PLR0913, PLR0917
     predicates: list[str],
     predicate_params: list[Any],
     sources: tuple[str, ...],
+    change_logs: tuple[str, ...],
 ) -> RecordQuery:
     shared = _outcomes_shared()
     projection = ", ".join(
@@ -244,14 +253,7 @@ def _assemble(  # noqa: PLR0913, PLR0917
         f" SUM(CASE WHEN removed OR {shared} THEN 0 ELSE 1 END) AS outcomes_withheld_count"
         f" FROM ({records}) records{where}"
     )
-    return RecordQuery(page, count, (*record_params, *predicate_params), sources)
-
-
-def _utc(value: datetime.datetime) -> datetime.datetime:
-    """A zone-less UTC datetime, for comparison against a DATETIME column."""
-    if value.tzinfo is not None:
-        value = value.astimezone(datetime.UTC).replace(tzinfo=None)
-    return value
+    return RecordQuery(page, count, (*record_params, *predicate_params), sources, change_logs)
 
 
 def _window_predicates(
@@ -263,9 +265,10 @@ def _window_predicates(
 ) -> tuple[list[str], list[Any]]:
     """``[since, before)``: paired with a later window whose ``since`` is this
     ``before``, a backfill can hand each window to one worker and know no row
-    is dropped between them. On a ``string_column`` both bounds round toward
-    re-sending a row rather than skipping it (see ``_cursor_value``), so a row
-    at a sub-second boundary can land in both windows, never in neither.
+    is dropped between them. Both bounds round toward re-sending a row rather
+    than skipping it (see ``_whole_second``), so a row at a sub-second boundary
+    can land in both windows, never in neither. A ``string_column`` compares as
+    ISO-8601 text, the change logs' ``changed_on`` as a DATETIME.
     ``column`` is always one of this module's own fixed identifiers, never
     caller input.
     """
@@ -273,10 +276,14 @@ def _window_predicates(
     params: list[Any] = []
     if since is not None:
         predicates.append(f"{column} >= %s")
-        params.append(_cursor_value(since) if string_column else _utc(since))
+        params.append(_cursor_value(since) if string_column else _whole_second(since))
     if before is not None:
         predicates.append(f"{column} < %s")
-        params.append(_cursor_value(before, round_up=True) if string_column else _utc(before))
+        params.append(
+            _cursor_value(before, round_up=True)
+            if string_column
+            else _whole_second(before, round_up=True)
+        )
     return predicates, params
 
 
@@ -425,6 +432,7 @@ def enrollments(schema: str, filters: RecordFilters) -> RecordQuery:
         predicates,
         params,
         (ENROLLMENT_MV,),
+        (ENROLLMENT_CHANGES,),
     )
 
 
@@ -456,9 +464,11 @@ def learners(schema: str, filters: RecordFilters) -> RecordQuery:
         )
         record_params: list[Any] = [str(filters.organization_id)]
         sources: tuple[str, ...] = (LEARNER_MV,)
+        change_logs: tuple[str, ...] = (LEARNER_CHANGES,)
     else:
         records, record_params = _recomputed_learners(schema, filters)
         sources = (LEARNER_MV, ENROLLMENT_MV)
+        change_logs = (LEARNER_CHANGES, ENROLLMENT_CHANGES)
 
     if filters.updated_since is not None:
         removed, removed_params = _removed_learners(schema, filters)
@@ -477,6 +487,7 @@ def learners(schema: str, filters: RecordFilters) -> RecordQuery:
         predicates,
         params,
         sources,
+        change_logs,
     )
 
 
@@ -661,6 +672,22 @@ def _removed_learners(schema: str, filters: RecordFilters) -> tuple[str, list[An
     )
     log_params = [str(filters.organization_id), *contract_params] * len(views)
     return removed, [*log_params, *contract_params * len(views)]
+
+
+def change_log_start(schema: str, log: str) -> str:
+    """The earliest ``changed_on`` in *log*.
+
+    The seed stamps every row with the log's creation time and a stamp only
+    moves ``changed_on`` forward, so this is at or after the creation. A record
+    removed before the log existed has no row in it, so an ``updated_since``
+    earlier than this could miss that removal. Deliberately conservative: once
+    every seeded row has changed, it is later than the creation and refuses a
+    cursor that was safe, which costs that client a full reload, not a removal.
+    """
+    return (
+        "SELECT MIN(changed_on) AS started"  # noqa: S608
+        f" FROM {validate_sql_identifier(schema)}.{validate_sql_identifier(log)}"
+    )
 
 
 def courses(schema: str, filters: RecordFilters) -> RecordQuery:

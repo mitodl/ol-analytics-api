@@ -132,14 +132,17 @@ class _FakePool:
     """Answers the as_of probe, the count query and the page query, and records
     every call so a test can inspect the one it cares about."""
 
-    def __init__(self, rows=(), total_count=0, withheld=0, as_of_by_mv=None):
+    def __init__(self, rows=(), total_count=0, withheld=0, as_of_by_mv=None, log_start=None):
         self.rows = list(rows)
+        self.log_start = log_start
         self.counts = {"total_count": total_count, "outcomes_withheld_count": withheld}
         self.as_of_by_mv = as_of_by_mv or {}
         self.calls = []
 
     async def fetch_all(self, query, params=()):
         self.calls.append((query, params))
+        if "MIN(changed_on)" in query:
+            return [{"started": self.log_start}]
         if "information_schema" in query:
             return [{"as_of": self.as_of_by_mv.get(params[1], _AS_OF)}]
         if "COUNT(*)" in query:
@@ -560,8 +563,8 @@ async def test_enrollment_filters_are_bound_in_order(app, monkeypatch):
         "course-v1:MITxT+14.310x+2T2026",
         LEARNER_ID,
         OTHER_LEARNER_ID,
-        # UTC, exact: changed_on is a DATETIME, not a string.
-        _bound(2026, 8, 12, 4, 15, 0, 500000),
+        # UTC, floored to the second, so the boundary record is re-sent.
+        _bound(2026, 8, 12, 4, 15, 0),
         "passed",
         100,
         0,
@@ -922,3 +925,31 @@ async def test_removed_records_are_requested_only_with_updated_since(app, monkey
         assert (
             queries.ENROLLMENT_CHANGES + " c WHERE c.is_deleted = TRUE" in page_query
         ) is expected
+
+
+@pytest.mark.parametrize(
+    ("since", "status"), [("2026-08-01T05:59:59Z", 400), ("2026-08-01T06:00:00Z", 200)]
+)
+async def test_updated_since_before_change_tracking_began_is_refused(
+    app, monkeypatch, since, status
+):
+    # A record removed before the change log was created has no row in it.
+    pool = _FakePool(log_start=datetime.datetime(2026, 8, 1, 6, 0, 0))  # noqa: DTZ001
+    response = await _get(
+        app,
+        f"/organizations/{ORG_ID}/learners?updated_since={since}",
+        _partner_token(ORG_ID),
+        pool,
+        monkeypatch,
+    )
+    assert response.status_code == status
+    if status == 400:
+        assert response.json()["code"] == "invalid_parameter"
+        assert "reload in full" in response.json()["detail"]
+        assert not any("LIMIT %s OFFSET %s" in query for query, _ in pool.calls)
+
+
+async def test_a_full_read_does_not_consult_the_change_log_start(app, monkeypatch):
+    pool = _FakePool(log_start=datetime.datetime(2026, 8, 1))  # noqa: DTZ001
+    await _get(app, f"/organizations/{ORG_ID}/learners", _partner_token(ORG_ID), pool, monkeypatch)
+    assert not any("MIN(changed_on)" in query for query, _ in pool.calls)

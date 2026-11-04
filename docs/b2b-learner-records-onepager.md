@@ -61,8 +61,8 @@ MITx Online and reaches the service through the learner-records MVs
 (ol-data-platform#2785). One upstream
 property is a hard requirement and cheap only if specified now: *withdrawal must
 be a retained state change, not a deleted row*. A deleted consent row is
-indistinguishable from one never granted and does not move the record's change
-timestamp, so the withdrawal never reaches the partner holding a copy.
+indistinguishable from one never granted: the record's change time moves, but
+it arrives reading "no decision" rather than "withdrawn".
 
 ## Shape
 

@@ -11,7 +11,7 @@ from collections.abc import Callable
 from enum import StrEnum
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, status
 from pydantic import AfterValidator, BaseModel
 
 from ol_analytics_api.core.db.client import starrocks_pool
@@ -19,6 +19,7 @@ from ol_analytics_api.core.db.refresh_metadata import latest_refresh_timestamp
 from ol_analytics_api.tenants.b2b_learner_records import queries
 from ol_analytics_api.tenants.b2b_learner_records.auth import require_organization_grant
 from ol_analytics_api.tenants.b2b_learner_records.config import settings
+from ol_analytics_api.tenants.b2b_learner_records.errors import ApiError, ErrorCode
 from ol_analytics_api.tenants.b2b_learner_records.models import (
     CourseRun,
     Enrollment,
@@ -90,7 +91,8 @@ UpdatedSince = Annotated[
     Query(
         description=(
             "Return only records changed at or after this instant, plus removed records. "
-            f"At most {_RETENTION_DAYS} days ago."
+            f"At most {_RETENTION_DAYS} days ago, and not before change tracking began; "
+            "an older value is a 400, and the client reloads in full."
         )
     ),
     AfterValidator(_within_retention),
@@ -116,6 +118,35 @@ async def _as_of(sources: tuple[str, ...]) -> datetime.datetime | None:
     return min(known) if len(known) == len(refreshed) else None
 
 
+async def _require_change_log_coverage(
+    change_logs: tuple[str, ...], updated_since: datetime.datetime | None
+) -> None:
+    """Refuse a cursor older than a change log it reads.
+
+    A record removed before the log existed (or before it was last recreated)
+    has no row in it, so a sync from earlier would never learn of the removal.
+    """
+    if updated_since is None:
+        return
+    for log in change_logs:
+        rows = await starrocks_pool.fetch_all(
+            queries.change_log_start(settings.starrocks_schema, log)
+        )
+        started = rows[0]["started"]
+        if started is None:
+            continue
+        since = (
+            updated_since if updated_since.tzinfo else updated_since.replace(tzinfo=datetime.UTC)
+        )
+        if since < started.replace(tzinfo=datetime.UTC):
+            raise ApiError(
+                status.HTTP_400_BAD_REQUEST,
+                ErrorCode.INVALID_PARAMETER,
+                f"updated_since: earlier than change tracking began ({started.isoformat()}Z); "
+                "reload in full without updated_since",
+            )
+
+
 Build = Callable[[dict[str, Any]], BaseModel]
 
 
@@ -133,7 +164,9 @@ async def _respond(
     organization_id: uuid.UUID,
     page: Page,
     build: Build,
+    updated_since: datetime.datetime | None = None,
 ) -> LearnerRecordsResponse[Any]:
+    await _require_change_log_coverage(query.change_logs, updated_since)
     # Freshness first. A refresh landing between this and the record queries then
     # labels newer rows with the older as_of, so the next sync re-sends them
     # rather than skipping them.
@@ -180,6 +213,7 @@ async def list_learners(  # noqa: PLR0913
         organization_id,
         page,
         _record(Learner, RemovedLearner),
+        updated_since,
     )
 
 
@@ -217,6 +251,7 @@ async def list_enrollments(  # noqa: PLR0913
         organization_id,
         page,
         _record(Enrollment, RemovedEnrollment),
+        updated_since,
     )
 
 

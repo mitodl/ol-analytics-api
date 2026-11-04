@@ -504,8 +504,11 @@ def test_updated_since_compares_the_change_logs_changed_on(conn):
     assert set(enrollments) == {("declined", 42)}
     learners, _ = _learners(conn, updated_since=LATER)
     assert set(learners) == {"undecided"}
-    # Inclusive, and exact to the stamp: a microsecond later the change is behind it.
-    later, _ = _enrollments(conn, updated_since=LATER + datetime.timedelta(microseconds=1))
+    # Inclusive, and floored to the second: within the stamp's second the change
+    # is re-sent rather than skipped; a second later it is behind the cursor.
+    same_second, _ = _enrollments(conn, updated_since=LATER + datetime.timedelta(microseconds=1))
+    assert set(same_second) == {("declined", 42)}
+    later, _ = _enrollments(conn, updated_since=LATER + datetime.timedelta(seconds=1))
     assert later == {}
 
 

@@ -51,10 +51,12 @@ paths:
             format: date-time
           - type: 'null'
           description: Return only records changed at or after this instant, plus
-            removed records. At most 90 days ago.
+            removed records. At most 90 days ago, and not before change tracking began;
+            an older value is a 400, and the client reloads in full.
           title: Updated Since
         description: Return only records changed at or after this instant, plus removed
-          records. At most 90 days ago.
+          records. At most 90 days ago, and not before change tracking began; an older
+          value is a 400, and the client reloads in full.
       - name: updated_before
         in: query
         required: false
@@ -169,10 +171,12 @@ paths:
             format: date-time
           - type: 'null'
           description: Return only records changed at or after this instant, plus
-            removed records. At most 90 days ago.
+            removed records. At most 90 days ago, and not before change tracking began;
+            an older value is a 400, and the client reloads in full.
           title: Updated Since
         description: Return only records changed at or after this instant, plus removed
-          records. At most 90 days ago.
+          records. At most 90 days ago, and not before change tracking began; an older
+          value is a 400, and the client reloads in full.
       - name: updated_before
         in: query
         required: false
