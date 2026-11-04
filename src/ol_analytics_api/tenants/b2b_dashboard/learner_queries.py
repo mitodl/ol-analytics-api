@@ -463,7 +463,7 @@ def needs_attention_aggregate(
     whole query. ``learner_progress``'s ``needs_attention_count`` is a
     ``SUM(CASE WHEN ...)`` over a learner x course-run grain, so a learner
     stale in three of the contract's courses counts three times. That cannot
-    back a tile sitting beside ``active_learners``, which is itself a
+    back a tile sitting beside ``actively_enrolled_learners``, which is itself a
     distinct-learner count: two adjacent tiles would read as learner counts
     while using different units. Here that learner counts once.
 

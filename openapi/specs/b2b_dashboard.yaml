@@ -1006,12 +1006,18 @@ components:
           type: string
           title: Courserun Title
           description: The course's title.
-        total_enrolled_learners:
+        actively_enrolled_learners:
           type: integer
-          title: Total Enrolled Learners
+          title: Actively Enrolled Learners
           description: Learners whose enrollment in this course run is still active.
             When too few learners are in the group, the whole row is withheld to avoid
             identifying them.
+        total_enrolled_learners:
+          type: integer
+          title: Total Enrolled Learners
+          description: 'Deprecated: use actively_enrolled_learners, which this always
+            equals.'
+          deprecated: true
         engaged_learners:
           anyOf:
           - type: integer
@@ -1111,6 +1117,7 @@ components:
       - organization_name
       - courserun_readable_id
       - courserun_title
+      - actively_enrolled_learners
       - total_enrolled_learners
       - engaged_learners
       - engagement_rate_pct
@@ -1134,7 +1141,7 @@ components:
 
         view does emit, so both are correctly floored. ``engagement_rate_pct`` is
 
-        ``engaged_learners / total_enrolled_learners``, also correct.
+        ``engaged_learners / actively_enrolled_learners``, also correct.
 
 
         The video and problem columns are floored through the cohorts the view now
@@ -1181,7 +1188,7 @@ components:
 
         (ol-data-platform PR #2913). So it is not a subset of
 
-        ``total_enrolled_learners``: a learner who certified and then unenrolled
+        ``actively_enrolled_learners``: a learner who certified and then unenrolled
 
         is counted here and not there. It is declared contained in it anyway, so
 
@@ -1206,7 +1213,20 @@ components:
 
         learner enrolled under, so a run offered under two contracts does not
 
-        double the SUM.'
+        double the SUM.
+
+
+        ``total_enrolled_learners`` is the deprecated name for
+
+        ``actively_enrolled_learners``, kept until clients read the new name. A
+
+        policy has one primary, so the old name is a secondary contained in the
+
+        new one. It always equals the primary, so its complement is 0 and it clears
+
+        the floor whenever the row does: it is published with every row that is
+
+        published and needs no Optional type.'
     ContractContentEngagementDepth:
       properties:
         organization_key:
@@ -1225,12 +1245,18 @@ components:
           type: string
           title: Courserun Title
           description: The course's title.
-        total_enrolled_learners:
+        actively_enrolled_learners:
           type: integer
-          title: Total Enrolled Learners
+          title: Actively Enrolled Learners
           description: Learners whose enrollment in this course run is still active.
             When too few learners are in the group, the whole row is withheld to avoid
             identifying them.
+        total_enrolled_learners:
+          type: integer
+          title: Total Enrolled Learners
+          description: 'Deprecated: use actively_enrolled_learners, which this always
+            equals.'
+          deprecated: true
         engaged_learners:
           anyOf:
           - type: integer
@@ -1342,6 +1368,7 @@ components:
       - organization_name
       - courserun_readable_id
       - courserun_title
+      - actively_enrolled_learners
       - total_enrolled_learners
       - engaged_learners
       - engagement_rate_pct
@@ -1727,14 +1754,22 @@ components:
           description: Learners enrolled in at least one course under the contract.
             When too few learners are in the group, the whole row is withheld to avoid
             identifying them.
+        actively_enrolled_learners:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Actively Enrolled Learners
+          description: Learners on the contract whose enrollment is still active.
+            Withheld when too few learners are in the group to report without identifying
+            them.
         active_learners:
           anyOf:
           - type: integer
           - type: 'null'
           title: Active Learners
-          description: Learners on the contract whose enrollment is still active.
-            Withheld when too few learners are in the group to report without identifying
-            them.
+          description: 'Deprecated: use actively_enrolled_learners, which this always
+            equals.'
+          deprecated: true
         certified_learners:
           anyOf:
           - type: integer
@@ -1777,6 +1812,7 @@ components:
       - seat_limit
       - b2b_contract_membership_type
       - seats_consumed
+      - actively_enrolled_learners
       - active_learners
       - certified_learners
       - learners_certified
@@ -1786,7 +1822,7 @@ components:
       description: 'mv_b2b_contract_utilization — grain: org x contract.
 
 
-        ``seats_consumed`` is the primary cohort. ``active_learners`` and
+        ``seats_consumed`` is the primary cohort. ``actively_enrolled_learners`` and
 
         ``certified_learners`` are secondary counts, nulled when nonzero but below
 
@@ -1803,7 +1839,7 @@ components:
 
         always equal to it and floored the same way, kept until clients read the
 
-        new name.'
+        new name. ``active_learners`` is the same for ``actively_enrolled_learners``.'
     CourseRun:
       properties:
         courserun_id:
@@ -1910,13 +1946,21 @@ components:
           title: Enrolled Learners
           description: Learners enrolled in this course run. When too few learners
             are in the group, the whole row is withheld to avoid identifying them.
+        actively_enrolled_learners:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Actively Enrolled Learners
+          description: Enrolled learners whose enrollment is still active. Withheld
+            when too few learners are in the group to report without identifying them.
         active_learners:
           anyOf:
           - type: integer
           - type: 'null'
           title: Active Learners
-          description: Enrolled learners whose enrollment is still active. Withheld
-            when too few learners are in the group to report without identifying them.
+          description: 'Deprecated: use actively_enrolled_learners, which this always
+            equals.'
+          deprecated: true
         passing_learners:
           anyOf:
           - type: integer
@@ -1932,13 +1976,21 @@ components:
           description: Enrolled learners who earned a certificate that hasn't been
             revoked. Withheld when too few learners are in the group to report without
             identifying them.
+        actively_enrolled_rate_pct:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Actively Enrolled Rate Pct
+          description: Percentage of enrolled learners whose enrollment is still active.
+            Withheld when the learner count it is based on is withheld.
         active_rate_pct:
           anyOf:
           - type: number
           - type: 'null'
           title: Active Rate Pct
-          description: Percentage of enrolled learners whose enrollment is still active.
-            Withheld when the learner count it is based on is withheld.
+          description: 'Deprecated: use actively_enrolled_rate_pct, which this always
+            equals.'
+          deprecated: true
         completion_rate_pct:
           anyOf:
           - type: number
@@ -1957,9 +2009,11 @@ components:
       - courserun_readable_id
       - courserun_title
       - enrolled_learners
+      - actively_enrolled_learners
       - active_learners
       - passing_learners
       - certified_learners
+      - actively_enrolled_rate_pct
       - active_rate_pct
       - completion_rate_pct
       title: EnrollmentCompletionFunnel
@@ -1967,36 +2021,49 @@ components:
         course_run.
 
 
-        ``enrolled_learners`` is the primary cohort. ``active_rate_pct`` and
+        ``enrolled_learners`` is the primary cohort.
 
-        ``completion_rate_pct`` are ``active_learners`` and ``certified_learners``
+        ``actively_enrolled_rate_pct`` and ``completion_rate_pct`` are
 
-        over ``enrolled_learners``, each nulled with its numerator.
+        ``actively_enrolled_learners`` and ``certified_learners`` over
+
+        ``enrolled_learners``, each nulled with its numerator.
 
 
-        The complement rule withholds ``active_learners`` when 1 to 4 learners have
+        ``active_learners`` and ``active_rate_pct`` are the deprecated names for
 
-        unenrolled, and that hides nothing from an organization''s managers. The
+        ``actively_enrolled_learners`` and ``actively_enrolled_rate_pct``: always
 
-        content engagement endpoint publishes the same count of active enrollments
+        equal to them and floored the same way, kept until clients read the new
 
-        as ``total_enrolled_learners``, so the difference from ``enrolled_learners``
+        names. ``monthly_active_learners`` on the engagement trends counts learners
 
-        gives the withheld complement back. ``/learner-progress`` with
+        who did course work, not this enrollment measure.
 
-        ``include_inactive=true`` already lists ``enrollment_is_active`` per learner
 
-        to the same callers, with no floor and no consent check, so guarding content
+        The complement rule withholds ``actively_enrolled_learners`` when 1 to 4
 
-        engagement would withhold its rows to protect a figure listed one endpoint
+        learners have unenrolled, and that hides nothing from an organization''s
 
-        over. That difference is accepted. The rule still matters for
+        managers. The content engagement endpoint publishes the same count of
 
-        ``passing_learners`` and ``certified_learners``: those outcomes are
+        active enrollments as ``actively_enrolled_learners``, so the difference
 
-        consent-gated per learner, so the learner endpoints don''t give their
+        from ``enrolled_learners`` gives the withheld complement back.
 
-        complements.'
+        ``/learner-progress`` with ``include_inactive=true`` already lists
+
+        ``enrollment_is_active`` per learner to the same callers, with no floor and
+
+        no consent check, so guarding content engagement would withhold its rows to
+
+        protect a figure listed one endpoint over. That difference is accepted. The
+
+        rule still matters for ``passing_learners`` and ``certified_learners``:
+
+        those outcomes are consent-gated per learner, so the learner endpoints
+
+        don''t give their complements.'
     HTTPValidationError:
       properties:
         detail:
@@ -2582,14 +2649,22 @@ components:
           description: Learners enrolled in at least one course under the contract.
             When too few learners are in the group, the whole row is withheld to avoid
             identifying them.
+        actively_enrolled_learners:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Actively Enrolled Learners
+          description: Learners on the contract whose enrollment is still active.
+            Withheld when too few learners are in the group to report without identifying
+            them.
         active_learners:
           anyOf:
           - type: integer
           - type: 'null'
           title: Active Learners
-          description: Learners on the contract whose enrollment is still active.
-            Withheld when too few learners are in the group to report without identifying
-            them.
+          description: 'Deprecated: use actively_enrolled_learners, which this always
+            equals.'
+          deprecated: true
         certified_learners:
           anyOf:
           - type: integer
@@ -2632,6 +2707,7 @@ components:
       - seat_limit
       - b2b_contract_membership_type
       - seats_consumed
+      - actively_enrolled_learners
       - active_learners
       - certified_learners
       - seat_utilization_pct
@@ -2646,7 +2722,11 @@ components:
 
         view from ``b2b_contract_is_active``, ``seat_utilization_pct`` and
 
-        ``b2b_contract_end_date``.'
+        ``b2b_contract_end_date``. ``active_learners`` is the deprecated name for
+
+        ``actively_enrolled_learners``: always equal to it and floored the same
+
+        way, kept until clients read the new name.'
     MonthlyEngagementTrend:
       properties:
         organization_key:

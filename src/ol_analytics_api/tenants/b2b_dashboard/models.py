@@ -100,7 +100,7 @@ class AdminAnalyticsResponse[RowT: SQLModel](BaseModel):
 class ContractUtilization(SQLModel):
     """mv_b2b_contract_utilization — grain: org x contract.
 
-    ``seats_consumed`` is the primary cohort. ``active_learners`` and
+    ``seats_consumed`` is the primary cohort. ``actively_enrolled_learners`` and
     ``certified_learners`` are secondary counts, nulled when nonzero but below
     the floor. ``completion_rate_pct`` is ``certified_learners`` over
     ``seats_consumed`` and is nulled with it. ``seat_utilization_pct`` is
@@ -109,19 +109,25 @@ class ContractUtilization(SQLModel):
 
     ``learners_certified`` is the deprecated name for ``certified_learners``:
     always equal to it and floored the same way, kept until clients read the
-    new name.
+    new name. ``active_learners`` is the same for ``actively_enrolled_learners``.
     """
 
     cohort_policy: ClassVar[CohortPolicy] = CohortPolicy(
         primary="seats_consumed",
-        secondary=("active_learners", "certified_learners", "learners_certified"),
+        secondary=(
+            "actively_enrolled_learners",
+            "active_learners",
+            "certified_learners",
+            "learners_certified",
+        ),
         derived={"completion_rate_pct": ("certified_learners",)},
         # All are counted from users the contract's enrollments already
-        # produced (`active_learners` filters those enrollments;
+        # produced (`actively_enrolled_learners` filters those enrollments;
         # `certified_learners` counts certificates on the same contract's
         # course runs, which a learner can only hold by enrolling), so each is
         # a subset of the seats consumed.
         contained_in={
+            "actively_enrolled_learners": "seats_consumed",
             "active_learners": "seats_consumed",
             "certified_learners": "seats_consumed",
             "learners_certified": "seats_consumed",
@@ -149,8 +155,12 @@ class ContractUtilization(SQLModel):
     seats_consumed: int = Field(
         description=f"Learners enrolled in at least one course under the contract. {_ROW_WITHHELD}"
     )
-    active_learners: int | None = Field(
+    actively_enrolled_learners: int | None = Field(
         description=f"Learners on the contract whose enrollment is still active. {_WITHHELD}"
+    )
+    active_learners: int | None = Field(
+        description="Deprecated: use actively_enrolled_learners, which this always equals.",
+        schema_extra={"deprecated": True},
     )
     certified_learners: int | None = Field(
         description=(
@@ -243,32 +253,45 @@ class ContractNeedsAttention(SQLModel):
 class EnrollmentCompletionFunnel(SQLModel):
     """mv_b2b_enrollment_completion_funnel — grain: org x contract x course_run.
 
-    ``enrolled_learners`` is the primary cohort. ``active_rate_pct`` and
-    ``completion_rate_pct`` are ``active_learners`` and ``certified_learners``
-    over ``enrolled_learners``, each nulled with its numerator.
+    ``enrolled_learners`` is the primary cohort.
+    ``actively_enrolled_rate_pct`` and ``completion_rate_pct`` are
+    ``actively_enrolled_learners`` and ``certified_learners`` over
+    ``enrolled_learners``, each nulled with its numerator.
 
-    The complement rule withholds ``active_learners`` when 1 to 4 learners have
-    unenrolled, and that hides nothing from an organization's managers. The
-    content engagement endpoint publishes the same count of active enrollments
-    as ``total_enrolled_learners``, so the difference from ``enrolled_learners``
-    gives the withheld complement back. ``/learner-progress`` with
-    ``include_inactive=true`` already lists ``enrollment_is_active`` per learner
-    to the same callers, with no floor and no consent check, so guarding content
-    engagement would withhold its rows to protect a figure listed one endpoint
-    over. That difference is accepted. The rule still matters for
-    ``passing_learners`` and ``certified_learners``: those outcomes are
-    consent-gated per learner, so the learner endpoints don't give their
-    complements.
+    ``active_learners`` and ``active_rate_pct`` are the deprecated names for
+    ``actively_enrolled_learners`` and ``actively_enrolled_rate_pct``: always
+    equal to them and floored the same way, kept until clients read the new
+    names. ``monthly_active_learners`` on the engagement trends counts learners
+    who did course work, not this enrollment measure.
+
+    The complement rule withholds ``actively_enrolled_learners`` when 1 to 4
+    learners have unenrolled, and that hides nothing from an organization's
+    managers. The content engagement endpoint publishes the same count of
+    active enrollments as ``actively_enrolled_learners``, so the difference
+    from ``enrolled_learners`` gives the withheld complement back.
+    ``/learner-progress`` with ``include_inactive=true`` already lists
+    ``enrollment_is_active`` per learner to the same callers, with no floor and
+    no consent check, so guarding content engagement would withhold its rows to
+    protect a figure listed one endpoint over. That difference is accepted. The
+    rule still matters for ``passing_learners`` and ``certified_learners``:
+    those outcomes are consent-gated per learner, so the learner endpoints
+    don't give their complements.
     """
 
     cohort_policy: ClassVar[CohortPolicy] = CohortPolicy(
         primary="enrolled_learners",
-        secondary=("active_learners", "passing_learners", "certified_learners"),
+        secondary=(
+            "actively_enrolled_learners",
+            "active_learners",
+            "passing_learners",
+            "certified_learners",
+        ),
         derived={
-            "active_rate_pct": ("active_learners",),
+            "actively_enrolled_rate_pct": ("actively_enrolled_learners",),
+            "active_rate_pct": ("actively_enrolled_learners",),
             "completion_rate_pct": ("certified_learners",),
         },
-        # All three are counted off the enrollment row itself — grades and
+        # All four are counted off the enrollment row itself — grades and
         # certificates join on `(user, course_run)` from the enrollment — so
         # each names a subset of the enrolled learners. They are declared flat
         # under the primary rather than chained (certified inside passing
@@ -276,6 +299,7 @@ class EnrollmentCompletionFunnel(SQLModel):
         # containments, and declaring one that does not hold fails closed and
         # would suppress good data.
         contained_in={
+            "actively_enrolled_learners": "enrolled_learners",
             "active_learners": "enrolled_learners",
             "passing_learners": "enrolled_learners",
             "certified_learners": "enrolled_learners",
@@ -295,8 +319,12 @@ class EnrollmentCompletionFunnel(SQLModel):
     enrolled_learners: int = Field(
         description=f"Learners enrolled in this course run. {_ROW_WITHHELD}"
     )
-    active_learners: int | None = Field(
+    actively_enrolled_learners: int | None = Field(
         description=f"Enrolled learners whose enrollment is still active. {_WITHHELD}"
+    )
+    active_learners: int | None = Field(
+        description="Deprecated: use actively_enrolled_learners, which this always equals.",
+        schema_extra={"deprecated": True},
     )
     passing_learners: int | None = Field(
         description=f"Enrolled learners with a passing grade. {_WITHHELD}"
@@ -306,10 +334,14 @@ class EnrollmentCompletionFunnel(SQLModel):
             f"Enrolled learners who earned a certificate that hasn't been revoked. {_WITHHELD}"
         )
     )
-    active_rate_pct: float | None = Field(
+    actively_enrolled_rate_pct: float | None = Field(
         description=(
             f"Percentage of enrolled learners whose enrollment is still active. {_DERIVED_WITHHELD}"
         )
+    )
+    active_rate_pct: float | None = Field(
+        description="Deprecated: use actively_enrolled_rate_pct, which this always equals.",
+        schema_extra={"deprecated": True},
     )
     completion_rate_pct: float | None = Field(
         description=(
@@ -540,7 +572,7 @@ class ContentEngagementDepth(SQLModel):
     The chatbot columns are exact: ``total_chatbot_interactions`` sums over,
     and ``chatbot_adoption_pct`` divides by, ``chatbot_users`` — which this
     view does emit, so both are correctly floored. ``engagement_rate_pct`` is
-    ``engaged_learners / total_enrolled_learners``, also correct.
+    ``engaged_learners / actively_enrolled_learners``, also correct.
 
     The video and problem columns are floored through the cohorts the view now
     publishes (ol-data-platform PR #2520): ``total_videos_watched`` is summed
@@ -565,7 +597,7 @@ class ContentEngagementDepth(SQLModel):
     ``certificates_earned`` counts learners holding an unrevoked certificate
     for the run, whether or not their enrollment is still active
     (ol-data-platform PR #2913). So it is not a subset of
-    ``total_enrolled_learners``: a learner who certified and then unenrolled
+    ``actively_enrolled_learners``: a learner who certified and then unenrolled
     is counted here and not there. It is declared contained in it anyway, so
     besides its own floor it is withheld when the gap (enrolled minus
     certified) is below the floor and not 0, including below zero. That gap
@@ -579,11 +611,19 @@ class ContentEngagementDepth(SQLModel):
     PR #2982 every row of the progress fact carries the one contract the
     learner enrolled under, so a run offered under two contracts does not
     double the SUM.
+
+    ``total_enrolled_learners`` is the deprecated name for
+    ``actively_enrolled_learners``, kept until clients read the new name. A
+    policy has one primary, so the old name is a secondary contained in the
+    new one. It always equals the primary, so its complement is 0 and it clears
+    the floor whenever the row does: it is published with every row that is
+    published and needs no Optional type.
     """
 
     cohort_policy: ClassVar[CohortPolicy] = CohortPolicy(
-        primary="total_enrolled_learners",
+        primary="actively_enrolled_learners",
         secondary=(
+            "total_enrolled_learners",
             "engaged_learners",
             "video_watchers",
             "problem_attempters",
@@ -605,13 +645,14 @@ class ContentEngagementDepth(SQLModel):
         # who never watched one. The outer pair is walked transitively, so the
         # complement against total enrollment is checked too.
         contained_in={
-            "engaged_learners": "total_enrolled_learners",
+            "total_enrolled_learners": "actively_enrolled_learners",
+            "engaged_learners": "actively_enrolled_learners",
             "video_watchers": "engaged_learners",
             "problem_attempters": "engaged_learners",
             "chatbot_users": "engaged_learners",
             # Not inside the engaged learners: a certificate does not need a
             # day of tracked activity in the run.
-            "certificates_earned": "total_enrolled_learners",
+            "certificates_earned": "actively_enrolled_learners",
         },
     )
 
@@ -621,10 +662,14 @@ class ContentEngagementDepth(SQLModel):
         description="The course run's ID, e.g. course-v1:MITxT+14.310x+2T2026."
     )
     courserun_title: str = Field(description="The course's title.")
-    total_enrolled_learners: int = Field(
+    actively_enrolled_learners: int = Field(
         description=(
             f"Learners whose enrollment in this course run is still active. {_ROW_WITHHELD}"
         )
+    )
+    total_enrolled_learners: int = Field(
+        description="Deprecated: use actively_enrolled_learners, which this always equals.",
+        schema_extra={"deprecated": True},
     )
     engaged_learners: int | None = Field(
         description=(
@@ -689,17 +734,20 @@ class MitAdminContractHealth(SQLModel):
 
     Floored like ``ContractUtilization``. ``health_status`` is computed in the
     view from ``b2b_contract_is_active``, ``seat_utilization_pct`` and
-    ``b2b_contract_end_date``.
+    ``b2b_contract_end_date``. ``active_learners`` is the deprecated name for
+    ``actively_enrolled_learners``: always equal to it and floored the same
+    way, kept until clients read the new name.
     """
 
     cohort_policy: ClassVar[CohortPolicy] = CohortPolicy(
         primary="seats_consumed",
-        secondary=("active_learners", "certified_learners"),
+        secondary=("actively_enrolled_learners", "active_learners", "certified_learners"),
         derived={"completion_rate_pct": ("certified_learners",)},
-        # Same shape as ContractUtilization: both are counted off the
-        # contract's own enrollment rows, so both are subsets of the seats
+        # Same shape as ContractUtilization: all three are counted off the
+        # contract's own enrollment rows, so each is a subset of the seats
         # consumed.
         contained_in={
+            "actively_enrolled_learners": "seats_consumed",
             "active_learners": "seats_consumed",
             "certified_learners": "seats_consumed",
         },
@@ -726,8 +774,12 @@ class MitAdminContractHealth(SQLModel):
     seats_consumed: int = Field(
         description=f"Learners enrolled in at least one course under the contract. {_ROW_WITHHELD}"
     )
-    active_learners: int | None = Field(
+    actively_enrolled_learners: int | None = Field(
         description=f"Learners on the contract whose enrollment is still active. {_WITHHELD}"
+    )
+    active_learners: int | None = Field(
+        description="Deprecated: use actively_enrolled_learners, which this always equals.",
+        schema_extra={"deprecated": True},
     )
     certified_learners: int | None = Field(
         description=(
