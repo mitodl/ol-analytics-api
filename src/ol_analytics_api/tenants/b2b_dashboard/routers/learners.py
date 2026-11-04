@@ -26,6 +26,7 @@ from ol_analytics_api.core.db.client import starrocks_pool
 from ol_analytics_api.core.db.refresh_metadata import latest_refresh_timestamp
 from ol_analytics_api.tenants.b2b_dashboard import learner_queries
 from ol_analytics_api.tenants.b2b_dashboard.auth import (
+    NOT_LOADED_RESPONSES,
     require_contract_in_org,
     require_org_manager,
 )
@@ -51,6 +52,7 @@ router = APIRouter(
     # The org-manager gate runs first, so a caller who manages no part of this
     # org never reaches the probe that would tell them whether a contract exists.
     dependencies=[Depends(require_org_manager), Depends(require_contract_in_org)],
+    responses=NOT_LOADED_RESPONSES,
 )
 
 

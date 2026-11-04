@@ -25,12 +25,14 @@ from ol_analytics_api.tenants.b2b_dashboard.learner_models import (
     LearnerProgress,
     LearnerProgressResponse,
 )
+from tests.membership import answer_membership_probe, is_membership_probe
 
 # What _outcomes_shared() renders with consent_fail_open off and on.
 _CLOSED = "COALESCE(outcomes_decision, FALSE)"
 _OPEN = "COALESCE(outcomes_decision, TRUE)"
 
 ORG_ID = "11111111-1111-1111-1111-111111111111"
+OTHER_ORG_ID = "22222222-2222-2222-2222-222222222222"
 CONTRACT_ID = 101
 PATH = f"/api/v1/analytics/organizations/{ORG_ID}/contracts/{CONTRACT_ID}/learner-progress"
 _AS_OF = datetime.datetime(2026, 9, 15, 6, 0)  # noqa: DTZ001 - StarRocks returns naive UTC
@@ -81,7 +83,13 @@ class _FakePool:
     query, recording every call."""
 
     def __init__(
-        self, rows=(), total_count=0, withheld=0, status_counts=None, *, contract_exists=True
+        self,
+        rows=(),
+        total_count=0,
+        withheld=0,
+        status_counts=None,
+        *,
+        loaded=((ORG_ID, CONTRACT_ID),),
     ):
         self.rows = list(rows)
         self.counts = {
@@ -94,7 +102,7 @@ class _FakePool:
             "needs_attention_count": 0,
             **(status_counts or {}),
         }
-        self.contract_exists = contract_exists
+        self.loaded = loaded
         self.calls = []
 
     async def fetch_all(self, query, params=()):
@@ -103,8 +111,8 @@ class _FakePool:
             return [{"today": _TODAY}]
         if "information_schema" in query:
             return [{"as_of": _AS_OF}]
-        if query.startswith("SELECT 1 "):
-            return [{"1": 1}] if self.contract_exists else []
+        if is_membership_probe(query):
+            return answer_membership_probe(query, params, self.loaded)
         if "COUNT(*)" in query:
             return [self.counts]
         return self.rows
@@ -591,7 +599,7 @@ async def test_unknown_sort_key_is_rejected(app):
 
 
 async def test_contract_not_in_org_is_403(app):
-    pool = _FakePool(contract_exists=False)
+    pool = _FakePool(loaded=((OTHER_ORG_ID, CONTRACT_ID),))
     response = await _get(app, pool)
     assert response.status_code == 403
     assert not any("mv_b2b_learner_enrollment" in query for query, _ in pool.calls)

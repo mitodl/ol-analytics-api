@@ -28,6 +28,7 @@ from ol_analytics_api.tenants.b2b_dashboard.models import (
     MonthlyEngagementTrend,
 )
 from ol_analytics_api.tenants.b2b_dashboard.routers import admin, organizations
+from tests.membership import answer_membership_probe, is_membership_probe
 
 _AS_OF = datetime.datetime(2026, 7, 2, 4, 0, 0)  # noqa: DTZ001
 
@@ -39,6 +40,9 @@ def _userinfo_header(payload: dict) -> str:
 # The Keycloak org UUID (sso_organization_id) that require_org_manager matches on.
 ORG_A_ID = "11111111-1111-1111-1111-111111111111"
 OTHER_ORG_ID = "22222222-2222-2222-2222-222222222222"
+
+# The membership view's rows: ORG_A holds contract 101, and has been loaded.
+_LOADED = ((ORG_A_ID, 101),)
 
 
 def _manager_header(organization_id: str) -> str:
@@ -84,15 +88,17 @@ def _is_grain_scan(query):
     return _CONTRACT_TREND_MV in query
 
 
-def _fake_fetch_all(data_rows, total_count=0, finer_rows=None):
+def _fake_fetch_all(data_rows, total_count=0, finer_rows=None, loaded=_LOADED):
     """A fetch_all stub that answers the information_schema as_of probe with
-    _AS_OF, the envelope's total-count query with ``total_count``, the
-    cross-grain scan of the contract-grained MV with ``finer_rows``, and every
-    other query with the given MV rows."""
+    _AS_OF, the membership probes over ``loaded``, the envelope's total-count
+    query with ``total_count``, the cross-grain scan of the contract-grained MV
+    with ``finer_rows``, and every other query with the given MV rows."""
 
-    async def fetch_all(query, *_args):
+    async def fetch_all(query, params=()):
         if "information_schema" in query:
             return [{"as_of": _AS_OF}]
+        if is_membership_probe(query):
+            return answer_membership_probe(query, params, loaded)
         if _is_count_query(query):
             return [{"total_count": total_count}]
         if _is_grain_scan(query):
@@ -111,6 +117,8 @@ def _capture_page_query(captured, rows=(), total_count=0):
     async def fetch_all(query, params):
         if "information_schema" in query:
             return [{"as_of": _AS_OF}]
+        if is_membership_probe(query):
+            return answer_membership_probe(query, params, _LOADED)
         if _is_count_query(query):
             return [{"total_count": total_count}]
         if _is_grain_scan(query):
@@ -344,6 +352,8 @@ async def test_total_count_query_applies_the_anonymization_floor(app):
     async def fetch_all(query, params):
         if "information_schema" in query:
             return [{"as_of": _AS_OF}]
+        if is_membership_probe(query):
+            return answer_membership_probe(query, params, _LOADED)
         if _is_count_query(query):
             captured["query"] = query
             captured["params"] = params
@@ -1032,10 +1042,12 @@ async def test_org_endpoints_without_a_finer_grain_issue_no_scan(app):
     # the other four would be a round trip per request buying nothing.
     queries = []
 
-    async def fetch_all(query, *_args):
+    async def fetch_all(query, params=()):
         queries.append(query)
         if "information_schema" in query:
             return [{"as_of": _AS_OF}]
+        if is_membership_probe(query):
+            return answer_membership_probe(query, params, _LOADED)
         if _is_count_query(query):
             return [{"total_count": 0}]
         return []
@@ -1211,9 +1223,11 @@ async def test_admin_endpoint_403_without_realm_role(app):
 
 
 async def test_as_of_is_null_when_no_mv_has_refreshed(app):
-    async def fetch_all(query, *_args):
+    async def fetch_all(query, params=()):
         if "information_schema" in query:
             return [{"as_of": None}]
+        if is_membership_probe(query):
+            return answer_membership_probe(query, params, _LOADED)
         return []
 
     with (
@@ -1282,10 +1296,16 @@ async def test_org_endpoint_honors_limit_and_offset(app):
 
 
 async def test_org_endpoint_rejects_out_of_range_limit(app):
-    # limit above max_page_size (1000) is a 422 before any query runs.
-    with patch(
-        "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
-        new=AsyncMock(return_value=True),
+    # limit above max_page_size (1000) is a 422 before any panel query runs.
+    with (
+        patch(
+            "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
+            new=_fake_fetch_all([]),
+        ),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
     ):
         async with _client(app) as client:
             response = await client.get(
@@ -1361,16 +1381,14 @@ def _row_template() -> dict:
 # ─── contract-scoped endpoints ────────────────────────────────────────────────
 
 
-def _fake_fetch_all_with_contract(data_rows, *, contract_exists=True, total_count=0):
-    """Like _fake_fetch_all, but also answers the contract gate's existence
-    probe — `SELECT 1 ... LIMIT 1`, which returns a row when the contract
-    belongs to the org and nothing when it does not."""
+def _fake_fetch_all_with_contract(data_rows, *, loaded=_LOADED, total_count=0):
+    """Like _fake_fetch_all, without the cross-grain scan."""
 
-    async def fetch_all(query, *_args):
+    async def fetch_all(query, params=()):
         if "information_schema" in query:
             return [{"as_of": _AS_OF}]
-        if query.startswith("SELECT 1 "):
-            return [{"1": 1}] if contract_exists else []
+        if is_membership_probe(query):
+            return answer_membership_probe(query, params, loaded)
         if _is_count_query(query):
             return [{"total_count": total_count}]
         return list(data_rows)
@@ -1452,7 +1470,7 @@ async def test_contract_not_in_org_is_403_not_an_empty_result(app):
     with (
         patch(
             "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
-            new=_fake_fetch_all_with_contract([], contract_exists=False),
+            new=_fake_fetch_all_with_contract([], loaded=((OTHER_ORG_ID, 999),)),
         ),
         patch(
             "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
@@ -1466,6 +1484,60 @@ async def test_contract_not_in_org_is_403_not_an_empty_result(app):
             )
     assert response.status_code == 403
     assert "999" in response.json()["detail"]
+
+
+async def _get_recording(app, path, loaded):
+    """GET ``path`` as ORG_A's manager over a membership view holding
+    ``loaded``; returns the response and every query that reached the pool."""
+    queries = []
+    fake = _fake_fetch_all_with_contract([], loaded=loaded)
+
+    async def fetch_all(query, params=()):
+        queries.append(query)
+        return await fake(query, params)
+
+    with (
+        patch("ol_analytics_api.core.db.client.starrocks_pool.fetch_all", new=fetch_all),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(path, headers={"X-Userinfo": _manager_header(ORG_A_ID)})
+    return response, queries
+
+
+async def test_contract_the_warehouse_has_not_loaded_is_404_not_403(app):
+    # MITx Online created contract 202 and linked a manager to it, but no load
+    # has brought it in yet. A 403 would tell them they are not allowed; the
+    # code lets the dashboard say the data is on its way instead.
+    response, queries = await _get_recording(
+        app,
+        f"/api/v1/analytics/organizations/{ORG_A_ID}/contracts/202/enrollment-funnel",
+        _LOADED,
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "contract_not_loaded"
+    assert all(is_membership_probe(query) for query in queries)
+
+
+async def test_org_the_warehouse_has_not_loaded_is_404_not_an_empty_result(app):
+    response, queries = await _get_recording(
+        app, f"/api/v1/analytics/organizations/{ORG_A_ID}/contract-utilization", ()
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "organization_not_loaded"
+    assert all(is_membership_probe(query) for query in queries)
+
+
+async def test_contract_route_on_an_unloaded_org_reports_the_contract(app):
+    # The contract is what the page is about, and it is missing too.
+    response, _ = await _get_recording(
+        app, f"/api/v1/analytics/organizations/{ORG_A_ID}/contracts/101/learners", ()
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "contract_not_loaded"
 
 
 async def test_contract_route_still_requires_org_management(app):

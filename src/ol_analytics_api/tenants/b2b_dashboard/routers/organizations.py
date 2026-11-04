@@ -37,7 +37,11 @@ from ol_analytics_api.core.db.query import (
     fetch_visible_count,
 )
 from ol_analytics_api.core.db.refresh_metadata import latest_refresh_timestamp
-from ol_analytics_api.tenants.b2b_dashboard.auth import require_org_manager
+from ol_analytics_api.tenants.b2b_dashboard.auth import (
+    NOT_LOADED_RESPONSES,
+    require_org_loaded,
+    require_org_manager,
+)
 from ol_analytics_api.tenants.b2b_dashboard.config import settings
 from ol_analytics_api.tenants.b2b_dashboard.models import (
     ContentEngagementDepth,
@@ -53,7 +57,8 @@ from ol_analytics_api.tenants.b2b_dashboard.pagination import Pagination, pagina
 router = APIRouter(
     prefix="/organizations/{organization_id}",
     tags=["organizations"],
-    dependencies=[Depends(require_org_manager)],
+    dependencies=[Depends(require_org_manager), Depends(require_org_loaded)],
+    responses=NOT_LOADED_RESPONSES,
 )
 
 # Validated as a safe SQL identifier at settings-load time (B2BDashboardSettings
