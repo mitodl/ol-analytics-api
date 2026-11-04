@@ -1,4 +1,9 @@
-"""Response schemas for the learner-progress endpoint.
+"""Response schemas for the learner-progress and learners endpoints.
+
+``LearnerProgress`` is one enrollment row, and is ``LearnerIdentity`` plus
+``LearnerEnrollment``. ``LearnerWithEnrollments`` carries the identity once and
+nests a ``LearnerEnrollment`` per course run, so both endpoints share one set
+of field definitions and one consent validator.
 
 Kept apart from models.py, where every row model declares a ``cohort_policy``.
 These rows identify individual learners, so no floor applies and nothing here
@@ -18,12 +23,20 @@ developer detail lives here instead:
   enrollment list on it, never on ``email``.
 - ``enrollment_is_active`` and the enrollment fields are not consent-gated;
   everything in ``_OUTCOME_FIELDS`` is.
+- ``outcomes_consent_status`` is the recorded decision for the contract before
+  ``consent_fail_open`` applies, so ``not_recorded`` can sit beside either
+  value of ``outcomes_shared``. It is not consent-gated.
 - ``completion_status``: an unrevoked certificate is ``certified``. A revoked
   certificate doesn't count, and the status then follows the grade, so it can
   read ``passed``, ``in_progress`` or ``not_started``. ``in_progress`` means a
   nonzero grade or any tracked activity.
 - ``last_active_on`` is NULL, whatever ``outcomes_shared`` says, until the
   learner has any tracked activity.
+- ``days_active``, ``videos_watched``, ``problems_attempted`` and
+  ``chatbot_interactions`` come from the view zero-filled, so NULL means
+  withheld, never "none". The three per-type counts sum per-day distinct
+  blocks, matching the learner-records tenant and the b2b_analytics totals.
+  ``chatbot_interactions`` counts Open edX chat-drawer submits only.
 - ``outcomes_withheld_count`` counts the rows in ``total_count`` whose
   ``outcomes_shared`` is false. ``completion_status_counts`` buckets the rest
   by status; the two together add up to ``total_count``, since
@@ -43,22 +56,25 @@ developer detail lives here instead:
   counted either.
 - ``needs_attention`` is the per-row form of that same rule, built from the
   one ``learner_queries._needs_attention`` expression the count is built on,
-  against a cutoff the router resolves on the cluster once per request. So a
-  row and the count it is summarized by apply the same rule on the same date,
-  even though they arrive on separate round trips. Read it rather than
-  recomputing it client-side: the cutoff is 30 days before the StarRocks
-  cluster's today, which a browser's own "today" can be a day off from. It is
-  consent-gated, so it is NULL exactly when the other outcome fields are; it
-  is never NULL otherwise, not even on a row with no ``last_active_on``.
+  against the UTC date the router resolves on the cluster once per request. So
+  a row and the count it is summarized by apply the same rule on the same
+  date, even though they arrive on separate round trips. Read it rather than
+  recomputing it client-side: the rule compares against the UTC date, which a
+  browser's own "today" can be a day off from. It is consent-gated, so it is
+  NULL exactly when the other outcome fields are; it is never NULL otherwise,
+  not even on a row with no ``last_active_on``.
 """
 
 from __future__ import annotations
 
 import datetime
+from collections.abc import Iterable, Mapping
 from enum import StrEnum
-from typing import Annotated, Self
+from typing import Annotated, Any, Self
 
 from pydantic import AfterValidator, BaseModel, Field, model_validator
+
+from ol_analytics_api.core.consent import ConsentStatus
 
 
 def _assume_utc(value: datetime.datetime) -> datetime.datetime:
@@ -74,9 +90,14 @@ _OUTCOME_FIELDS = (
     "is_passing",
     "grade",
     "letter_grade",
+    "content_progress",
     "certificate_issued_on",
     "certificate_is_revoked",
     "last_active_on",
+    "days_active",
+    "videos_watched",
+    "problems_attempted",
+    "chatbot_interactions",
     "needs_attention",
 )
 
@@ -93,8 +114,8 @@ class CompletionStatus(StrEnum):
     CERTIFIED = "certified"
 
 
-class LearnerProgress(BaseModel):
-    """One learner's enrollment in one course run under the contract."""
+class LearnerIdentity(BaseModel):
+    """Who the learner is. Shared by a per-enrollment row and a per-learner one."""
 
     learner_id: str = Field(
         description="The learner's account ID. It stays the same if their email address changes."
@@ -103,6 +124,15 @@ class LearnerProgress(BaseModel):
         description="The learner's email address. It may differ from the one they enrolled with."
     )
     full_name: str | None = Field(description="The learner's name, if they've provided one.")
+
+
+class LearnerEnrollment(BaseModel):
+    """One enrollment in one course run under the contract.
+
+    Holds the ``_gate_outcomes`` validator, so every model built from it gates
+    outcomes the same way.
+    """
+
     courserun_readable_id: str = Field(
         description="The course run's ID, e.g. course-v1:MITxT+14.310x+2T2026."
     )
@@ -124,6 +154,12 @@ class LearnerProgress(BaseModel):
         description=(
             "The enrollment track, for example verified or audit. Audit enrollments don't earn "
             "certificates."
+        )
+    )
+    outcomes_consent_status: ConsentStatus = Field(
+        description=(
+            "What the learner answered when asked to share their progress: consented, "
+            "declined, or not recorded if they haven't answered yet. Always shown."
         )
     )
     outcomes_shared: bool = Field(
@@ -148,6 +184,14 @@ class LearnerProgress(BaseModel):
     letter_grade: str | None = Field(
         description=f"The learner's letter grade, when the course assigns one. {_HIDDEN}"
     )
+    content_progress: float | None = Field(
+        description=(
+            "How much of the course content the learner has completed, from 0 to 1. Times 100 "
+            "it is the percent complete on the course's progress page. It isn't the grade, so "
+            "a learner can be certified below 1. Empty if the course has no content to count. "
+            f"{_HIDDEN}"
+        )
+    )
     certificate_issued_on: UtcDatetime | None = Field(
         description=(
             f"When the learner's certificate was issued. Empty if they don't have one. {_HIDDEN}"
@@ -165,6 +209,28 @@ class LearnerProgress(BaseModel):
             f"{_HIDDEN}"
         )
     )
+    days_active: int | None = Field(
+        description=f"How many different days the learner did anything in the course. {_HIDDEN}"
+    )
+    videos_watched: int | None = Field(
+        description=(
+            "How many videos the learner played, counted once per day, so a video played on "
+            f"two different days counts twice. {_HIDDEN}"
+        )
+    )
+    problems_attempted: int | None = Field(
+        description=(
+            "How many problems the learner submitted an answer to, counted once per day, so a "
+            "problem attempted on two different days counts twice. Viewing the answer isn't an "
+            f"attempt. {_HIDDEN}"
+        )
+    )
+    chatbot_interactions: int | None = Field(
+        description=(
+            "How many times the learner sent the course's chatbot a message, counting each "
+            f"conversation at each place in the course once per day. {_HIDDEN}"
+        )
+    )
     needs_attention: bool | None = Field(
         description=(
             "Whether this learner may need a nudge: they never started the course, or they "
@@ -180,6 +246,40 @@ class LearnerProgress(BaseModel):
             for name in _OUTCOME_FIELDS:
                 setattr(self, name, None)
         return self
+
+
+# LearnerEnrollment is listed first so that, with Pydantic collecting fields in
+# reversed MRO order, the identity fields still come first and the published
+# schema keeps its field order.
+class LearnerProgress(LearnerEnrollment, LearnerIdentity):
+    """One learner's enrollment in one course run under the contract."""
+
+
+class LearnerWithEnrollments(LearnerIdentity):
+    """One learner under the contract, with all of their active enrollments."""
+
+    enrollments: list[LearnerEnrollment] = Field(
+        description=(
+            "Every course the learner is enrolled in under the contract, including the ones "
+            "that didn't match the filters."
+        )
+    )
+
+    @classmethod
+    def from_rows(cls, rows: Iterable[Mapping[str, Any]]) -> list[Self]:
+        """Nest flat enrollment rows into learners, in the order rows arrive.
+
+        Keyed by ``learner_id`` rather than grouped by adjacency, so a change
+        to the query's ordering can't emit one learner twice. The learner's
+        name and email come from their first row.
+        """
+        learners: dict[str, Self] = {}
+        for row in rows:
+            learner = learners.get(row["learner_id"])
+            if learner is None:
+                learner = learners[row["learner_id"]] = cls(**row, enrollments=[])
+            learner.enrollments.append(LearnerEnrollment(**row))
+        return list(learners.values())
 
 
 class CompletionStatusCounts(BaseModel):
@@ -284,3 +384,20 @@ class LearnerProgressResponse(BaseModel):
         )
     )
     data: list[LearnerProgress] = Field(description="This page of enrollments.")
+
+
+class LearnersResponse(BaseModel):
+    """The org envelope (``organization_id``, ``as_of``, ``total_count``,
+    ``data``), paged by learner. ``total_count`` counts learners, not
+    enrollments, and the envelope carries no other counts."""
+
+    organization_id: str = Field(description="The organization's ID.")
+    as_of: UtcDatetime | None = Field(
+        description="When the data was last updated. Empty before the first update."
+    )
+    total_count: int = Field(
+        description=(
+            "Learners with at least one enrollment that matches the filters, across all pages."
+        )
+    )
+    data: list[LearnerWithEnrollments] = Field(description="This page of learners.")

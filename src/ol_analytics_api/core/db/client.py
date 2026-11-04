@@ -14,13 +14,52 @@ different schemas over the same StarRocks cluster.
 from __future__ import annotations
 
 import asyncio
+import ssl
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
 import aiomysql
+import certifi
 
 from ol_analytics_api.core.config import settings
+
+
+class _FixedServerNameSSLContext(ssl.SSLContext):
+    """Verifies the peer against ``server_name`` whatever host was dialed.
+
+    aiomysql upgrades to TLS with ``server_hostname`` set to the host it
+    connected to, and has no way to pass a different one. In-cluster that host
+    is the FE Service's DNS name, while the FE presents the cert-manager
+    certificate for the cluster's public domain."""
+
+    server_name: str
+
+    def wrap_bio(
+        self,
+        incoming: ssl.MemoryBIO,
+        outgoing: ssl.MemoryBIO,
+        server_side: bool = False,  # noqa: FBT001, FBT002
+        server_hostname: str | bytes | None = None,  # noqa: ARG002
+        session: ssl.SSLSession | None = None,
+    ) -> ssl.SSLObject:
+        return super().wrap_bio(
+            incoming,
+            outgoing,
+            server_side=server_side,
+            server_hostname=self.server_name,
+            session=session,
+        )
+
+
+def starrocks_ssl_context(server_name: str) -> ssl.SSLContext | None:
+    if not server_name:
+        return None
+    # PROTOCOL_TLS_CLIENT turns on CERT_REQUIRED and check_hostname.
+    context = _FixedServerNameSSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.load_verify_locations(cafile=certifi.where())
+    context.server_name = server_name
+    return context
 
 
 class PoolAcquireTimeoutError(Exception):
@@ -32,6 +71,11 @@ class PoolAcquireTimeoutError(Exception):
     ping() acquires through the same path, this is also what keeps a
     saturated pool from blocking the readiness probe indefinitely (which would
     otherwise cascade the whole pod out of rotation)."""
+
+
+class PlaintextConnectionError(Exception):
+    """A pooled connection skipped TLS although
+    ``starrocks_tls_server_name`` is set (see StarRocksPool.cursor)."""
 
 
 class StarRocksPool:
@@ -52,6 +96,7 @@ class StarRocksPool:
             maxsize=settings.starrocks_pool_max_size,
             autocommit=True,
             cursorclass=aiomysql.cursors.DictCursor,
+            ssl=starrocks_ssl_context(settings.starrocks_tls_server_name),
             # Bound new-connection establishment so a slow/unreachable
             # StarRocks can't wedge a pool fill.
             connect_timeout=settings.starrocks_connect_timeout_seconds,
@@ -106,6 +151,14 @@ class StarRocksPool:
             )
             raise PoolAcquireTimeoutError(msg) from exc
         try:
+            # aiomysql upgrades to TLS only when the FE greeting offers it, and
+            # otherwise carries on in plaintext, so an on-path peer can strip
+            # TLS by clearing that flag. Refuse such a connection before any
+            # query goes over it. aiomysql exposes no public flag for this.
+            if settings.starrocks_tls_server_name and not conn._secure:  # noqa: SLF001
+                conn.close()
+                msg = "StarRocks FE did not negotiate TLS; refusing a plaintext connection"
+                raise PlaintextConnectionError(msg)
             async with conn.cursor() as cur:
                 yield cur
         finally:

@@ -13,15 +13,21 @@ cursor). The outer select applies consent, the cross-collection filters,
 ordering and paging, so the page and its count always share one WHERE clause.
 
 Consent is enforced here. ``_outcomes_shared()`` returns the SQL expression
-deciding whether a record's outcomes may be disclosed. No consent field exists
-upstream yet, so it is a literal chosen by ``consent_fail_open``: FALSE by
-default, which fails closed and nulls every outcome column, or TRUE where a
-deployment opts to fail open. When the field lands, the inner selects project
-it and this becomes ``COALESCE(<consent column>, <that literal>)``, so a
-recorded decision always wins and the setting only covers learners with none.
+deciding whether a record's outcomes may be disclosed. The MVs carry the
+learner's recorded decision as a nullable ``outcomes_shared`` (null = none
+recorded, ol-data-platform#2785), which the inner selects project as
+``outcomes_decision``; the outer alias ``outcomes_shared`` is the resolved
+answer, and a WHERE clause must never see that name mean both. The expression
+is ``COALESCE(outcomes_decision, <literal>)``, the literal chosen by
+``consent_fail_open``: a recorded decision always wins, and the setting only
+covers learners with none (FALSE by default, which fails closed). Both it and
+``outcomes_consent_status``, the unresolved decision, come from core/consent.py,
+which the b2b_dashboard tenant shares.
 
-The consent date isn't in the warehouse yet, so the inner selects project it
-as NULL; filling it in touches the inner select only.
+Consent is recorded per contract. An enrollment carries its own contract's
+decision. A learner rollup takes the decision for the contracts it counts
+outcomes from: ``mv_b2b_learner``'s organization-grain one, or under
+``contract_id`` that contract's alone (see ``_recomputed_learners``).
 """
 
 from __future__ import annotations
@@ -31,6 +37,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+from ol_analytics_api.core.consent import CONSENT_STATUS_SQL, outcomes_shared_sql
 from ol_analytics_api.core.db.identifiers import validate_sql_identifier
 from ol_analytics_api.tenants.b2b_learner_records.config import settings
 
@@ -40,22 +47,17 @@ CONTRACT_COURSERUN_MV = "mv_b2b_contract_courserun"
 
 
 def _outcomes_shared() -> str:
-    return "TRUE" if settings.consent_fail_open else "FALSE"
+    return outcomes_shared_sql(fail_open=settings.consent_fail_open)
 
 
-# An unrevoked certificate is certified without requiring is_passing: production
-# has enrollments with an unrevoked certificate and is_passing false
-# (ol-data-platform#2669). A revoked certificate falls through to the grade.
-# in_progress must match mv_b2b_learner.courses_in_progress: a nonzero grade or
-# any tracked activity (ol-data-platform#2693).
-_COMPLETION_STATUS = (
-    "CASE"
-    " WHEN certificate_is_revoked = FALSE THEN 'certified'"
-    " WHEN is_passing = TRUE THEN 'passed'"
-    " WHEN grade_value > 0 OR last_active_on IS NOT NULL THEN 'in_progress'"
-    " ELSE 'not_started'"
-    " END"
+# Any recorded decline withholds, then any contract with no decision leaves it
+# undecided, and only a consent on every contract shares.
+_ROLLUP_DECISION = (
+    "CASE WHEN SUM(CASE WHEN outcomes_shared = FALSE THEN 1 ELSE 0 END) > 0 THEN FALSE"
+    " WHEN SUM(CASE WHEN outcomes_shared IS NULL THEN 1 ELSE 0 END) > 0 THEN NULL"
+    " ELSE TRUE END"
 )
+
 
 _LEARNER_COLUMNS = (
     "learner_id",
@@ -77,7 +79,6 @@ _LEARNER_OUTCOMES = (
     "courses_certified",
     "certificates_earned",
 )
-_LEARNER_PENDING = " NULL AS outcomes_consent_on,"
 
 _ENROLLMENT_COLUMNS = (
     "learner_id",
@@ -100,6 +101,7 @@ _ENROLLMENT_OUTCOMES = (
     "is_passing",
     "grade",
     "letter_grade",
+    "content_progress",
     "certificate_issued_on",
     "certificate_is_revoked",
     "last_active_on",
@@ -108,10 +110,6 @@ _ENROLLMENT_OUTCOMES = (
     "problems_attempted",
     "chatbot_interactions",
 )
-
-# Upstream stores "" rather than NULL for learners who never set a name. Null
-# blank names so they sort with the missing ones instead of before every name.
-_BLANK_AS_NULL_NAME = "NULLIF(TRIM(full_name), '')"
 
 
 @dataclass(frozen=True)
@@ -187,6 +185,7 @@ def _assemble(  # noqa: PLR0913, PLR0917
     projection = ", ".join(
         [
             *columns,
+            f"{CONSENT_STATUS_SQL} AS outcomes_consent_status",
             f"{shared} AS outcomes_shared",
             *(f"CASE WHEN {shared} THEN {name} END AS {name}" for name in outcomes),
         ]
@@ -252,16 +251,16 @@ def enrollments(schema: str, filters: RecordFilters) -> RecordQuery:
         scope.append("courserun_readable_id = %s")
         scope_params.append(filters.courserun_id)
     records = (
-        "SELECT user_pk, user_global_id AS learner_id, email,"  # noqa: S608
-        f" {_BLANK_AS_NULL_NAME} AS full_name,"
+        "SELECT user_pk, user_global_id AS learner_id, email, full_name,"  # noqa: S608
         " sso_organization_id AS organization_id, contract_id,"
         " b2b_contract_name AS contract_name, courserun_readable_id AS courserun_id,"
         " courserun_title, courserun_start_on, courserun_end_on,"
         " enrollment_created_on AS enrolled_on, enrollment_is_active, enrollment_mode,"
-        f" enrollment_status, {_COMPLETION_STATUS} AS completion_status, is_passing,"
-        " grade_value AS grade, letter_grade, certificate_issued_on, certificate_is_revoked,"
+        " enrollment_status, completion_status, is_passing,"
+        " grade_value AS grade, letter_grade, content_progress, certificate_issued_on,"
+        " certificate_is_revoked,"
         " last_active_on, days_active, videos_played AS videos_watched, problems_attempted,"
-        " chatbot_interactions, record_updated_on"
+        " chatbot_interactions, outcomes_shared AS outcomes_decision, record_updated_on"
         f" FROM {table} WHERE {' AND '.join(scope)}"
     )
 
@@ -310,13 +309,12 @@ def learners(schema: str, filters: RecordFilters) -> RecordQuery:
     schema = validate_sql_identifier(schema)
     if filters.contract_id is None and not filters.include_inactive:
         records = (
-            "SELECT user_pk, user_global_id AS learner_id, email,"  # noqa: S608
-            f" {_BLANK_AS_NULL_NAME} AS full_name,"
+            "SELECT user_pk, user_global_id AS learner_id, email, full_name,"  # noqa: S608
             " sso_organization_id AS organization_id, organization_name, membership_source,"
             " is_organization_manager, first_enrolled_on, last_enrolled_on, courses_enrolled,"
-            " courses_passed, courses_certified,"
-            " courses_certified + program_certificates_earned AS certificates_earned,"
-            f"{_LEARNER_PENDING} last_active_on, courses_in_progress, record_updated_on"
+            " courses_passed, courses_certified, certificates_earned,"
+            " outcomes_shared AS outcomes_decision, outcomes_consent_on,"
+            " last_active_on, courses_in_progress, record_updated_on"
             f" FROM {schema}.{LEARNER_MV} WHERE sso_organization_id = %s"
         )
         record_params: list[Any] = [str(filters.organization_id)]
@@ -345,13 +343,15 @@ def _recomputed_learners(schema: str, filters: RecordFilters) -> tuple[str, list
         scope.append("contract_id = %s")
         params.append(filters.contract_id)
 
-    # The same definitions as mv_b2b_learner (ol-data-platform#2669, #2693).
+    # The same counts as mv_b2b_learner, over the same flags: both views take
+    # is_passing, is_certified and is_in_progress from ol-data-platform's
+    # afact_learner_courserun_progress, so no business rule is restated here.
     # courses_enrolled, the enrolled_on dates, last_active_on and
     # courses_in_progress look at enrollment_is_active, and only without
     # include_inactive: they describe current engagement. Completions and the
     # cursor span every enrollment, so a filtered request can't report fewer
     # completions than the default one, and deactivation moves the cursor forward.
-    in_progress = f"{_COMPLETION_STATUS} = 'in_progress'"
+    in_progress = "is_in_progress = TRUE"
     if filters.include_inactive:
         enrolled_run = "courserun_pk"
         enrolled_on = "enrollment_created_on"
@@ -362,6 +362,11 @@ def _recomputed_learners(schema: str, filters: RecordFilters) -> tuple[str, list
         active_on = "CASE WHEN enrollment_is_active = TRUE THEN last_active_on END"
         in_progress = f"enrollment_is_active = TRUE AND {in_progress}"
 
+    # certificates_earned is mv_b2b_learner's courses_certified plus
+    # program_certificates_earned. This rollup recounts the course certificates
+    # from e, so it adds the program certificates to that count itself rather
+    # than reading the view's sum, which could disagree with e's
+    # courses_certified while the two MVs refresh.
     if filters.contract_id is not None:
         # Learners with any enrollment in the contract, active or not, as the
         # default rollup keeps learners whose seats were reclaimed. A program
@@ -370,6 +375,10 @@ def _recomputed_learners(schema: str, filters: RecordFilters) -> tuple[str, list
         join = "RIGHT JOIN"
         program_certificates = "0"
         record_updated_on = "e.record_updated_on"
+        # Outcomes come from this contract alone, so its decision is the one
+        # that applies, as on the contract's enrollment records.
+        decision = "e.outcomes_decision"
+        consent_on = "CASE WHEN e.outcomes_decision THEN e.outcomes_consent_on END"
     else:
         # include_inactive: every roster member, plus anyone enrolled at all.
         join = "FULL OUTER JOIN"
@@ -379,20 +388,37 @@ def _recomputed_learners(schema: str, filters: RecordFilters) -> tuple[str, list
             " WHEN e.record_updated_on IS NULL THEN l.record_updated_on"
             " ELSE GREATEST(l.record_updated_on, e.record_updated_on) END"
         )
+        # mv_b2b_learner resolves every contract of the organization the learner
+        # has a membership or any enrollment under, which is this rollup's scope.
+        # The two MVs refresh one after the other, so either can be ahead of the
+        # other. Where both have the learner the more conservative answer wins
+        # (a decline, then no decision), as the counts here come from e.
+        decision = (
+            "CASE WHEN e.outcomes_decision = FALSE OR l.outcomes_shared = FALSE THEN FALSE"
+            " WHEN l.user_pk IS NULL THEN e.outcomes_decision"
+            " WHEN e.user_pk IS NULL THEN l.outcomes_shared"
+            " WHEN e.outcomes_decision IS NULL THEN NULL ELSE l.outcomes_shared END"
+        )
+        consent_on = (
+            f"CASE WHEN {decision} THEN CASE WHEN l.user_pk IS NOT NULL"
+            " THEN l.outcomes_consent_on ELSE e.outcomes_consent_on END END"
+        )
 
     enrollment_rollup = (
         "SELECT user_pk, MAX(user_global_id) AS user_global_id, MAX(email) AS email,"  # noqa: S608
-        f" MAX({_BLANK_AS_NULL_NAME}) AS full_name,"
+        " MAX(full_name) AS full_name,"
         " MAX(sso_organization_id) AS sso_organization_id,"
         " MAX(organization_name) AS organization_name,"
         f" MIN({enrolled_on}) AS first_enrolled_on,"
         f" MAX({enrolled_on}) AS last_enrolled_on,"
         f" COUNT(DISTINCT {enrolled_run}) AS courses_enrolled,"
         " COUNT(DISTINCT CASE WHEN is_passing = TRUE THEN courserun_pk END) AS courses_passed,"
-        " COUNT(DISTINCT CASE WHEN certificate_is_revoked = FALSE THEN courserun_pk END)"
+        " COUNT(DISTINCT CASE WHEN is_certified = TRUE THEN courserun_pk END)"
         " AS courses_certified,"
         f" MAX({active_on}) AS last_active_on,"
         f" COUNT(DISTINCT CASE WHEN {in_progress} THEN courserun_pk END) AS courses_in_progress,"
+        f" {_ROLLUP_DECISION} AS outcomes_decision,"
+        " MAX(outcomes_consent_on) AS outcomes_consent_on,"
         " MAX(record_updated_on) AS record_updated_on"
         f" FROM {schema}.{ENROLLMENT_MV} WHERE {' AND '.join(scope)} GROUP BY user_pk"
     )
@@ -408,7 +434,7 @@ def _recomputed_learners(schema: str, filters: RecordFilters) -> tuple[str, list
         "SELECT COALESCE(l.user_pk, e.user_pk) AS user_pk,"  # noqa: S608
         " COALESCE(l.user_global_id, e.user_global_id) AS learner_id,"
         " COALESCE(l.email, e.email) AS email,"
-        " COALESCE(NULLIF(TRIM(l.full_name), ''), e.full_name) AS full_name,"
+        " COALESCE(l.full_name, e.full_name) AS full_name,"
         " COALESCE(l.sso_organization_id, e.sso_organization_id) AS organization_id,"
         " COALESCE(l.organization_name, e.organization_name) AS organization_name,"
         " CASE WHEN l.membership_source IN ('roster', 'both') AND e.courses_enrolled > 0"
@@ -420,7 +446,8 @@ def _recomputed_learners(schema: str, filters: RecordFilters) -> tuple[str, list
         " COALESCE(e.courses_passed, 0) AS courses_passed,"
         " COALESCE(e.courses_certified, 0) AS courses_certified,"
         f" COALESCE(e.courses_certified, 0) + {program_certificates} AS certificates_earned,"
-        f"{_LEARNER_PENDING} e.last_active_on,"
+        f" {decision} AS outcomes_decision, {consent_on} AS outcomes_consent_on,"
+        " e.last_active_on,"
         " COALESCE(e.courses_in_progress, 0) AS courses_in_progress,"
         f" {record_updated_on} AS record_updated_on"
         f" FROM (SELECT * FROM {schema}.{LEARNER_MV} WHERE sso_organization_id = %s) l"

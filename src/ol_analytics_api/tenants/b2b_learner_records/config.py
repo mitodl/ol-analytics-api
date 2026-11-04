@@ -67,9 +67,9 @@ class B2BLearnerRecordsSettings(BaseSettings):
     max_learner_ids: int = 100
 
     # Whether a learner with no recorded consent decision shares their outcomes.
-    # No consent field exists upstream yet, so today this decides every record.
-    # False fails closed, and is the default so a deployment that never sets it
-    # discloses nothing; deployments opt in through ol-infrastructure.
+    # A recorded decision always wins (queries._outcomes_shared). False fails
+    # closed, and is the default so a deployment that never sets it discloses
+    # nothing; deployments opt in through ol-infrastructure.
     consent_fail_open: bool = False
 
     @model_validator(mode="after")

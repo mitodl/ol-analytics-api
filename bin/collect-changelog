@@ -1,0 +1,24 @@
+#!/usr/bin/env python3
+"""Collect changelog.d/ fragments into CHANGELOG.md, if there are any.
+
+Run by bump-my-version's pre_commit_hooks when the release job bumps the
+version (see [tool.bumpversion] in pyproject.toml).
+
+`scriv collect` exits 2 when there is nothing to collect, and a failing hook
+fails the release. A release made only of changes that carry no fragment (e.g.
+a batch of Renovate updates) is still a release, so an empty changelog.d/ is a
+no-op here rather than an error.
+"""
+
+from __future__ import annotations
+
+import sys
+
+from scriv.collect import collect
+from scriv.scriv import Scriv
+
+if __name__ == "__main__":
+    if not Scriv().fragments_to_combine():
+        sys.stdout.write("No changelog fragments to collect\n")
+        raise SystemExit(0)
+    collect.main(args=[])

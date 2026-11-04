@@ -26,14 +26,18 @@ from ol_analytics_api.tenants.b2b_dashboard.learner_models import (
     LearnerProgressResponse,
 )
 
+# What _outcomes_shared() renders with consent_fail_open off and on.
+_CLOSED = "COALESCE(outcomes_decision, FALSE)"
+_OPEN = "COALESCE(outcomes_decision, TRUE)"
+
 ORG_ID = "11111111-1111-1111-1111-111111111111"
 CONTRACT_ID = 101
 PATH = f"/api/v1/analytics/organizations/{ORG_ID}/contracts/{CONTRACT_ID}/learner-progress"
 _AS_OF = datetime.datetime(2026, 9, 15, 6, 0)  # noqa: DTZ001 - StarRocks returns naive UTC
-# What the cluster answers NEEDS_ATTENTION_CUTOFF_QUERY with: 30 days before _AS_OF's
-# date. Fixed, so the SQL these tests assert on is stable.
-_CUTOFF = datetime.date(2026, 8, 16)
-_CUTOFF_SQL = "'2026-08-16'"
+# What the cluster answers UTC_TODAY_QUERY with: _AS_OF's date.
+# Fixed, so the SQL these tests assert on is stable.
+_TODAY = datetime.date(2026, 9, 15)
+_TODAY_SQL = "'2026-09-15'"
 
 
 def _manager_header(organization_id=ORG_ID):
@@ -54,13 +58,19 @@ def _row(**overrides):
         "enrollment_is_active": 1,
         "enrollment_mode": "verified",
         "outcomes_shared": 0,
+        "outcomes_consent_status": "not_recorded",
         "completion_status": None,
         "is_passing": None,
         "grade": None,
         "letter_grade": None,
+        "content_progress": None,
         "certificate_issued_on": None,
         "certificate_is_revoked": None,
         "last_active_on": None,
+        "days_active": None,
+        "videos_watched": None,
+        "problems_attempted": None,
+        "chatbot_interactions": None,
         "needs_attention": None,
         **overrides,
     }
@@ -89,8 +99,8 @@ class _FakePool:
 
     async def fetch_all(self, query, params=()):
         self.calls.append((query, params))
-        if query == learner_queries.NEEDS_ATTENTION_CUTOFF_QUERY:
-            return [{"cutoff": _CUTOFF}]
+        if query == learner_queries.UTC_TODAY_QUERY:
+            return [{"today": _TODAY}]
         if "information_schema" in query:
             return [{"as_of": _AS_OF}]
         if query.startswith("SELECT 1 "):
@@ -183,8 +193,8 @@ async def test_consent_fails_closed_by_default(app):
     pool = _FakePool()
     await _get(app, pool)
     page_query, _ = pool.page_call()
-    assert "FALSE AS outcomes_shared" in page_query
-    assert "CASE WHEN FALSE THEN grade END AS grade" in page_query
+    assert f"{_CLOSED} AS outcomes_shared" in page_query
+    assert f"CASE WHEN {_CLOSED} THEN grade END AS grade" in page_query
 
 
 async def test_consent_fail_open_discloses_outcomes(app, monkeypatch):
@@ -194,8 +204,8 @@ async def test_consent_fail_open_discloses_outcomes(app, monkeypatch):
 
     [row] = response.json()["data"]
     assert (row["completion_status"], row["grade"]) == ("passed", 0.8)
-    assert "TRUE AS outcomes_shared" in pool.page_call()[0]
-    assert "SUM(CASE WHEN TRUE THEN 0 ELSE 1 END)" in pool.count_call()[0]
+    assert f"{_OPEN} AS outcomes_shared" in pool.page_call()[0]
+    assert f"SUM(CASE WHEN {_OPEN} THEN 0 ELSE 1 END)" in pool.count_call()[0]
 
 
 async def test_completion_status_counts_reported_from_the_count_query(app):
@@ -224,15 +234,20 @@ async def test_completion_status_counts_share_the_response_filters(app):
     assert count_query.count("WHERE") == 2
     for status in ("not_started", "in_progress", "passed", "certified"):
         assert (
-            f"SUM(CASE WHEN FALSE AND completion_status = '{status}' THEN 1 ELSE 0 END)"
+            f"SUM(CASE WHEN {_CLOSED} AND completion_status = '{status}' THEN 1 ELSE 0 END)"
             f" AS {status}" in count_query
         )
 
 
-async def test_in_progress_also_counts_tracked_activity(app):
+async def test_completion_status_is_read_from_the_view_not_derived(app):
+    # The rule lives in ol-data-platform's afact_learner_courserun_progress,
+    # which the B2B views count from too. Restating it here is how the two
+    # drifted before.
     pool = _FakePool()
     await _get(app, pool)
-    assert "grade_value > 0 OR last_active_on IS NOT NULL THEN 'in_progress'" in pool.page_call()[0]
+    page_query = pool.page_call()[0]
+    assert " completion_status, is_passing," in page_query
+    assert "certificate_is_revoked = FALSE" not in page_query
 
 
 async def test_needs_attention_count_reported_from_the_count_query(app):
@@ -245,7 +260,7 @@ async def test_needs_attention_count_reported_from_the_count_query(app):
     # pins is the aggregate's shape and its consent gate, not the rule inside.
     # The rule is pinned by the sqlite tests below, which execute it.
     assert (
-        f"SUM(CASE WHEN FALSE AND ({_needs_attention_sql(_CUTOFF)})"
+        f"SUM(CASE WHEN {_CLOSED} AND ({_needs_attention_sql(_TODAY)})"
         " THEN 1 ELSE 0 END) AS needs_attention_count" in count_query
     )
 
@@ -259,227 +274,118 @@ async def test_needs_attention_count_shares_the_response_filters(app):
     assert "needs_attention_count" in count_query
 
 
-def _needs_attention_sql(cutoff):
-    # The production string, verbatim -- no substitution. The cutoff is
+def _needs_attention_sql(today):
+    # The production string, verbatim -- no substitution. Today's date is
     # resolved on the cluster and spliced as a date literal, which sqlite
     # parses too, so these tests execute exactly what StarRocks would.
-    return learner_queries._needs_attention(cutoff)  # noqa: SLF001
+    return learner_queries._needs_attention(today)  # noqa: SLF001
+
+
+def _enrollment_db(columns, rows):
+    conn = sqlite3.connect(":memory:")
+    conn.execute(f"CREATE TABLE enrollment ({', '.join(columns)})")
+    conn.executemany(
+        f"INSERT INTO enrollment VALUES ({', '.join('?' * len(columns))})",  # noqa: S608
+        rows,
+    )
+    return conn
 
 
 def test_needs_attention_boundary_is_computed_from_real_rows():
     # test_needs_attention_count_reported_from_the_count_query pins the SQL
-    # text; this actually runs learner_queries._COMPLETION_STATUS and
-    # ._needs_attention against rows in sqlite, so a day-30 regression (or a
-    # reverted `<=`) fails here even though _FakePool never evaluates a WHERE
-    # clause on its own.
-    today = datetime.date.today()  # noqa: DTZ011 - the boundary is date-only
-    cutoff = today - datetime.timedelta(days=30)
-    needs_attention = _needs_attention_sql(cutoff)
-
-    conn = sqlite3.connect(":memory:")
-    conn.execute(
-        "CREATE TABLE enrollment (certificate_is_revoked INTEGER, is_passing INTEGER,"
-        " grade_value REAL, last_active_on TEXT)"
-    )
-    conn.executemany(
-        "INSERT INTO enrollment VALUES (?, ?, ?, ?)",
+    # text; this actually runs ._needs_attention against rows in sqlite, so a
+    # day-30 regression (or a reverted `<=`) fails here even though _FakePool
+    # never evaluates a WHERE clause on its own. Which statuses get a date, and
+    # that it is last activity plus 30 days, is pinned where the date is made:
+    # ol-data-platform's unit test on afact_learner_courserun_progress.
+    needs_attention = _needs_attention_sql(_TODAY)
+    conn = _enrollment_db(
+        ("completion_status TEXT", "needs_attention_since TEXT"),
         [
-            (1, 0, None, None),  # never started
-            (1, 0, None, (today - datetime.timedelta(days=29)).isoformat()),  # active 29 days ago
-            (1, 0, None, cutoff.isoformat()),  # active exactly 30 days ago
-            (1, 0, 0.5, None),  # graded, but no tracked activity at all
+            ("not_started", "2026-02-03"),  # never started: dated from the enrollment
+            ("in_progress", (_TODAY + datetime.timedelta(days=1)).isoformat()),  # 29 days quiet
+            ("in_progress", _TODAY.isoformat()),  # quiet exactly 30 days
+            ("in_progress", None),  # graded, but no tracked activity at all
+            ("certified", None),  # finished: the view never dates these
         ],
     )
     rows = conn.execute(
-        "SELECT completion_status,"  # noqa: S608
-        f" ({needs_attention}) AS needs_attention FROM"
-        f" (SELECT *, {learner_queries._COMPLETION_STATUS} AS completion_status FROM enrollment)"  # noqa: SLF001
+        f"SELECT completion_status, ({needs_attention}) AS needs_attention FROM enrollment"  # noqa: S608
     ).fetchall()
     conn.close()
 
     assert rows == [
-        ("not_started", 1),  # never started: needs attention
-        ("in_progress", 0),  # active 29 days ago: still recent
-        ("in_progress", 1),  # active exactly 30 days ago: needs attention
-        # No timestamp to judge quiet against, so: no. Not NULL -- see
+        ("not_started", 1),
+        ("in_progress", 0),  # still recent
+        ("in_progress", 1),  # the 30th day is included
+        # No date to compare, so: no. Not NULL -- see
         # test_needs_attention_is_two_valued_so_the_filter_partitions_rows.
         ("in_progress", 0),
-    ]
-
-
-def test_needs_attention_excludes_learners_who_already_finished():
-    # The defect this rule was written against: staleness was unscoped, so a
-    # learner who earned a certificate and then stopped logging in -- the
-    # expected behaviour after finishing -- was flagged as needing a nudge, and
-    # the flag grew more certain the longer ago they finished. Observed on the
-    # learner directory as a row reading `Certificate` and `Needs attention`
-    # together, 62 days quiet, which is the staleness used here. Runs the real
-    # ._COMPLETION_STATUS and ._needs_attention in sqlite, so a reverted scope
-    # fails here rather than at a manager's filter.
-    today = datetime.date.today()  # noqa: DTZ011 - the boundary is date-only
-    cutoff = today - datetime.timedelta(days=30)
-    long_quiet = (today - datetime.timedelta(days=62)).isoformat()
-    needs_attention = _needs_attention_sql(cutoff)
-
-    conn = sqlite3.connect(":memory:")
-    conn.execute(
-        "CREATE TABLE enrollment (certificate_is_revoked INTEGER, is_passing INTEGER,"
-        " grade_value REAL, last_active_on TEXT)"
-    )
-    conn.executemany(
-        "INSERT INTO enrollment VALUES (?, ?, ?, ?)",
-        [
-            (0, 0, 0.9, long_quiet),  # unrevoked certificate, quiet 62 days
-            (1, 1, 0.9, long_quiet),  # passed, awaiting a certificate, quiet 62 days
-            (1, 0, 0.5, long_quiet),  # still in progress, quiet 62 days
-            (1, 0, None, None),  # never started
-        ],
-    )
-    rows = conn.execute(
-        "SELECT completion_status,"  # noqa: S608
-        f" ({needs_attention}) AS needs_attention FROM"
-        f" (SELECT *, {learner_queries._COMPLETION_STATUS} AS completion_status FROM enrollment)"  # noqa: SLF001
-    ).fetchall()
-    conn.close()
-
-    assert rows == [
-        # Currently certified. Quiet is the expected end of the course, not a lapse.
         ("certified", 0),
-        # Currently passed. A missing certificate is certificate-issuing ops work,
-        # not a learner for a manager to chase.
-        ("passed", 0),
-        ("in_progress", 1),  # the only staleness a nudge would fix
-        ("not_started", 1),
-    ]
-
-
-def test_needs_attention_follows_current_status_not_history():
-    # The exclusion is scoped to the row's CURRENT status, which is not the
-    # same as "has finished at some point" -- Copilot's review of #87 caught
-    # the field descriptions overpromising the latter. _COMPLETION_STATUS
-    # re-derives the status on every read, so revoking a certificate drops the
-    # row through to the grade and activity that remain. A learner who once
-    # certified, whose certificate is revoked and who is not passing, is
-    # in_progress again and is flagged when quiet. That is intended: a revoked
-    # certificate means they are no longer finished.
-    today = datetime.date.today()  # noqa: DTZ011 - the boundary is date-only
-    cutoff = today - datetime.timedelta(days=30)
-    long_quiet = (today - datetime.timedelta(days=62)).isoformat()
-    needs_attention = _needs_attention_sql(cutoff)
-
-    conn = sqlite3.connect(":memory:")
-    conn.execute(
-        "CREATE TABLE enrollment (certificate_is_revoked INTEGER, is_passing INTEGER,"
-        " grade_value REAL, last_active_on TEXT)"
-    )
-    conn.executemany(
-        "INSERT INTO enrollment VALUES (?, ?, ?, ?)",
-        [
-            (0, 0, 0.9, long_quiet),  # certificate stands
-            (1, 1, 0.9, long_quiet),  # revoked, but still passing
-            (1, 0, 0.9, long_quiet),  # revoked and not passing: no longer finished
-        ],
-    )
-    rows = conn.execute(
-        "SELECT completion_status,"  # noqa: S608
-        f" ({needs_attention}) AS needs_attention FROM"
-        f" (SELECT *, {learner_queries._COMPLETION_STATUS} AS completion_status FROM enrollment)"  # noqa: SLF001
-    ).fetchall()
-    conn.close()
-
-    assert rows == [
-        ("certified", 0),
-        ("passed", 0),  # revocation alone doesn't re-flag a learner who passed
-        ("in_progress", 1),  # back to unfinished, and quiet, so flagged again
     ]
 
 
 def test_needs_attention_count_respects_the_consent_gate(monkeypatch):
-    # The same rows, but through the full SUM(CASE WHEN shared AND (...))
-    # aggregate, with consent fail-closed (the default, so every row's
-    # outcome -- including needs-attention -- is withheld) and fail-open.
-    today = datetime.date.today()  # noqa: DTZ011 - the boundary is date-only
-    cutoff = today - datetime.timedelta(days=30)
-    needs_attention = _needs_attention_sql(cutoff)
-
-    conn = sqlite3.connect(":memory:")
-    conn.execute(
-        "CREATE TABLE enrollment (certificate_is_revoked INTEGER, is_passing INTEGER,"
-        " grade_value REAL, last_active_on TEXT)"
-    )
-    conn.executemany(
-        "INSERT INTO enrollment VALUES (?, ?, ?, ?)",
-        [
-            (1, 0, None, None),  # never started
-            (1, 0, None, (today - datetime.timedelta(days=29)).isoformat()),  # active 29 days ago
-            (1, 0, None, cutoff.isoformat()),  # active exactly 30 days ago
-        ],
+    # Runs the full SUM(CASE WHEN shared AND (...)) aggregate over rows that
+    # all need attention and differ only in the recorded consent decision. A
+    # recorded decision wins either way; consent_fail_open decides the rest.
+    needs_attention = _needs_attention_sql(_TODAY)
+    due = (_TODAY - datetime.timedelta(days=1)).isoformat()
+    conn = _enrollment_db(
+        ("needs_attention_since TEXT", "outcomes_decision INTEGER"),
+        # two undecided, one consented, one declined
+        [(due, None), (due, None), (due, 1), (due, 0)],
     )
 
-    def count(shared):
+    def count():
+        shared = learner_queries._outcomes_shared()  # noqa: SLF001
         query = (
-            f"SELECT SUM(CASE WHEN {shared} AND ({needs_attention}) THEN 1 ELSE 0 END) FROM"  # noqa: S608
-            f" (SELECT *, {learner_queries._COMPLETION_STATUS} AS completion_status"  # noqa: SLF001
-            " FROM enrollment)"
+            f"SELECT SUM(CASE WHEN {shared} AND ({needs_attention}) THEN 1 ELSE 0 END),"  # noqa: S608
+            f" SUM(CASE WHEN {shared} THEN 0 ELSE 1 END) FROM enrollment"
         )
-        return conn.execute(query).fetchone()[0]
+        return conn.execute(query).fetchone()
 
     assert type(settings)().consent_fail_open is False
-    assert count(learner_queries._outcomes_shared()) == 0  # noqa: SLF001
+    assert count() == (1, 3)  # only the recorded consent is disclosed
 
     monkeypatch.setattr(settings, "consent_fail_open", True)
-    assert count(learner_queries._outcomes_shared()) == 2  # noqa: SLF001
+    assert count() == (3, 1)  # the recorded decline stays withheld
     conn.close()
 
 
 def test_needs_attention_is_two_valued_so_the_filter_partitions_rows():
-    # An in_progress row with a grade but no tracked activity makes the
-    # staleness comparison NULL. Unguarded that is neither true nor false, so
+    # The view leaves needs_attention_since NULL for passed and certified rows
+    # and for an in_progress row with a grade but no tracked activity, which
+    # makes the comparison NULL. Unguarded that is neither true nor false, so
     # the row would fall out of `needs_attention=true` and
     # `needs_attention=false` alike while still counting toward total_count,
     # and would serialize as `needs_attention: null` on a row whose outcomes
     # are shared. COALESCE in ._needs_attention settles it as false; this pins
     # that every shared row lands in exactly one direction of the filter.
-    #
-    # Scoping staleness to in_progress narrows which rows can reach that NULL
-    # but does not remove it, so the terminal statuses are in here too: one
-    # short-circuits on `FALSE AND NULL` and one is stale on the other side of
-    # the scope, and neither may leak a NULL.
-    today = datetime.date.today()  # noqa: DTZ011 - the boundary is date-only
-    cutoff = today - datetime.timedelta(days=30)
-    needs_attention = _needs_attention_sql(cutoff)
-
-    conn = sqlite3.connect(":memory:")
-    conn.execute(
-        "CREATE TABLE enrollment (certificate_is_revoked INTEGER, is_passing INTEGER,"
-        " grade_value REAL, last_active_on TEXT)"
-    )
-    conn.executemany(
-        "INSERT INTO enrollment VALUES (?, ?, ?, ?)",
+    needs_attention = _needs_attention_sql(_TODAY)
+    conn = _enrollment_db(
+        ("needs_attention_since TEXT",),
         [
-            (1, 0, None, None),  # never started
-            (1, 0, 0.5, None),  # graded, but no tracked activity at all
-            (1, 0, 0.5, (today - datetime.timedelta(days=29)).isoformat()),  # active 29 days ago
-            (1, 0, 0.5, cutoff.isoformat()),  # active exactly 30 days ago
-            (0, 0, 0.9, None),  # certified, no tracked activity at all
-            (1, 1, 0.9, cutoff.isoformat()),  # passed, quiet since the cutoff
+            ("2026-02-03",),  # never started
+            (None,),  # graded, but no tracked activity at all
+            ((_TODAY + datetime.timedelta(days=1)).isoformat(),),  # active 29 days ago
+            (_TODAY.isoformat(),),  # active exactly 30 days ago
+            (None,),  # certified
+            (None,),  # passed
         ],
-    )
-    records = (
-        f"(SELECT *, {learner_queries._COMPLETION_STATUS} AS completion_status FROM enrollment)"  # noqa: S608, SLF001
     )
 
     def matching(*, direction):
         negate = "" if direction else "NOT "
         return conn.execute(
-            f"SELECT COUNT(*) FROM {records} WHERE (TRUE AND {negate}({needs_attention}))"  # noqa: S608
+            f"SELECT COUNT(*) FROM enrollment WHERE (TRUE AND {negate}({needs_attention}))"  # noqa: S608
         ).fetchone()[0]
 
     counted = conn.execute(
-        f"SELECT SUM(CASE WHEN TRUE AND ({needs_attention}) THEN 1 ELSE 0 END) FROM {records}"  # noqa: S608
+        f"SELECT SUM(CASE WHEN TRUE AND ({needs_attention}) THEN 1 ELSE 0 END) FROM enrollment"  # noqa: S608
     ).fetchone()[0]
     nulls = conn.execute(
-        f"SELECT COUNT(*) FROM {records} WHERE ({needs_attention}) IS NULL"  # noqa: S608
+        f"SELECT COUNT(*) FROM enrollment WHERE ({needs_attention}) IS NULL"  # noqa: S608
     ).fetchone()[0]
     selected = (matching(direction=True), matching(direction=False))
     conn.close()
@@ -497,8 +403,8 @@ async def test_needs_attention_filter_is_consent_gated_in_both_directions(app):
         await _get(app, pool, params={"needs_attention": value})
         # From the production expression, not a copy: this pins the gate and
         # the negation, and the sqlite tests pin the rule they wrap.
-        expected = f"(FALSE AND {negate}({_needs_attention_sql(_CUTOFF)}))"
-        # The `FALSE AND` is the consent gate: a withheld row matches neither
+        expected = f"({_CLOSED} AND {negate}({_needs_attention_sql(_TODAY)}))"
+        # The COALESCE is the consent gate: a withheld row matches neither
         # direction, so the filter can't reveal the outcome it withholds.
         assert expected in pool.page_call()[0]
         assert expected in pool.count_call()[0]
@@ -533,67 +439,68 @@ async def test_needs_attention_row_field_reuses_the_count_expression(app):
     await _get(app, pool)
     page_query = pool.page_call()[0]
     assert (
-        f"CASE WHEN FALSE THEN {learner_queries._needs_attention(_CUTOFF)} END AS needs_attention"  # noqa: SLF001
-        in page_query
+        f"CASE WHEN {_CLOSED} THEN {learner_queries._needs_attention(_TODAY)} END"  # noqa: SLF001
+        " AS needs_attention" in page_query
     )
-    assert learner_queries._needs_attention(_CUTOFF) in pool.count_call()[0]  # noqa: SLF001
+    assert learner_queries._needs_attention(_TODAY) in pool.count_call()[0]  # noqa: SLF001
 
 
-async def test_cutoff_is_resolved_once_on_the_cluster_and_shared_by_both_statements(app):
-    # The page and the count are two round trips. With CURRENT_DATE() left in
-    # the SQL each would evaluate it separately, so a request straddling
-    # midnight in the cluster's timezone would filter the page on one cutoff
-    # and count on another -- an off-by-one between a row's needs_attention
-    # and needs_attention_count, and a total_count the page contradicts.
+async def test_today_is_resolved_once_on_the_cluster_and_shared_by_both_statements(app):
+    # The page and the count are two round trips. With the date left in the
+    # SQL each would evaluate it separately, so a request straddling midnight
+    # would filter the page on one date and count on another -- an off-by-one
+    # between a row's needs_attention and needs_attention_count, and a
+    # total_count the page contradicts.
     pool = _FakePool()
     await _get(app, pool, params={"needs_attention": "true"})
 
     queries = [query for query, _ in pool.calls]
-    assert queries.count(learner_queries.NEEDS_ATTENTION_CUTOFF_QUERY) == 1
+    assert queries.count(learner_queries.UTC_TODAY_QUERY) == 1
     # Resolved before either statement is built, like as_of.
-    cutoff_at = queries.index(learner_queries.NEEDS_ATTENTION_CUTOFF_QUERY)
-    assert cutoff_at < queries.index(pool.page_call()[0])
-    assert cutoff_at < queries.index(pool.count_call()[0])
+    today_at = queries.index(learner_queries.UTC_TODAY_QUERY)
+    assert today_at < queries.index(pool.page_call()[0])
+    assert today_at < queries.index(pool.count_call()[0])
 
     for query in (pool.page_call()[0], pool.count_call()[0]):
         assert "CURRENT_DATE" not in query
-        assert _CUTOFF_SQL in query
+        assert _TODAY_SQL in query
 
 
-def test_cutoff_query_reads_no_table():
+def test_today_query_reads_no_table_and_asks_for_utc():
     # No FROM clause, so StarRocks answers it without touching storage. That
     # is what makes the extra round trip per request cheap enough to prefer
     # over caching a value whose whole purpose is to be correct at a boundary.
-    assert " FROM " not in learner_queries.NEEDS_ATTENTION_CUTOFF_QUERY
-    assert str(learner_queries.NEEDS_ATTENTION_QUIET_DAYS) in (
-        learner_queries.NEEDS_ATTENTION_CUTOFF_QUERY
-    )
+    # needs_attention_since is defined against the UTC date, and CURRENT_DATE()
+    # would follow the session's timezone instead.
+    assert " FROM " not in learner_queries.UTC_TODAY_QUERY
+    assert "UTC_TIMESTAMP()" in learner_queries.UTC_TODAY_QUERY
+    assert "CURRENT_DATE" not in learner_queries.UTC_TODAY_QUERY
 
 
 @pytest.mark.parametrize(
     "value",
     [
-        _CUTOFF,
+        _TODAY,
         # Which of these a DATE column arrives as depends on the driver and
         # the StarRocks build, so all three normalize to the same literal
         # rather than 500ing the endpoint on a type surprise.
-        datetime.datetime(2026, 8, 16, 9, 30),  # noqa: DTZ001 - StarRocks returns naive
-        "2026-08-16",
+        datetime.datetime(2026, 9, 15, 9, 30),  # noqa: DTZ001 - StarRocks returns naive
+        "2026-09-15",
     ],
 )
-def test_cutoff_literal_normalizes_every_shape_the_driver_can_return(value):
+def test_date_literal_normalizes_every_shape_the_driver_can_return(value):
     # datetime is the one that matters: it subclasses date, so rendering its
     # isoformat unchanged would emit a time component and change the
     # comparison. It is truncated, not passed through.
-    assert learner_queries._date_literal(value) == _CUTOFF_SQL  # noqa: SLF001
+    assert learner_queries._date_literal(value) == _TODAY_SQL  # noqa: SLF001
 
 
 @pytest.mark.parametrize(
     ("value", "error"),
     [(None, TypeError), (20260816, TypeError), ("16/08/2026", ValueError)],
 )
-def test_cutoff_literal_refuses_what_it_cannot_read_as_a_date(value, error):
-    # The cutoff is spliced, not bound, so nothing that isn't a real calendar
+def test_date_literal_refuses_what_it_cannot_read_as_a_date(value, error):
+    # Today's date is spliced, not bound, so nothing that isn't a real calendar
     # date may reach the query text.
     with pytest.raises(error):
         learner_queries._date_literal(value)  # noqa: SLF001
@@ -615,9 +522,9 @@ async def test_non_boolean_needs_attention_is_rejected(app):
 
 
 def test_completion_status_buckets_are_mutually_exclusive_and_exhaustive():
-    # Each row's completion_status is exactly one CASE branch
-    # (learner_queries._COMPLETION_STATUS), so the four buckets never overlap
-    # and, with outcomes_withheld_count, always sum to total_count.
+    # Each row's completion_status is exactly one of the view's four values
+    # (an accepted_values test in ol-data-platform), so the four buckets never
+    # overlap and, with outcomes_withheld_count, always sum to total_count.
     assert learner_queries._STATUSES == ("not_started", "in_progress", "passed", "certified")  # noqa: SLF001
 
 
@@ -656,7 +563,7 @@ async def test_status_filter_cannot_reveal_withheld_statuses(app):
     pool = _FakePool()
     await _get(app, pool, params={"completion_status": ["passed", "unknown"]})
     page_query, page_params = pool.page_call()
-    assert "((FALSE AND completion_status IN (%s)) OR NOT FALSE)" in page_query
+    assert f"(({_CLOSED} AND completion_status IN (%s)) OR NOT {_CLOSED})" in page_query
     assert "passed" in page_params
 
 
@@ -668,10 +575,14 @@ async def test_sort_puts_nulls_last_with_a_unique_tie_break(app):
     )
 
 
-async def test_blank_names_read_as_null_so_they_sort_last(app):
+async def test_names_are_read_from_the_view_as_published(app):
+    # mv_b2b_learner_enrollment nulls blank names, so they sort with the
+    # missing ones without this query restating the rule.
     pool = _FakePool()
     await _get(app, pool)
-    assert "NULLIF(TRIM(full_name), '') AS full_name," in pool.page_call()[0]
+    query = pool.page_call()[0]
+    assert " email, full_name, courserun_readable_id," in query
+    assert "TRIM(" not in query
 
 
 async def test_unknown_sort_key_is_rejected(app):
@@ -694,21 +605,35 @@ async def test_non_manager_is_refused_before_any_query(app):
 
 
 def test_models_null_outcomes_a_row_carries_when_not_shared():
-    progress = LearnerProgress(**_row(completion_status="certified", is_passing=1, grade=0.91))
+    progress = LearnerProgress(
+        **_row(completion_status="certified", is_passing=1, grade=0.91, videos_watched=7)
+    )
     assert (progress.completion_status, progress.is_passing, progress.grade) == (None, None, None)
+    assert progress.videos_watched is None
 
 
 def test_every_outcome_column_is_consent_gated_in_the_query():
     query = learner_queries.learner_progress(
-        learner_queries.ProgressFilters(organization_id=ORG_ID, contract_id=CONTRACT_ID), _CUTOFF
+        learner_queries.ProgressFilters(organization_id=ORG_ID, contract_id=CONTRACT_ID), _TODAY
     )
-    for name in ("completion_status", "is_passing", "grade", "letter_grade", "last_active_on"):
-        assert f"CASE WHEN FALSE THEN {name} END AS {name}" in query.page
+    for name in (
+        "completion_status",
+        "is_passing",
+        "grade",
+        "letter_grade",
+        "content_progress",
+        "last_active_on",
+        "days_active",
+        "videos_watched",
+        "problems_attempted",
+        "chatbot_interactions",
+    ):
+        assert f"CASE WHEN {_CLOSED} THEN {name} END AS {name}" in query.page
     # needs_attention is derived, not selected, so the same gate wraps an
     # expression rather than a column name.
     assert (
-        f"CASE WHEN FALSE THEN {learner_queries._needs_attention(_CUTOFF)} END AS needs_attention"  # noqa: SLF001
-        in query.page
+        f"CASE WHEN {_CLOSED} THEN {learner_queries._needs_attention(_TODAY)} END"  # noqa: SLF001
+        " AS needs_attention" in query.page
     )
 
 
@@ -738,3 +663,106 @@ def test_every_field_has_a_manager_facing_description(model):
         assert field.description, f"{name} has no description"
         named = set(re.findall(r"\b[a-z]+(?:_[a-z]+)+\b", field.description)) & field_names
         assert not named, f"{name}'s description names {named}"
+
+
+_ENROLLMENT_MV_COLUMNS = (
+    "user_pk",
+    "courserun_pk",
+    "user_global_id",
+    "email",
+    "full_name",
+    "sso_organization_id",
+    "contract_id",
+    "courserun_readable_id",
+    "courserun_title",
+    "courserun_start_on",
+    "courserun_end_on",
+    "enrollment_created_on",
+    "enrollment_is_active",
+    "enrollment_mode",
+    "completion_status",
+    "certificate_is_revoked",
+    "is_passing",
+    "grade_value",
+    "letter_grade",
+    "content_progress",
+    "certificate_issued_on",
+    "last_active_on",
+    "days_active",
+    "videos_played",
+    "problems_attempted",
+    "chatbot_interactions",
+    "needs_attention_since",
+    "outcomes_shared",
+)
+
+
+@pytest.mark.parametrize(
+    ("fail_open", "disclosed"),
+    [(False, {"consented"}), (True, {"consented", "undecided"})],
+)
+def test_recorded_decision_is_read_from_the_view(monkeypatch, fail_open, disclosed):
+    # Runs learner_progress() itself against an MV-shaped table, so the inner
+    # select has to carry the view's outcomes_shared through: three learners
+    # who all passed and differ only in the decision recorded for the contract.
+    monkeypatch.setattr(settings, "consent_fail_open", fail_open)
+    schema = settings.learner_records_schema
+    table = f"{schema}.{learner_queries.ENROLLMENT_MV}"
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(f"ATTACH ':memory:' AS {schema}")
+    conn.execute(f"CREATE TABLE {table} ({', '.join(_ENROLLMENT_MV_COLUMNS)})")
+    for name, decision in (("consented", True), ("declined", False), ("undecided", None)):
+        row = {
+            "user_pk": name,
+            "courserun_pk": "run",
+            "user_global_id": name,
+            "sso_organization_id": ORG_ID,
+            "contract_id": CONTRACT_ID,
+            "enrollment_is_active": True,
+            "completion_status": "passed",
+            "is_passing": True,
+            "grade_value": 0.8,
+            "days_active": 3,
+            "videos_played": 7,
+            "problems_attempted": 5,
+            "chatbot_interactions": 2,
+            "outcomes_shared": decision,
+        }
+        conn.execute(
+            f"INSERT INTO {table} VALUES ({', '.join('?' * len(_ENROLLMENT_MV_COLUMNS))})",  # noqa: S608
+            [row.get(column) for column in _ENROLLMENT_MV_COLUMNS],
+        )
+
+    def run(**filters):
+        query = learner_queries.learner_progress(
+            learner_queries.ProgressFilters(
+                organization_id=ORG_ID, contract_id=CONTRACT_ID, **filters
+            ),
+            _TODAY,
+        )
+        rows = conn.execute(query.page.replace("%s", "?"), (*query.params, 100, 0)).fetchall()
+        count = conn.execute(query.count.replace("%s", "?"), query.params).fetchone()
+        return {row["learner_id"]: row for row in rows}, count
+
+    rows, count = run()
+    assert {name for name, row in rows.items() if row["grade"] is not None} == disclosed
+    assert {name for name, row in rows.items() if row["needs_attention"] is not None} == disclosed
+    activity = ("days_active", "videos_watched", "problems_attempted", "chatbot_interactions")
+    assert {name: tuple(row[column] for column in activity) for name, row in rows.items()} == {
+        name: (3, 7, 5, 2) if name in disclosed else (None,) * 4 for name in rows
+    }
+    assert count["outcomes_withheld_count"] == 3 - len(disclosed)
+    assert count["passed"] == len(disclosed)
+    # The recorded decision itself is reported whatever the default resolved to.
+    assert {name: row["outcomes_consent_status"] for name, row in rows.items()} == {
+        "consented": "consented",
+        "declined": "declined",
+        "undecided": "not_recorded",
+    }
+
+    # Neither filter may say what a withheld row is withholding.
+    assert set(run(completion_statuses=("passed",))[0]) == disclosed
+    assert set(run(completion_statuses=("unknown",))[0]) == set(rows) - disclosed
+    assert set(run(needs_attention=False)[0]) == disclosed
+    conn.close()

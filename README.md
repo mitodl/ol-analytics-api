@@ -69,12 +69,12 @@ src/ol_analytics_api/
       auth.py                  # this tenant's governance gates (require_org_manager, require_mit_admin)
       mitxonline_client.py     # service-authenticated org-manager check against MITx Online
       models.py                # SQLModel response schemas for this tenant's 6 MVs
-      learner_queries.py       # learner-progress SQL; no anonymization floor, consent-gated outcomes
-      learner_models.py        # LearnerProgress — no CohortPolicy
+      learner_queries.py       # learner-progress and learners SQL; no anonymization floor, consent-gated outcomes
+      learner_models.py        # LearnerProgress, LearnerWithEnrollments — no CohortPolicy
       routers/
         organizations.py       # relative paths — mount point supplies the /api/v1/analytics prefix
         contracts.py
-        learners.py            # /organizations/{id}/contracts/{id}/learner-progress
+        learners.py            # /organizations/{id}/contracts/{id}/learner-progress and /learners
         admin.py
     b2b_learner_records/
       app.py                   # sub-app; contract-shaped 400s for malformed parameters
@@ -247,6 +247,25 @@ twice, a fixing pass and then a pass that must converge. If hooks only need to r
 files, `autofix-ci[bot]` pushes one commit to the pull request and the check re-runs. A fix
 under `.github/` is refused, so run prek locally for those.
 
+## Changelog
+
+A change that someone deploying or consuming the API would notice should carry
+a changelog fragment:
+
+```bash
+uv run scriv create
+```
+
+This writes a file under `changelog.d/` with a commented-out section per
+category (Added, Changed, Deprecated, Removed, Fixed, Security). Uncomment the
+one that fits, write the entry, and commit it with the change.
+
+Nothing else needs doing at release time. The Concourse release job runs
+bump-my-version, whose `pre_commit_hooks` run `bin/collect-changelog`, which
+folds every fragment into `CHANGELOG.md` under the new version and deletes the
+fragments in the same release commit. A release with no fragments still goes
+out, with no changelog entry.
+
 ## The published API contract
 
 Each tenant's OpenAPI document is committed under `openapi/specs/<tenant>.yaml`
@@ -260,18 +279,24 @@ Run it whenever a response model, route or query parameter changes. CI fails
 otherwise — both as a test (`tests/test_openapi_spec.py`) and as a
 `--check` run of the generator itself.
 
-The spec is committed rather than served-and-forgotten because it is meant to
-become a cross-repo interface. The intended pipeline mirrors the one already
-running for `mitxonline` and `mit-learn`: a Concourse pipeline in
-`ol-infrastructure` (`ol_concourse/pipelines/libraries/api_clients_pipeline.py`)
-watching these files on a release branch, running `openapi-generator` over
-them, and publishing a TypeScript client the same way
-`@mitodl/mitxonline-api-axios` and `@mitodl/mit-learn-api-axios` are today.
-None of that is wired up yet — this repo has no entry in `PIPELINE_CONFIGS`
-and no `release` branch, and MIT Learn's dashboard still uses its hand-written
-client. Until it is, committing the spec still buys the same thing locally: a
-column that appears here without appearing in the diff is a column a
-consumer would find out about at runtime once the pipeline exists.
+The spec is committed rather than served-and-forgotten because it is a
+cross-repo interface. On every release tag (e.g. `2026.10.20.1`), the
+`ol-analytics-api-api-client` Concourse pipeline in `ol-infrastructure`
+(`ol_concourse/pipelines/libraries/api_clients_pipeline.py`) runs
+`openapi-generator` over these files, commits the result to
+[ol-analytics-api-clients](https://github.com/mitodl/ol-analytics-api-clients),
+and publishes one npm package per tenant:
+
+| Spec                       | Package                                          |
+| -------------------------- | ------------------------------------------------ |
+| `b2b_dashboard.yaml`       | `@mitodl/ol-analytics-dashboard-api-axios`       |
+| `b2b_learner_records.yaml` | `@mitodl/ol-analytics-learner-records-api-axios` |
+
+The pipeline versions on tags, not on spec changes, so every release publishes
+new client versions whether or not a spec moved. A new tenant's spec is
+drift-checked here but not published until its package is added to the clients
+repo and to the `ol-analytics-api` entry in `PIPELINE_CONFIGS`; the clients
+repo's README lists every step.
 
 Three details are worth knowing before editing a route:
 
@@ -292,3 +317,32 @@ Note that `docs/openapi/b2b-learner-records-v1.yaml` is a different artifact:
 a hand-written draft published so partners could review the record shape
 before it was built. `openapi/specs/b2b_learner_records.yaml` is generated
 from the running code and is the one a client is built from.
+
+### Breaking changes
+
+The `OpenAPI Diff` workflow runs on a PR that changes `openapi/specs/`. It
+runs `oasdiff breaking` over every spec present on both the base and the PR,
+and fails on a breaking change (e.g. a removed path), because a client
+generated from the last release would break against the new one. Deleting a
+spec file always fails, with or without the steps below.
+
+When a break is intended, the check passes only if the PR has both:
+
+- the `breaking-api-change` label, and
+- a new `changelog.d/` fragment with an entry under `### Removed` or
+  `### Changed` that contains `Breaking:` and names what breaks, e.g.
+
+  ```markdown
+  ### Removed
+
+  - `b2b_dashboard`: Breaking: `learners_certified` is no longer returned by `/contract-utilization`. Read `certified_learners` instead.
+  ```
+
+scriv has no breaking-change category, so the `Breaking:` marker is what ties
+the fragment to the break and puts it in the released changelog where a client
+maintainer will see it. The check reads the label from the PR when it runs and
+re-runs when a label is added or removed, so adding the label after the first
+failure is enough; there is no need to push again. With both present it still
+lists each breaking change (and posts the diff comment, on a PR from a branch
+of this repository), then passes with a notice naming the label and the
+fragment.

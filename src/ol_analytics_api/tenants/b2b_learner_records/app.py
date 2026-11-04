@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 
 from ol_analytics_api.core.errors import add_shared_error_handlers
 from ol_analytics_api.core.health import register_readiness_check
+from ol_analytics_api.core.observability.telemetry import NATIVE_TELEMETRY_DISABLED
 from ol_analytics_api.tenants.b2b_learner_records.errors import (
     ErrorCode,
     add_error_handlers,
@@ -43,6 +44,7 @@ def create_app() -> FastAPI:
             "Machine-to-machine, read-only, organization-scoped learner progress records "
             "for B2B site-license partners. Records identify individual learners."
         ),
+        telemetry=NATIVE_TELEMETRY_DISABLED,
     )
     app.include_router(organizations.router)
     add_shared_error_handlers(app)

@@ -18,6 +18,11 @@ from httpx import ASGITransport, AsyncClient
 from ol_analytics_api.core.db.client import PoolAcquireTimeoutError
 from ol_analytics_api.core.db.refresh_metadata import _clear_cache
 from ol_analytics_api.main import create_app
+from ol_analytics_api.tenants.b2b_dashboard.models import (
+    ContractMonthlyEngagementTrend,
+    MonthlyEngagementTrend,
+)
+from ol_analytics_api.tenants.b2b_dashboard.routers import organizations
 
 _AS_OF = datetime.datetime(2026, 7, 2, 4, 0, 0)  # noqa: DTZ001
 
@@ -65,9 +70,19 @@ def _is_count_query(query):
     return "COUNT(*)" in query
 
 
-def _fake_fetch_all(data_rows, total_count=0):
+_CONTRACT_TREND_MV = "mv_b2b_contract_monthly_engagement_trend"
+
+
+def _is_grain_scan(query):
+    # The cross-grain guard's read of the contract-grained sibling. It is the
+    # only query naming that MV on an org-scoped request.
+    return _CONTRACT_TREND_MV in query
+
+
+def _fake_fetch_all(data_rows, total_count=0, finer_rows=None):
     """A fetch_all stub that answers the information_schema as_of probe with
-    _AS_OF, the envelope's total-count query with ``total_count``, and every
+    _AS_OF, the envelope's total-count query with ``total_count``, the
+    cross-grain scan of the contract-grained MV with ``finer_rows``, and every
     other query with the given MV rows."""
 
     async def fetch_all(query, *_args):
@@ -75,6 +90,8 @@ def _fake_fetch_all(data_rows, total_count=0):
             return [{"as_of": _AS_OF}]
         if _is_count_query(query):
             return [{"total_count": total_count}]
+        if _is_grain_scan(query):
+            return list(finer_rows or [])
         return list(data_rows)
 
     return fetch_all
@@ -82,14 +99,17 @@ def _fake_fetch_all(data_rows, total_count=0):
 
 def _capture_page_query(captured, rows=(), total_count=0):
     """A fetch_all stub that records the *paged* SELECT specifically. The as_of
-    probe and the total-count query go through the same pool, so a stub that
-    captured every query would report whichever happened to run last."""
+    probe, the total-count query and the hidden-grain probe go through the same
+    pool, so a stub that captured every query would report whichever happened
+    to run last."""
 
     async def fetch_all(query, params):
         if "information_schema" in query:
             return [{"as_of": _AS_OF}]
         if _is_count_query(query):
             return [{"total_count": total_count}]
+        if _is_grain_scan(query):
+            return []
         captured["query"] = query
         captured["params"] = params
         return list(rows)
@@ -115,6 +135,7 @@ async def test_org_endpoint_returns_envelope_and_suppresses_small_cohorts(app):
             "seats_consumed": 40,
             "active_learners": 30,
             "learners_certified": 10,
+            "certified_learners": 10,
             "seat_utilization_pct": 40.0,
             "completion_rate_pct": 25.0,
         },
@@ -143,6 +164,44 @@ async def test_org_endpoint_returns_envelope_and_suppresses_small_cohorts(app):
     # The sub-floor contract_pk="contract-pk-2" row is suppressed; only
     # contract_pk="contract-pk-1" remains.
     assert [row["contract_pk"] for row in body["data"]] == ["contract-pk-1"]
+
+
+async def test_contract_utilization_floors_both_certified_names_together(app):
+    # learners_certified is the deprecated name for certified_learners. A
+    # client still reading it must not see a count the new name withholds.
+    rows = [
+        {**_row_template(), "contract_pk": "contract-pk-1"},
+        {
+            **_row_template(),
+            "contract_pk": "contract-pk-2",
+            "learners_certified": 3,
+            "certified_learners": 3,
+            "completion_rate_pct": 7.5,
+        },
+    ]
+    with (
+        patch(
+            "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
+            new=_fake_fetch_all(rows),
+        ),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/contract-utilization",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
+            )
+
+    assert response.status_code == 200
+    published, withheld = response.json()["data"]
+    assert published["certified_learners"] == published["learners_certified"] == 10
+    assert published["completion_rate_pct"] == 25.0
+    assert withheld["certified_learners"] is None
+    assert withheld["learners_certified"] is None
+    assert withheld["completion_rate_pct"] is None
 
 
 async def test_org_envelope_carries_the_total_row_count(app):
@@ -322,6 +381,125 @@ async def test_content_engagement_floors_activity_cohorts_under_a_large_engaged_
     assert data["total_chatbot_interactions"] == 12
 
 
+@pytest.mark.parametrize(
+    "path",
+    ["content-engagement", "contracts/101/content-engagement"],
+)
+async def test_content_engagement_withholds_certificates_that_name_the_uncertified(app, path):
+    # certificates_earned is one per enrolled learner holding a certificate, so
+    # 40 of 42 enrolled names the 2 who do not hold one. Both grains share the
+    # policy.
+    row = {
+        "organization_key": "org-a",
+        "organization_name": "Org A",
+        "contract_pk": "contract-101",
+        "contract_id": 101,
+        "b2b_contract_name": "Contract 101",
+        "courserun_readable_id": "course-v1:MITx+6.00+2026",
+        "courserun_title": "Intro",
+        "total_enrolled_learners": 42,
+        "engaged_learners": 30,
+        "engagement_rate_pct": 71.4,
+        "total_videos_watched": 300,
+        "video_watchers": 20,
+        "avg_videos_per_engaged_learner": 10.0,
+        "total_problems_attempted": 400,
+        "problem_attempters": 20,
+        "avg_problems_per_engaged_learner": 13.3,
+        "total_chatbot_interactions": 12,
+        "chatbot_users": 8,
+        "chatbot_adoption_pct": 19.0,
+        "certificates_earned": 40,
+    }
+    with (
+        patch(
+            "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
+            new=_fake_fetch_all([row]),
+        ),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/{path}",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
+            )
+    assert response.status_code == 200
+    (data,) = response.json()["data"]
+    assert data["certificates_earned"] is None
+    assert data["total_enrolled_learners"] == 42
+    assert data["engaged_learners"] == 30
+
+
+# A month kept on its 13 contributing learners while only 3 were active.
+_QUIET_MONTH = {
+    "organization_key": "org-a",
+    "organization_name": "Org A",
+    "activity_year_and_month": "2026-07",
+    "monthly_active_learners": 3,
+    "new_enrollments": 0,
+    "enrolling_learners": 0,
+    "certificates_earned": 14,
+    "newly_certified_learners": 12,
+    "certified_learners": 12,
+    "total_videos_watched": 9,
+    "video_watchers": 3,
+    "total_problems_attempted": 0,
+    "problem_attempters": 0,
+    "total_chatbot_interactions": 0,
+    "chatbot_users": 0,
+    "contributing_learners": 13,
+}
+
+
+async def test_monthly_trend_keeps_a_month_with_too_few_active_learners(app):
+    # Activity is course work, so a month can have enough certified or
+    # enrolling learners and too few active ones. The row is gated on
+    # contributing_learners, and monthly_active_learners is nulled like any
+    # other sub-floor cohort. A month with too few learners of any kind is
+    # still withheld whole.
+    quiet_month = _QUIET_MONTH
+    tiny_month = quiet_month | {
+        "activity_year_and_month": "2026-08",
+        "certificates_earned": 2,
+        "newly_certified_learners": 2,
+        "certified_learners": 2,
+        "contributing_learners": 4,
+    }
+    with (
+        patch(
+            "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
+            new=_fake_fetch_all([quiet_month, tiny_month]),
+        ),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/engagement-trend",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
+            )
+    assert response.status_code == 200
+    (data,) = response.json()["data"]
+    assert data["activity_year_and_month"] == "2026-07"
+    # The gate itself is not returned: 13 next to 12 certified and a withheld
+    # active count would bound that count from below.
+    assert "contributing_learners" not in data
+    assert data["newly_certified_learners"] == data["certified_learners"] == 12
+    assert data["certificates_earned"] == 14
+    assert data["monthly_active_learners"] is None
+    # The three video watchers are the three active learners.
+    assert data["video_watchers"] is None
+    assert data["total_videos_watched"] is None
+    # Nobody enrolled, which names no one.
+    assert data["enrolling_learners"] == 0
+    assert data["new_enrollments"] == 0
+
+
 async def test_monthly_trend_floors_event_counts_through_their_learner_cohorts(app):
     # An event count clears a learner floor on its own -- one learner
     # enrolling in twelve runs reads as new_enrollments == 12 -- so the floor
@@ -335,6 +513,7 @@ async def test_monthly_trend_floors_event_counts_through_their_learner_cohorts(a
         "new_enrollments": 12,
         "enrolling_learners": 1,
         "certificates_earned": 30,
+        "newly_certified_learners": 22,
         "certified_learners": 22,
         "total_videos_watched": 500,
         "video_watchers": 18,
@@ -342,6 +521,7 @@ async def test_monthly_trend_floors_event_counts_through_their_learner_cohorts(a
         "problem_attempters": 2,
         "total_chatbot_interactions": 60,
         "chatbot_users": 15,
+        "contributing_learners": 45,
     }
     with (
         patch(
@@ -368,12 +548,325 @@ async def test_monthly_trend_floors_event_counts_through_their_learner_cohorts(a
     assert data["total_problems_attempted"] is None
     # Cohorts above the floor keep their totals.
     assert data["monthly_active_learners"] == 40
-    assert data["certified_learners"] == 22
+    assert data["newly_certified_learners"] == data["certified_learners"] == 22
     assert data["certificates_earned"] == 30
     assert data["video_watchers"] == 18
     assert data["total_videos_watched"] == 500
     assert data["chatbot_users"] == 15
     assert data["total_chatbot_interactions"] == 60
+
+
+async def test_monthly_trend_floors_both_newly_certified_names_together(app):
+    # certified_learners is the deprecated name for newly_certified_learners.
+    # A client still reading it must not see a count the new name withholds,
+    # and certificates_earned goes with them. The contract endpoint applies
+    # the policy both trend models share without the org grain's cross-grain
+    # guard, so what is withheld here is the floor alone.
+    contract = {"contract_pk": "contract-pk-1", "contract_id": 101, "b2b_contract_name": "C1"}
+    published = _trend_row() | contract
+    withheld = (
+        _trend_row("2026-08")
+        | contract
+        | {"certificates_earned": 4, "newly_certified_learners": 3, "certified_learners": 3}
+    )
+    with (
+        patch(
+            "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
+            new=_fake_fetch_all_with_contract([published, withheld]),
+        ),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/contracts/101/engagement-trend",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
+            )
+
+    assert response.status_code == 200
+    july, august = response.json()["data"]
+    assert july["newly_certified_learners"] == july["certified_learners"] == 22
+    assert july["certificates_earned"] == 30
+    assert august["newly_certified_learners"] is None
+    assert august["certified_learners"] is None
+    assert august["certificates_earned"] is None
+    assert august["monthly_active_learners"] == 40
+
+
+def _cohort_declaration(policy, column):
+    """Everything a CohortPolicy says about ``column`` as a cohort count."""
+    return {
+        "primary": policy.primary == column,
+        "secondary": column in policy.secondary,
+        "uncontained": column in policy.uncontained,
+        "contained_in": policy.contained_in.get(column),
+        "contains": sorted(k for k, v in policy.contained_in.items() if v == column),
+        "is_derived": column in policy.derived,
+    }
+
+
+@pytest.mark.parametrize("model", [MonthlyEngagementTrend, ContractMonthlyEngagementTrend])
+def test_trend_declares_both_newly_certified_names_identically(model):
+    # certified_learners is the deprecated name for newly_certified_learners
+    # and always equals it. Declared differently, one name could be published
+    # where the other is withheld, so an edit to one has to be made to both.
+    policy = model.cohort_policy
+    new = _cohort_declaration(policy, "newly_certified_learners")
+    assert new == _cohort_declaration(policy, "certified_learners")
+    assert new == {
+        "primary": False,
+        "secondary": True,
+        "uncontained": True,
+        "contained_in": None,
+        "contains": [],
+        "is_derived": False,
+    }
+    # The derived totals cite only the new name, as the dbt declaration does
+    # (tests/test_dbt_exposure_contract.py holds the two to each other). Equal
+    # values mean equal floors, so the deprecated name needs no citation of
+    # its own.
+    citing = {
+        column: cohorts
+        for column, cohorts in policy.derived.items()
+        if {"newly_certified_learners", "certified_learners"} & set(cohorts)
+    }
+    assert citing == {"certificates_earned": ("newly_certified_learners",)}
+
+
+def _trend_row(month="2026-07"):
+    """An org-grained engagement-trend row that clears every floor on its own,
+    so anything suppressed in these tests came from the cross-grain guard."""
+    return {
+        "organization_key": "org-a",
+        "organization_name": "Org A",
+        "activity_year_and_month": month,
+        "monthly_active_learners": 40,
+        "new_enrollments": 12,
+        "enrolling_learners": 9,
+        "certificates_earned": 30,
+        "newly_certified_learners": 22,
+        "certified_learners": 22,
+        "total_videos_watched": 500,
+        "video_watchers": 18,
+        "total_problems_attempted": 7,
+        "problem_attempters": 6,
+        "total_chatbot_interactions": 60,
+        "chatbot_users": 15,
+        "contributing_learners": 45,
+    }
+
+
+def _contract_trend_row(
+    contract, *, active, contributing, chatbot_users, chatbot_total, month="2026-07"
+):
+    """A contract-grained trend row, the grain the org row sums over.
+
+    ``contributing`` is the row gate and has no default, so a row can clear
+    one of the two gates and not the other.
+    """
+    return _trend_row(month) | {
+        "contract_pk": f"pk-{contract}",
+        "contract_id": contract,
+        "b2b_contract_name": contract,
+        "monthly_active_learners": active,
+        "contributing_learners": contributing,
+        "chatbot_users": chatbot_users,
+        "total_chatbot_interactions": chatbot_total,
+    }
+
+
+async def _get_trend(app, fetch_all, path="engagement-trend"):
+    with (
+        patch("ol_analytics_api.core.db.client.starrocks_pool.fetch_all", new=fetch_all),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            return await client.get(
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/{path}",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
+            )
+
+
+async def test_org_trend_blanks_the_total_a_surviving_contract_row_withholds(app):
+    # The contract row is NOT dropped: 30 active learners clears the row gate.
+    # But only 2 of them used the chatbot, so the contract endpoint publishes
+    # the row with its chatbot total withheld. Leave the org total alone and
+    # `517 - 500` hands that withheld 17 back, attributable to those 2 learners.
+    finer = [
+        _contract_trend_row("C1", active=30, contributing=34, chatbot_users=2, chatbot_total=17),
+        _contract_trend_row("C2", active=25, contributing=28, chatbot_users=20, chatbot_total=500),
+    ]
+    response = await _get_trend(app, _fake_fetch_all([_trend_row()], finer_rows=finer))
+
+    assert response.status_code == 200
+    (data,) = response.json()["data"]
+    assert data["total_chatbot_interactions"] is None
+    # Only the additive totals the contract grain actually withholds are
+    # blanked per-column. The other totals are published in full downstream,
+    # so nothing can be subtracted out of them and blanking them would cost
+    # the dashboard data for no gain.
+    assert data["total_videos_watched"] == 500
+    assert data["total_problems_attempted"] == 7
+    assert data["new_enrollments"] == 12
+    # But every cohort column goes wholesale for this month, chatbot_users
+    # included, even though that specific column isn't what triggered the
+    # guard: two contracts sharing no learners would sum exactly, and nothing
+    # here can distinguish that case from this one.
+    assert data["monthly_active_learners"] is None
+    assert data["chatbot_users"] is None
+    assert data["newly_certified_learners"] is None
+    assert data["certified_learners"] is None
+    assert data["video_watchers"] is None
+    assert data["problem_attempters"] is None
+    assert data["enrolling_learners"] is None
+
+
+async def test_org_trend_blanks_every_total_when_a_contract_row_is_dropped(app):
+    # Below the row gate the contract contributes nothing visible at all, so
+    # every column it fed into the org total is recoverable by subtraction.
+    finer = [
+        _contract_trend_row("C1", active=2, contributing=4, chatbot_users=2, chatbot_total=17),
+        _contract_trend_row("C2", active=25, contributing=28, chatbot_users=20, chatbot_total=500),
+    ]
+    response = await _get_trend(app, _fake_fetch_all([_trend_row()], finer_rows=finer))
+
+    (data,) = response.json()["data"]
+    for column in (
+        "new_enrollments",
+        "certificates_earned",
+        "total_videos_watched",
+        "total_problems_attempted",
+        "total_chatbot_interactions",
+        "monthly_active_learners",
+        "enrolling_learners",
+        "newly_certified_learners",
+        "certified_learners",
+        "video_watchers",
+        "problem_attempters",
+        "chatbot_users",
+    ):
+        assert data[column] is None, column
+
+
+async def test_org_trend_blanks_the_headline_count_disjoint_contracts_would_reveal(app):
+    # The counterexample the guard closes: C1 (2 active, dropped) and C2 (25
+    # active, published) share no learners, so the org total is their exact
+    # sum. Left alone, `27 - 25` would hand back C1's suppressed headcount
+    # exactly -- the failure mode `monthly_active_learners` staying published
+    # was supposed to be safe from, on the assumption contracts overlap.
+    org_row = _trend_row() | {"monthly_active_learners": 27}
+    finer = [
+        _contract_trend_row("C1", active=2, contributing=4, chatbot_users=1, chatbot_total=3),
+        _contract_trend_row("C2", active=25, contributing=28, chatbot_users=20, chatbot_total=500),
+    ]
+    response = await _get_trend(app, _fake_fetch_all([org_row], finer_rows=finer))
+
+    assert response.status_code == 200
+    (data,) = response.json()["data"]
+    assert data["monthly_active_learners"] is None
+
+
+async def test_org_trend_blanks_the_active_count_a_published_contract_row_withholds(app):
+    # C1 clears the row gate on its certified learners, with 3 active learners
+    # who only moved through course pages, so it publishes every total and
+    # withholds only its active count. C2 shares no learners with it. Left
+    # alone, the org's `28 - 25` hands back C1's withheld 3.
+    quiet = {
+        "newly_certified_learners": 10,
+        "certified_learners": 10,
+        "certificates_earned": 10,
+        "enrolling_learners": 0,
+        "new_enrollments": 0,
+        "video_watchers": 0,
+        "total_videos_watched": 0,
+        "problem_attempters": 0,
+        "total_problems_attempted": 0,
+    }
+    finer = [
+        _contract_trend_row("C1", active=3, contributing=13, chatbot_users=0, chatbot_total=0)
+        | quiet,
+        _contract_trend_row("C2", active=25, contributing=28, chatbot_users=20, chatbot_total=500),
+    ]
+    org_row = _trend_row() | {"monthly_active_learners": 28}
+    response = await _get_trend(app, _fake_fetch_all([org_row], finer_rows=finer))
+
+    assert response.status_code == 200
+    (data,) = response.json()["data"]
+    assert data["monthly_active_learners"] is None
+    # No contract total is withheld, so the org totals stay. These two are what
+    # pin the row gate to contributing_learners: gated on its 3 active
+    # learners, C1 would be dropped and every org total blanked with it.
+    assert data["total_videos_watched"] == 500
+    assert data["certificates_earned"] == 30
+
+
+async def test_org_trend_untouched_when_the_contract_grain_publishes_in_full(app):
+    finer = [
+        _contract_trend_row("C1", active=40, contributing=45, chatbot_users=15, chatbot_total=60)
+    ]
+    response = await _get_trend(app, _fake_fetch_all([_trend_row()], finer_rows=finer))
+
+    assert response.status_code == 200
+    (data,) = response.json()["data"]
+    assert data["new_enrollments"] == 12
+    assert data["total_videos_watched"] == 500
+    assert data["certificates_earned"] == 30
+    assert data["total_chatbot_interactions"] == 60
+
+
+async def test_org_trend_blanks_only_the_months_the_contract_grain_withholds(app):
+    rows = [_trend_row("2026-06"), _trend_row("2026-07")]
+    finer = [
+        _contract_trend_row(
+            "C1", active=40, contributing=45, chatbot_users=15, chatbot_total=60, month="2026-06"
+        ),
+        _contract_trend_row(
+            "C1", active=30, contributing=34, chatbot_users=2, chatbot_total=17, month="2026-07"
+        ),
+        _contract_trend_row(
+            "C2", active=25, contributing=28, chatbot_users=20, chatbot_total=500, month="2026-07"
+        ),
+    ]
+    response = await _get_trend(app, _fake_fetch_all(rows, finer_rows=finer))
+
+    june, july = response.json()["data"]
+    assert june["total_chatbot_interactions"] == 60
+    assert july["total_chatbot_interactions"] is None
+
+
+async def test_org_endpoints_without_a_finer_grain_issue_no_scan(app):
+    # Only the trend endpoint aggregates across an org's contracts. Scanning on
+    # the other four would be a round trip per request buying nothing.
+    queries = []
+
+    async def fetch_all(query, *_args):
+        queries.append(query)
+        if "information_schema" in query:
+            return [{"as_of": _AS_OF}]
+        if _is_count_query(query):
+            return [{"total_count": 0}]
+        return []
+
+    with (
+        patch("ol_analytics_api.core.db.client.starrocks_pool.fetch_all", new=fetch_all),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/content-engagement",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
+            )
+
+    assert response.status_code == 200
+    assert not any(_is_grain_scan(query) for query in queries)
 
 
 async def test_org_endpoint_403_for_member_who_is_not_a_manager(app):
@@ -619,6 +1112,7 @@ def _row_template() -> dict:
         "seats_consumed": 40,
         "active_learners": 30,
         "learners_certified": 10,
+        "certified_learners": 10,
         "seat_utilization_pct": 40.0,
         "completion_rate_pct": 25.0,
     }
@@ -772,6 +1266,7 @@ async def test_contract_endpoint_suppresses_below_the_floor(app):
         "new_enrollments": 12,
         "enrolling_learners": 2,
         "certificates_earned": 30,
+        "newly_certified_learners": 22,
         "certified_learners": 22,
         "total_videos_watched": 500,
         "video_watchers": 18,
@@ -779,6 +1274,7 @@ async def test_contract_endpoint_suppresses_below_the_floor(app):
         "problem_attempters": 1,
         "total_chatbot_interactions": 60,
         "chatbot_users": 15,
+        "contributing_learners": 45,
     }
     with (
         patch(
@@ -805,6 +1301,70 @@ async def test_contract_endpoint_suppresses_below_the_floor(app):
     # Contract identity is never suppressed — it is not a cohort.
     assert data["contract_id"] == 101
     assert data["monthly_active_learners"] == 40
+    assert "contributing_learners" not in data
+
+
+async def test_contract_trend_keeps_a_month_with_too_few_active_learners(app):
+    # The contract grain inherits the org grain's cohort_policy, gate included:
+    # 13 contributing learners keep the month, and its 3 active learners are
+    # nulled as a sub-floor secondary count rather than withholding the row.
+    row = _QUIET_MONTH | {
+        "contract_pk": "contract-pk-1",
+        "contract_id": 101,
+        "b2b_contract_name": "C1",
+    }
+    response = await _get_trend(
+        app, _fake_fetch_all_with_contract([row]), "contracts/101/engagement-trend"
+    )
+    assert response.status_code == 200
+    (data,) = response.json()["data"]
+    assert "contributing_learners" not in data
+    assert data["monthly_active_learners"] is None
+    assert data["certified_learners"] == 12
+    assert data["certificates_earned"] == 14
+    assert data["video_watchers"] is None
+    assert data["total_videos_watched"] is None
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["engagement-trend", "contracts/101/engagement-trend"],
+    ids=["org", "contract"],
+)
+async def test_trend_count_query_gates_on_contributing_learners(app, path):
+    # total_count has to gate on the same cohort as the rows. Gated on the
+    # active count, it would leave out every month kept on its enrolling or
+    # certified learners, so a client paging up to total_count would stop
+    # short of rows the endpoint does return.
+    captured = {}
+
+    async def fetch_all(query, params):
+        if "information_schema" in query:
+            return [{"as_of": _AS_OF}]
+        if query.startswith("SELECT 1 "):
+            return [{"1": 1}]
+        if _is_count_query(query):
+            captured["query"] = query
+            captured["params"] = params
+            return [{"total_count": 0}]
+        return []
+
+    with (
+        patch("ol_analytics_api.core.db.client.starrocks_pool.fetch_all", new=fetch_all),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/{path}",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
+            )
+    assert response.status_code == 200
+    assert "contributing_learners >= %s" in captured["query"]
+    assert "monthly_active_learners" not in captured["query"]
+    assert captured["params"][-1] == 5
 
 
 async def test_contract_endpoint_rejects_a_non_numeric_contract_id(app):
@@ -830,3 +1390,18 @@ async def test_contract_endpoint_rejects_a_non_numeric_contract_id(app):
                 headers={"X-Userinfo": _manager_header(ORG_A_ID)},
             )
     assert (response.status_code, reached_db) == (422, False)
+
+
+async def test_org_trend_fails_closed_when_the_finer_grain_scan_is_truncated(app):
+    # A truncated scan cannot prove it saw every contributing contract row, so
+    # the guard cannot say which totals are safe. Publishing an unchecked total
+    # is the exact failure the guard exists to prevent, so the request fails.
+    limit = organizations._GRAIN_SCAN_LIMIT  # noqa: SLF001
+    finer = [
+        _contract_trend_row(
+            f"C{index}", active=30, contributing=34, chatbot_users=15, chatbot_total=60
+        )
+        for index in range(limit)
+    ]
+    with pytest.raises(RuntimeError, match="cross-grain guard cannot be applied"):
+        await _get_trend(app, _fake_fetch_all([_trend_row()], finer_rows=finer))

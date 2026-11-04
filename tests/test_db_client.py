@@ -1,10 +1,16 @@
 import asyncio
+import ssl
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from ol_analytics_api.core.config import settings
-from ol_analytics_api.core.db.client import PoolAcquireTimeoutError, StarRocksPool
+from ol_analytics_api.core.db.client import (
+    PlaintextConnectionError,
+    PoolAcquireTimeoutError,
+    StarRocksPool,
+    starrocks_ssl_context,
+)
 
 
 async def test_ping_raises_when_pool_never_started():
@@ -68,6 +74,89 @@ async def test_create_pool_sets_dos_bounds():
     assert kwargs["init_command"] == (
         f"SET query_timeout = {settings.starrocks_query_timeout_seconds}"
     )
+
+
+async def test_create_pool_connects_in_plaintext_without_a_tls_server_name():
+    pool = StarRocksPool()
+    with (
+        patch.object(settings, "starrocks_tls_server_name", ""),
+        patch(
+            "ol_analytics_api.core.db.client.aiomysql.create_pool", new=AsyncMock()
+        ) as create_pool,
+    ):
+        await pool._create_pool("u", "p")  # noqa: SLF001
+    assert create_pool.await_args.kwargs["ssl"] is None
+
+
+async def test_create_pool_verifies_the_fe_certificate_when_a_tls_server_name_is_set():
+    pool = StarRocksPool()
+    with (
+        patch.object(settings, "starrocks_tls_server_name", "lakehouse.starrocks.ol.mit.edu"),
+        patch(
+            "ol_analytics_api.core.db.client.aiomysql.create_pool", new=AsyncMock()
+        ) as create_pool,
+    ):
+        await pool._create_pool("u", "p")  # noqa: SLF001
+    context = create_pool.await_args.kwargs["ssl"]
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.check_hostname is True
+
+
+def test_ssl_context_checks_the_configured_name_not_the_dialed_host():
+    # aiomysql hands asyncio the in-cluster Service name as server_hostname;
+    # the handshake must check the certificate's public name instead.
+    context = starrocks_ssl_context("lakehouse.starrocks.ol.mit.edu")
+    assert context is not None
+    ssl_object = context.wrap_bio(
+        ssl.MemoryBIO(),
+        ssl.MemoryBIO(),
+        server_hostname="lakehouse-starrocks-fe-service.starrocks.svc.cluster.local",
+    )
+    assert ssl_object.server_hostname == "lakehouse.starrocks.ol.mit.edu"
+
+
+def _pool_handing_out(conn):
+    fake_pool = MagicMock()
+    fake_pool.acquire = AsyncMock(return_value=conn)
+    fake_pool.release = MagicMock()
+    pool = StarRocksPool()
+    pool._pool = fake_pool  # noqa: SLF001
+    return pool, fake_pool
+
+
+async def test_cursor_refuses_a_plaintext_connection_when_tls_is_configured():
+    # aiomysql silently stays in plaintext when the FE greeting doesn't offer
+    # TLS (or something on the path strips the flag); no query may run on it.
+    conn = MagicMock(_secure=False)
+    pool, fake_pool = _pool_handing_out(conn)
+    with (
+        patch.object(settings, "starrocks_tls_server_name", "lakehouse.starrocks.ol.mit.edu"),
+        pytest.raises(PlaintextConnectionError),
+    ):
+        async with pool.cursor():
+            pass
+    conn.cursor.assert_not_called()
+    conn.close.assert_called_once()
+    fake_pool.release.assert_called_once_with(conn)
+
+
+async def test_cursor_accepts_a_tls_connection_when_tls_is_configured():
+    conn = MagicMock(_secure=True)
+    conn.cursor.return_value.__aenter__ = AsyncMock()
+    conn.cursor.return_value.__aexit__ = AsyncMock(return_value=False)
+    pool, _ = _pool_handing_out(conn)
+    with patch.object(settings, "starrocks_tls_server_name", "lakehouse.starrocks.ol.mit.edu"):
+        async with pool.cursor():
+            pass
+    conn.close.assert_not_called()
+
+
+async def test_aiomysql_still_tracks_tls_on_the_connection():
+    # cursor() reads aiomysql's private _secure flag; fail here, not in QA,
+    # if an aiomysql upgrade drops it.
+    import aiomysql  # noqa: PLC0415
+
+    assert aiomysql.Connection()._secure is False  # noqa: SLF001
 
 
 async def test_cursor_raises_pool_acquire_timeout_when_pool_saturated():

@@ -67,11 +67,19 @@ class B2BDashboardSettings(BaseSettings):
     # request can pull an unbounded result (see the DoS-surface task).
     default_page_size: int = 100
     max_page_size: int = 1000
+    # The learner-paged endpoint (/learners) counts learners, not rows, and
+    # each learner expands to one row per active enrollment, so a page is up
+    # to max_learner_page_size times the contract's course runs in rows.
+    # Nothing caps a contract's runs, so this bounds a page only through that
+    # product: at 25, a 40-run contract reaches max_page_size's 1,000 rows.
+    # 25 is also the page size the mit-learn progress grid requests.
+    default_learner_page_size: int = 25
+    max_learner_page_size: int = 25
 
     # Whether a learner with no recorded consent decision shares their outcomes
-    # on the learner-progress endpoint. No consent field exists upstream yet, so
-    # today this decides every row. False fails closed, and is the default so a
-    # deployment that never sets it discloses nothing; deployments opt in
+    # on the learner-progress endpoint. A recorded decision always wins
+    # (learner_queries._outcomes_shared). False fails closed, and is the default
+    # so a deployment that never sets it discloses nothing; deployments opt in
     # through ol-infrastructure.
     consent_fail_open: bool = False
 

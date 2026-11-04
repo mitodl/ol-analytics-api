@@ -33,6 +33,7 @@ from fastapi import FastAPI
 
 from ol_analytics_api.core.errors import add_shared_error_handlers
 from ol_analytics_api.core.health import register_readiness_check
+from ol_analytics_api.core.observability.telemetry import NATIVE_TELEMETRY_DISABLED
 from ol_analytics_api.tenants.b2b_dashboard.mitxonline_client import mitxonline_client
 from ol_analytics_api.tenants.b2b_dashboard.routers import (
     admin,
@@ -67,6 +68,7 @@ def create_app() -> FastAPI:
             "learner-progress endpoint returns individual learners on the "
             "organization's own seats, with outcome fields consent-gated."
         ),
+        telemetry=NATIVE_TELEMETRY_DISABLED,
     )
     app.include_router(organizations.router)
     # Registered after the org router so the more specific

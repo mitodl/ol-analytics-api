@@ -25,6 +25,10 @@ from ol_analytics_api.tenants.b2b_learner_records.errors import ErrorCode
 from ol_analytics_api.tenants.b2b_learner_records.models import CourseRun, Enrollment, Learner
 from tests.conftest import bearer, mint
 
+# What _outcomes_shared() renders with consent_fail_open off and on.
+_CLOSED = "COALESCE(outcomes_decision, FALSE)"
+_OPEN = "COALESCE(outcomes_decision, TRUE)"
+
 BASE = "/api/v1/learner-records"
 ORG_ID = "8f14e45f-ceea-467a-9c1b-2f4b9c0a3d21"
 OTHER_ORG_ID = "22222222-2222-2222-2222-222222222222"
@@ -66,6 +70,7 @@ def _learner_row(**overrides):
         "last_enrolled_on": "2026-05-19T09:04:52.000000",
         "courses_enrolled": 4,
         "outcomes_shared": 0,
+        "outcomes_consent_status": "not_recorded",
         "outcomes_consent_on": None,
         "last_active_on": None,
         "courses_in_progress": None,
@@ -93,10 +98,12 @@ def _enrollment_row(**overrides):
         "enrollment_mode": "verified",
         "enrollment_status": None,
         "outcomes_shared": 0,
+        "outcomes_consent_status": "not_recorded",
         "completion_status": None,
         "is_passing": None,
         "grade": None,
         "letter_grade": None,
+        "content_progress": None,
         "certificate_issued_on": None,
         "certificate_is_revoked": None,
         "last_active_on": None,
@@ -257,16 +264,17 @@ async def test_learners_envelope_withholds_outcomes_and_counts_them(app, monkeyp
     assert set(learner) == set(Learner.model_fields)
 
 
-async def test_outcome_columns_read_null_while_consent_is_absent(app, monkeypatch):
+async def test_outcome_columns_are_gated_on_the_consent_expression(app, monkeypatch):
     pool = _FakePool()
     await _get(
         app, f"/organizations/{ORG_ID}/enrollments", _partner_token(ORG_ID), pool, monkeypatch
     )
     page_query, _ = pool.page_call()
-    assert "FALSE AS outcomes_shared" in page_query
-    assert "CASE WHEN FALSE THEN grade END AS grade" in page_query
+    assert f"{_CLOSED} AS outcomes_shared" in page_query
+    for name in ("grade", "content_progress"):
+        assert f"CASE WHEN {_CLOSED} THEN {name} END AS {name}" in page_query
     count_query, _ = pool.count_call()
-    assert "SUM(CASE WHEN FALSE THEN 0 ELSE 1 END) AS outcomes_withheld_count" in count_query
+    assert f"SUM(CASE WHEN {_CLOSED} THEN 0 ELSE 1 END) AS outcomes_withheld_count" in count_query
 
 
 async def test_consent_fail_open_discloses_outcomes(app, monkeypatch):
@@ -276,10 +284,10 @@ async def test_consent_fail_open_discloses_outcomes(app, monkeypatch):
         app, f"/organizations/{ORG_ID}/enrollments", _partner_token(ORG_ID), pool, monkeypatch
     )
     page_query, _ = pool.page_call()
-    assert "TRUE AS outcomes_shared" in page_query
-    assert "CASE WHEN TRUE THEN grade END AS grade" in page_query
+    assert f"{_OPEN} AS outcomes_shared" in page_query
+    assert f"CASE WHEN {_OPEN} THEN grade END AS grade" in page_query
     count_query, _ = pool.count_call()
-    assert "SUM(CASE WHEN TRUE THEN 0 ELSE 1 END) AS outcomes_withheld_count" in count_query
+    assert f"SUM(CASE WHEN {_OPEN} THEN 0 ELSE 1 END) AS outcomes_withheld_count" in count_query
 
 
 def test_consent_fails_closed_by_default():
@@ -294,21 +302,38 @@ def test_models_null_outcomes_a_row_carries_when_not_shared():
         None,
     )
     enrollment = Enrollment(
-        **_enrollment_row(completion_status="certified", is_passing=1, grade=0.91, days_active=3)
+        **_enrollment_row(
+            completion_status="certified",
+            is_passing=1,
+            grade=0.91,
+            content_progress=0.96,
+            days_active=3,
+        )
     )
     assert (enrollment.completion_status, enrollment.is_passing, enrollment.grade) == (
         None,
         None,
         None,
     )
+    assert enrollment.content_progress is None
     assert enrollment.days_active is None
 
 
 def test_models_keep_outcomes_when_shared():
     enrollment = Enrollment(
-        **_enrollment_row(outcomes_shared=1, completion_status="passed", is_passing=1, grade=0.8)
+        **_enrollment_row(
+            outcomes_shared=1,
+            completion_status="passed",
+            is_passing=1,
+            grade=0.8,
+            content_progress=0.75,
+        )
     )
-    assert (enrollment.completion_status, enrollment.grade) == ("passed", 0.8)
+    assert (enrollment.completion_status, enrollment.grade, enrollment.content_progress) == (
+        "passed",
+        0.8,
+        0.75,
+    )
 
 
 def test_models_keep_activity_when_shared():
@@ -340,8 +365,10 @@ async def test_enrollments_project_the_activity_columns(app, monkeypatch):
     query, _ = pool.page_call()
     assert "videos_played AS videos_watched" in query
     assert "NULL AS days_active" not in query
-    # Activity alone is enough to count as started.
-    assert "WHEN grade_value > 0 OR last_active_on IS NOT NULL THEN 'in_progress'" in query
+    # The status is the view's column, defined in ol-data-platform's
+    # afact_learner_courserun_progress, not a CASE restated here.
+    assert " enrollment_status, completion_status, is_passing," in query
+    assert "certificate_is_revoked = FALSE" not in query
 
 
 async def test_default_learners_project_the_activity_columns(app, monkeypatch):
@@ -353,7 +380,7 @@ async def test_default_learners_project_the_activity_columns(app, monkeypatch):
     assert "last_active_on, courses_in_progress, record_updated_on FROM" in query
 
 
-async def test_recomputed_learners_count_in_progress_with_the_enrollment_status(app, monkeypatch):
+async def test_recomputed_learners_count_the_views_flags(app, monkeypatch):
     pool = _FakePool()
     await _get(
         app,
@@ -368,11 +395,15 @@ async def test_recomputed_learners_count_in_progress_with_the_enrollment_status(
         "MAX(CASE WHEN enrollment_is_active = TRUE THEN last_active_on END) AS last_active_on"
     ) in query
     assert (
-        "COUNT(DISTINCT CASE WHEN enrollment_is_active = TRUE"
-        f" AND {queries._COMPLETION_STATUS} = 'in_progress'"  # noqa: SLF001
+        "COUNT(DISTINCT CASE WHEN enrollment_is_active = TRUE AND is_in_progress = TRUE"
         " THEN courserun_pk END) AS courses_in_progress"
     ) in query
     assert "COALESCE(e.courses_in_progress, 0) AS courses_in_progress" in query
+    # The flags mv_b2b_learner counts, so the two rollups cannot apply
+    # different rules to the same enrollments.
+    assert (
+        "COUNT(DISTINCT CASE WHEN is_certified = TRUE THEN courserun_pk END) AS courses_certified"
+    ) in query
 
 
 async def test_include_inactive_learners_count_activity_on_every_enrollment(app, monkeypatch):
@@ -387,8 +418,8 @@ async def test_include_inactive_learners_count_activity_on_every_enrollment(app,
     query, _ = pool.page_call()
     assert "MAX(last_active_on) AS last_active_on" in query
     assert (
-        f"COUNT(DISTINCT CASE WHEN {queries._COMPLETION_STATUS} = 'in_progress'"  # noqa: SLF001
-        " THEN courserun_pk END) AS courses_in_progress"
+        "COUNT(DISTINCT CASE WHEN is_in_progress = TRUE THEN courserun_pk END)"
+        " AS courses_in_progress"
     ) in query
 
 
@@ -398,6 +429,9 @@ async def test_default_learners_read_the_precomputed_rollup(app, monkeypatch):
     query, params = pool.page_call()
     assert f"FROM b2b_learner_records.{queries.LEARNER_MV} WHERE" in query
     assert queries.ENROLLMENT_MV not in query
+    # The view publishes the sum, so the default rollup does not restate it.
+    assert " courses_certified, certificates_earned," in query
+    assert "program_certificates_earned" not in query
     assert query.endswith("ORDER BY learner_id, user_pk LIMIT %s OFFSET %s")
     assert params == (ORG_ID, 100, 0)
 
@@ -451,11 +485,13 @@ async def test_include_inactive_learners_keep_every_roster_member(app, monkeypat
     "path",
     ["enrollments", "learners", "learners?contract_id=42", "learners?include_inactive=true"],
 )
-async def test_blank_names_read_as_null(app, monkeypatch, path):
+async def test_names_are_read_from_the_view_as_published(app, monkeypatch, path):
+    # The views null blank names (ol-data-platform's mv_b2b_learner and
+    # mv_b2b_learner_enrollment), so no query restates that rule.
     pool = _FakePool()
     await _get(app, f"/organizations/{ORG_ID}/{path}", _partner_token(ORG_ID), pool, monkeypatch)
     query, _ = pool.page_call()
-    assert "NULLIF(TRIM(full_name), '')" in query
+    assert "TRIM(" not in query
 
 
 async def test_recomputed_learners_report_the_staler_view(app, monkeypatch):
@@ -488,7 +524,7 @@ async def test_enrollment_filters_are_bound_in_order(app, monkeypatch):
     query, params = pool.page_call()
     assert "enrollment_is_active = TRUE" in query
     assert "learner_id IN (%s, %s)" in query
-    assert "((FALSE AND completion_status IN (%s)) OR NOT FALSE)" in query
+    assert f"(({_CLOSED} AND completion_status IN (%s)) OR NOT {_CLOSED})" in query
     assert params == (
         ORG_ID,
         42,
