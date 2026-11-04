@@ -19,7 +19,12 @@ from ol_analytics_api.core.db.client import PoolAcquireTimeoutError
 from ol_analytics_api.core.db.refresh_metadata import _clear_cache
 from ol_analytics_api.main import create_app
 from ol_analytics_api.tenants.b2b_dashboard.models import (
+    ContentEngagementDepth,
+    ContractContentEngagementDepth,
     ContractMonthlyEngagementTrend,
+    ContractUtilization,
+    EnrollmentCompletionFunnel,
+    MitAdminContractHealth,
     MonthlyEngagementTrend,
 )
 from ol_analytics_api.tenants.b2b_dashboard.routers import organizations
@@ -133,6 +138,7 @@ async def test_org_endpoint_returns_envelope_and_suppresses_small_cohorts(app):
             "seat_limit": 100,
             "b2b_contract_membership_type": "seat",
             "seats_consumed": 40,
+            "actively_enrolled_learners": 30,
             "active_learners": 30,
             "learners_certified": 10,
             "certified_learners": 10,
@@ -204,6 +210,105 @@ async def test_contract_utilization_floors_both_certified_names_together(app):
     assert withheld["completion_rate_pct"] is None
 
 
+async def test_contract_utilization_floors_both_enrollment_names_together(app):
+    # active_learners is the deprecated name for actively_enrolled_learners. A
+    # client still reading it must not see a count the new name withholds.
+    rows = [
+        {**_row_template(), "contract_pk": "contract-pk-1"},
+        {
+            **_row_template(),
+            "contract_pk": "contract-pk-2",
+            "actively_enrolled_learners": 3,
+            "active_learners": 3,
+        },
+    ]
+    with (
+        patch(
+            "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
+            new=_fake_fetch_all(rows),
+        ),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/contract-utilization",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
+            )
+
+    assert response.status_code == 200
+    published, withheld = response.json()["data"]
+    assert published["actively_enrolled_learners"] == published["active_learners"] == 30
+    assert withheld["actively_enrolled_learners"] is None
+    assert withheld["active_learners"] is None
+
+
+def _funnel_row(**overrides):
+    return {
+        "organization_key": "org-a",
+        "organization_name": "Org A",
+        "contract_pk": "contract-pk-1",
+        "contract_id": 101,
+        "b2b_contract_name": "C1",
+        "courserun_pk": "courserun-pk-1",
+        "courserun_readable_id": "course-v1:MITx+6.00+2026",
+        "courserun_title": "Intro",
+        "enrolled_learners": 40,
+        "actively_enrolled_learners": 30,
+        "active_learners": 30,
+        "passing_learners": 20,
+        "certified_learners": 10,
+        "actively_enrolled_rate_pct": 75.0,
+        "active_rate_pct": 75.0,
+        "completion_rate_pct": 25.0,
+    } | overrides
+
+
+async def test_enrollment_funnel_floors_both_enrollment_names_together(app):
+    # The rate is derived from the new name alone, so the old rate has to go
+    # with it: an unsuppressed rate times enrolled_learners is the count.
+    rows = [
+        _funnel_row(),
+        _funnel_row(
+            courserun_pk="courserun-pk-2",
+            actively_enrolled_learners=3,
+            active_learners=3,
+            actively_enrolled_rate_pct=7.5,
+            active_rate_pct=7.5,
+        ),
+    ]
+    with (
+        patch(
+            "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
+            new=_fake_fetch_all(rows),
+        ),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/enrollment-funnel",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
+            )
+
+    assert response.status_code == 200
+    published, withheld = response.json()["data"]
+    assert published["actively_enrolled_learners"] == published["active_learners"] == 30
+    assert published["actively_enrolled_rate_pct"] == published["active_rate_pct"] == 75.0
+    for column in (
+        "actively_enrolled_learners",
+        "active_learners",
+        "actively_enrolled_rate_pct",
+        "active_rate_pct",
+    ):
+        assert withheld[column] is None
+    assert withheld["completion_rate_pct"] == 25.0
+
+
 async def test_org_envelope_carries_the_total_row_count(app):
     """Without this a client cannot tell a full page from a truncated one: a
     response of exactly `limit` rows looks identical either way."""
@@ -273,6 +378,7 @@ async def test_content_engagement_suppresses_secondary_counts_and_derivatives(ap
         "organization_name": "Org A",
         "courserun_readable_id": "course-v1:MITx+6.00+2026",
         "courserun_title": "Intro",
+        "actively_enrolled_learners": 50,
         "total_enrolled_learners": 50,
         "engaged_learners": 1,
         "engagement_rate_pct": 2.0,
@@ -305,7 +411,7 @@ async def test_content_engagement_suppresses_secondary_counts_and_derivatives(ap
     assert response.status_code == 200
     (data,) = response.json()["data"]
     # Primary cohort still visible.
-    assert data["total_enrolled_learners"] == 50
+    assert data["actively_enrolled_learners"] == data["total_enrolled_learners"] == 50
     # Sub-floor secondary counts nulled.
     assert data["engaged_learners"] is None
     assert data["video_watchers"] is None
@@ -323,6 +429,54 @@ async def test_content_engagement_suppresses_secondary_counts_and_derivatives(ap
     assert data["chatbot_adoption_pct"] is None
 
 
+async def test_content_engagement_gates_the_row_on_actively_enrolled_learners(app):
+    row = {
+        "organization_key": "org-a",
+        "organization_name": "Org A",
+        "courserun_readable_id": "course-v1:MITx+6.00+2026",
+        "courserun_title": "Intro",
+        "actively_enrolled_learners": 42,
+        "total_enrolled_learners": 42,
+        "engaged_learners": 30,
+        "engagement_rate_pct": 71.4,
+        "total_videos_watched": 300,
+        "video_watchers": 20,
+        "avg_videos_per_engaged_learner": 10.0,
+        "total_problems_attempted": 400,
+        "problem_attempters": 20,
+        "avg_problems_per_engaged_learner": 13.3,
+        "total_chatbot_interactions": 60,
+        "chatbot_users": 10,
+        "chatbot_adoption_pct": 23.8,
+        "certificates_earned": 5,
+    }
+    tiny = row | {
+        "courserun_readable_id": "course-v1:MITx+7.00+2026",
+        "actively_enrolled_learners": 3,
+        "total_enrolled_learners": 3,
+    }
+    with (
+        patch(
+            "ol_analytics_api.core.db.client.starrocks_pool.fetch_all",
+            new=_fake_fetch_all([row, tiny]),
+        ),
+        patch(
+            "ol_analytics_api.tenants.b2b_dashboard.auth.mitxonline_client.is_org_manager",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(app) as client:
+            response = await client.get(
+                f"/api/v1/analytics/organizations/{ORG_A_ID}/content-engagement",
+                headers={"X-Userinfo": _manager_header(ORG_A_ID)},
+            )
+
+    assert response.status_code == 200
+    (data,) = response.json()["data"]
+    assert data["courserun_readable_id"] == "course-v1:MITx+6.00+2026"
+    assert data["actively_enrolled_learners"] == data["total_enrolled_learners"] == 42
+
+
 async def test_content_engagement_floors_activity_cohorts_under_a_large_engaged_cohort(app):
     # The gap PR #2520 closed: engaged_learners clears the floor, so nothing
     # keyed on it suppresses, but only ONE learner watched a video. Without
@@ -333,6 +487,7 @@ async def test_content_engagement_floors_activity_cohorts_under_a_large_engaged_
         "organization_name": "Org A",
         "courserun_readable_id": "course-v1:MITx+6.00+2026",
         "courserun_title": "Intro",
+        "actively_enrolled_learners": 50,
         "total_enrolled_learners": 50,
         "engaged_learners": 30,
         "engagement_rate_pct": 60.0,
@@ -397,6 +552,7 @@ async def test_content_engagement_withholds_certificates_that_name_the_uncertifi
         "b2b_contract_name": "Contract 101",
         "courserun_readable_id": "course-v1:MITx+6.00+2026",
         "courserun_title": "Intro",
+        "actively_enrolled_learners": 42,
         "total_enrolled_learners": 42,
         "engaged_learners": 30,
         "engagement_rate_pct": 71.4,
@@ -429,7 +585,7 @@ async def test_content_engagement_withholds_certificates_that_name_the_uncertifi
     assert response.status_code == 200
     (data,) = response.json()["data"]
     assert data["certificates_earned"] is None
-    assert data["total_enrolled_learners"] == 42
+    assert data["actively_enrolled_learners"] == data["total_enrolled_learners"] == 42
     assert data["engaged_learners"] == 30
 
 
@@ -633,6 +789,38 @@ def test_trend_declares_both_newly_certified_names_identically(model):
         if {"newly_certified_learners", "certified_learners"} & set(cohorts)
     }
     assert citing == {"certificates_earned": ("newly_certified_learners",)}
+
+
+@pytest.mark.parametrize(
+    "model", [ContractUtilization, MitAdminContractHealth, EnrollmentCompletionFunnel]
+)
+def test_declares_both_enrollment_names_identically(model):
+    # active_learners is the deprecated name for actively_enrolled_learners and
+    # always equals it. Declared differently, one name could be published where
+    # the other is withheld.
+    policy = model.cohort_policy
+    new = _cohort_declaration(policy, "actively_enrolled_learners")
+    assert new == _cohort_declaration(policy, "active_learners")
+    assert new["secondary"]
+    assert new["contained_in"] == policy.primary
+
+
+def test_funnel_rates_cite_the_new_enrollment_name_only():
+    derived = EnrollmentCompletionFunnel.cohort_policy.derived
+    assert derived["actively_enrolled_rate_pct"] == ("actively_enrolled_learners",)
+    assert derived["active_rate_pct"] == ("actively_enrolled_learners",)
+
+
+@pytest.mark.parametrize("model", [ContentEngagementDepth, ContractContentEngagementDepth])
+def test_depth_declares_the_old_enrollment_name_inside_the_primary(model):
+    # A policy has one primary, so total_enrolled_learners cannot stay one
+    # beside its new name. Nothing may lean on it: a cohort contained in it or
+    # derived from it would drop its complement or floor with the old column.
+    policy = model.cohort_policy
+    assert policy.primary == "actively_enrolled_learners"
+    assert policy.contained_in["total_enrolled_learners"] == "actively_enrolled_learners"
+    assert "total_enrolled_learners" not in policy.contained_in.values()
+    assert not any("total_enrolled_learners" in cohorts for cohorts in policy.derived.values())
 
 
 def _trend_row(month="2026-07"):
@@ -938,6 +1126,7 @@ async def test_admin_endpoint_envelope_has_no_organization_key(app):
         "seat_limit": 100,
         "b2b_contract_membership_type": "seat",
         "seats_consumed": 40,
+        "actively_enrolled_learners": 30,
         "active_learners": 30,
         "certified_learners": 10,
         "seat_utilization_pct": 40.0,
@@ -1110,6 +1299,7 @@ def _row_template() -> dict:
         "seat_limit": 100,
         "b2b_contract_membership_type": "seat",
         "seats_consumed": 40,
+        "actively_enrolled_learners": 30,
         "active_learners": 30,
         "learners_certified": 10,
         "certified_learners": 10,

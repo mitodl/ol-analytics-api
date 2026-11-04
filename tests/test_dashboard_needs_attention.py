@@ -123,7 +123,7 @@ def test_counts_each_learner_once_however_many_courses_they_are_quiet_in():
     # The defect this endpoint exists to fix. learner-progress's
     # needs_attention_count is a SUM over a learner x course-run grain, so one
     # learner stale in three of the contract's courses reads as 3 -- which
-    # cannot sit beside active_learners, a distinct-learner count. Executed
+    # cannot sit beside actively_enrolled_learners, a distinct-learner count. Executed
     # against real rows, not asserted on SQL text, because the units are the
     # whole point.
     rows = [
