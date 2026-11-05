@@ -67,7 +67,7 @@ developer detail lives here instead:
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 from collections.abc import Iterable, Mapping
 from enum import StrEnum
 from typing import Annotated, Any, Self
@@ -77,13 +77,13 @@ from pydantic import AfterValidator, BaseModel, Field, model_validator
 from ol_analytics_api.core.consent import ConsentStatus
 
 
-def _assume_utc(value: datetime.datetime) -> datetime.datetime:
+def _assume_utc(value: dt.datetime) -> dt.datetime:
     # StarRocks returns these timestamps as zone-less UTC strings. Without an
     # offset a browser reads them as local time and shifts the displayed dates.
-    return value if value.tzinfo is not None else value.replace(tzinfo=datetime.UTC)
+    return value if value.tzinfo is not None else value.replace(tzinfo=dt.UTC)
 
 
-UtcDatetime = Annotated[datetime.datetime, AfterValidator(_assume_utc)]
+UtcDatetime = Annotated[dt.datetime, AfterValidator(_assume_utc)]
 
 _OUTCOME_FIELDS = (
     "completion_status",
@@ -203,7 +203,7 @@ class LearnerEnrollment(BaseModel):
             f"toward completion. Empty if they don't have one. {_HIDDEN}"
         )
     )
-    last_active_on: datetime.date | None = Field(
+    last_active_on: dt.date | None = Field(
         description=(
             f"The last day the learner did anything in the course. Empty if they haven't yet. "
             f"{_HIDDEN}"

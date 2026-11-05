@@ -8,7 +8,7 @@ matching and ordering rules.
 """
 
 import base64
-import datetime
+import datetime as dt
 import json
 import re
 import sqlite3
@@ -36,8 +36,8 @@ ORG_ID = "11111111-1111-1111-1111-111111111111"
 OTHER_ORG_ID = "22222222-2222-2222-2222-222222222222"
 CONTRACT_ID = 101
 PATH = f"/api/v1/analytics/organizations/{ORG_ID}/contracts/{CONTRACT_ID}/learners"
-_AS_OF = datetime.datetime(2026, 9, 15, 6, 0)  # noqa: DTZ001 - StarRocks returns naive UTC
-_TODAY = datetime.date(2026, 9, 15)
+_AS_OF = dt.datetime(2026, 9, 15, 6, 0)  # noqa: DTZ001 - StarRocks returns naive UTC
+_TODAY = dt.date(2026, 9, 15)
 _TODAY_SQL = "'2026-09-15'"
 
 

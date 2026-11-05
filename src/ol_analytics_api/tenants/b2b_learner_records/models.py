@@ -15,7 +15,7 @@ required and nullable, as the contract does.
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 import uuid
 from enum import StrEnum
 from typing import Annotated, Literal, Self
@@ -25,15 +25,15 @@ from pydantic import AfterValidator, BaseModel, Field, model_validator
 from ol_analytics_api.core.consent import ConsentStatus
 
 
-def _assume_utc(value: datetime.datetime) -> datetime.datetime:
+def _assume_utc(value: dt.datetime) -> dt.datetime:
     # The MVs carry MITx Online timestamps as zone-less ISO-8601 strings in UTC,
     # and StarRocks reports refresh times in its configured zone, which is UTC
     # (ol-infrastructure applications/starrocks). The contract's date-time
     # format needs an offset.
-    return value if value.tzinfo is not None else value.replace(tzinfo=datetime.UTC)
+    return value if value.tzinfo is not None else value.replace(tzinfo=dt.UTC)
 
 
-UtcDatetime = Annotated[datetime.datetime, AfterValidator(_assume_utc)]
+UtcDatetime = Annotated[dt.datetime, AfterValidator(_assume_utc)]
 
 
 def _withhold_outcomes[RecordT: BaseModel](record: RecordT, fields: tuple[str, ...]) -> RecordT:
@@ -91,10 +91,10 @@ class CourseRun(BaseModel):
     )
     contract_name: str = Field(description="Name of the B2B contract.")
     contract_is_active: bool = Field(description="Whether the contract is currently active.")
-    contract_start_date: datetime.date | None = Field(
+    contract_start_date: dt.date | None = Field(
         description="Null where the contract records no start date."
     )
-    contract_end_date: datetime.date | None = Field(
+    contract_end_date: dt.date | None = Field(
         description="Null where the contract records no end date."
     )
     seat_limit: int | None = Field(ge=0, description="Null means uncapped, not zero.")
@@ -193,7 +193,7 @@ class Learner(BaseModel):
             "true with no recorded decision."
         )
     )
-    last_active_on: datetime.date | None = Field(
+    last_active_on: dt.date | None = Field(
         description=(
             "Most recent day with tracked course activity (video play, problem check, "
             "navigation, discussion or chatbot submit) across the enrollments the request "
@@ -316,7 +316,7 @@ class Enrollment(BaseModel):
             "not_started."
         )
     )
-    last_active_on: datetime.date | None = Field(
+    last_active_on: dt.date | None = Field(
         description=(
             "Most recent day with tracked activity in this course run. A date in the course "
             "platform's local day, not a UTC day. Null with no activity."

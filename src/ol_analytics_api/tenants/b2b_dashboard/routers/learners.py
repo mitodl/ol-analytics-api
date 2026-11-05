@@ -16,7 +16,7 @@ Mounted at /api/v1/analytics by tenants/b2b_dashboard/app.py.
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 from enum import StrEnum
 from typing import Annotated
 
@@ -100,7 +100,7 @@ CourserunListParam = Annotated[
 ]
 
 
-async def _utc_today() -> datetime.date:
+async def _utc_today() -> dt.date:
     """Resolve today's UTC date on the cluster, once, before either data query.
 
     needs_attention_since is compared against it. The page and the count are
@@ -113,11 +113,11 @@ async def _utc_today() -> datetime.date:
     one non-deterministic expression in the tenant's SQL.
     """
     rows = await starrocks_pool.fetch_all(learner_queries.UTC_TODAY_QUERY)
-    today: datetime.date = rows[0]["today"]
+    today: dt.date = rows[0]["today"]
     return today
 
 
-async def _enrollment_as_of() -> datetime.datetime | None:
+async def _enrollment_as_of() -> dt.datetime | None:
     # Read before the data queries, so a refresh landing mid-request labels
     # newer rows with the older as_of rather than the reverse.
     return await latest_refresh_timestamp(

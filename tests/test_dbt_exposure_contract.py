@@ -28,7 +28,7 @@ those queries read declare no cohorts, so there is no policy to compare.
 from __future__ import annotations
 
 import dataclasses
-import datetime
+import datetime as dt
 import json
 import uuid
 from collections.abc import Callable
@@ -256,8 +256,8 @@ def test_contract_membership_oracle_has_its_filter_columns():
 
 _LR_SCHEMA = "lr"
 _ORG = uuid.UUID(int=1)
-_INSTANT = datetime.datetime(2026, 1, 1, 12, 30, 15, 500, tzinfo=datetime.UTC)
-_TODAY = datetime.date(2026, 1, 1)
+_INSTANT = dt.datetime(2026, 1, 1, 12, 30, 15, 500, tzinfo=dt.UTC)
+_TODAY = dt.date(2026, 1, 1)
 _EVERY_RECORD_FILTER = learner_records.RecordFilters(
     _ORG,
     contract_id=1,

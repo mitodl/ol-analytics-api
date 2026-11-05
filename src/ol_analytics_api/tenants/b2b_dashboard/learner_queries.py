@@ -52,7 +52,7 @@ core/consent.py, which the b2b_learner_records tenant shares.
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -90,17 +90,17 @@ def _date_literal(value: object) -> str:
     verbatim instead of rewriting it. StarRocks casts an ISO-8601 literal to
     DATE to compare it against a DATE column.
     """
-    if isinstance(value, datetime.datetime):
+    if isinstance(value, dt.datetime):
         value = value.date()
     elif isinstance(value, str):
-        value = datetime.date.fromisoformat(value)
-    if type(value) is not datetime.date:
+        value = dt.date.fromisoformat(value)
+    if type(value) is not dt.date:
         message = f"today must be a date, got {type(value).__name__}"
         raise TypeError(message)
     return f"'{value.isoformat()}'"
 
 
-def _needs_attention(today: datetime.date) -> str:
+def _needs_attention(today: dt.date) -> str:
     """Whether the row's ``needs_attention_since`` has arrived by ``today``.
 
     The rule is the MV's. ``needs_attention_since`` is the enrollment date for
@@ -231,7 +231,7 @@ def _contains_pattern(term: str) -> str:
 
 
 def _records(
-    organization_id: str, contract_id: int, *, include_inactive: bool, today: datetime.date
+    organization_id: str, contract_id: int, *, include_inactive: bool, today: dt.date
 ) -> _Records:
     table = f"{validate_sql_identifier(settings.learner_records_schema)}.{ENROLLMENT_MV}"
     # The org predicate stays next to the contract one: contract ids are
@@ -330,7 +330,7 @@ def _projection(records: _Records) -> str:
     )
 
 
-def learner_progress(filters: ProgressFilters, today: datetime.date) -> ProgressQuery:
+def learner_progress(filters: ProgressFilters, today: dt.date) -> ProgressQuery:
     records = _records(
         filters.organization_id,
         filters.contract_id,
@@ -382,7 +382,7 @@ _LEARNER_ORDER = (
 )
 
 
-def learners(filters: LearnerFilters, today: datetime.date) -> ProgressQuery:
+def learners(filters: LearnerFilters, today: dt.date) -> ProgressQuery:
     """Learners with at least one enrollment matching every filter, paged by
     learner, each with ALL of their active enrollments.
 
@@ -453,7 +453,7 @@ class AggregateQuery:
 
 
 def needs_attention_aggregate(
-    organization_id: str, contract_id: int | None, today: datetime.date
+    organization_id: str, contract_id: int | None, today: dt.date
 ) -> AggregateQuery:
     """Distinct learners needing attention, grouped by contract.
 

@@ -5,7 +5,7 @@ rule that matters is about rows: a recorded decision wins over
 ``consent_fail_open``, and the setting only covers learners with none.
 """
 
-import datetime
+import datetime as dt
 import sqlite3
 import uuid
 
@@ -18,8 +18,8 @@ SCHEMA = "b2b_learner_records"
 ORG_ID = "8f14e45f-ceea-467a-9c1b-2f4b9c0a3d21"
 CONSENT_ON = "2026-02-03T14:20:04.000000"
 # Every fixture row is stamped into its change log at this time.
-STAMPED = datetime.datetime(2026, 8, 1, 6, 0, 0, tzinfo=datetime.UTC)
-LATER = datetime.datetime(2026, 8, 12, 6, 0, 0, tzinfo=datetime.UTC)
+STAMPED = dt.datetime(2026, 8, 1, 6, 0, 0, tzinfo=dt.UTC)
+LATER = dt.datetime(2026, 8, 12, 6, 0, 0, tzinfo=dt.UTC)
 
 _ENROLLMENT_MV_COLUMNS = (
     "contract_pk",
@@ -201,10 +201,10 @@ def _sql_value(value):
     # sqlite has no DATETIME. Zone-less UTC ISO text compares in order, as the
     # change log's zone-less UTC DATETIME does in StarRocks.
     # The queries bind zone-less UTC already; astimezone would read that as local.
-    if not isinstance(value, datetime.datetime):
+    if not isinstance(value, dt.datetime):
         return value
     if value.tzinfo is not None:
-        value = value.astimezone(datetime.UTC).replace(tzinfo=None)
+        value = value.astimezone(dt.UTC).replace(tzinfo=None)
     return value.isoformat(" ")
 
 
@@ -506,9 +506,9 @@ def test_updated_since_compares_the_change_logs_changed_on(conn):
     assert set(learners) == {"undecided"}
     # Inclusive, and floored to the second: within the stamp's second the change
     # is re-sent rather than skipped; a second later it is behind the cursor.
-    same_second, _ = _enrollments(conn, updated_since=LATER + datetime.timedelta(microseconds=1))
+    same_second, _ = _enrollments(conn, updated_since=LATER + dt.timedelta(microseconds=1))
     assert set(same_second) == {("declined", 42)}
-    later, _ = _enrollments(conn, updated_since=LATER + datetime.timedelta(seconds=1))
+    later, _ = _enrollments(conn, updated_since=LATER + dt.timedelta(seconds=1))
     assert later == {}
 
 
@@ -582,7 +582,7 @@ def test_an_enrollment_rekeyed_then_removed_is_sent_once(conn):
     _rekeyed_tombstone(
         conn,
         queries.ENROLLMENT_CHANGES,
-        LATER + datetime.timedelta(hours=1),
+        LATER + dt.timedelta(hours=1),
         contract_pk="contract-43",
         courserun_pk="run-43",
         user_pk="mixed-rekeyed",
@@ -597,7 +597,7 @@ def test_an_enrollment_rekeyed_then_removed_is_sent_once(conn):
     ]
     assert total == 1
     # The later removal is the one a cursor between the two must still see.
-    between, _ = _enrollments(conn, updated_since=LATER + datetime.timedelta(minutes=30))
+    between, _ = _enrollments(conn, updated_since=LATER + dt.timedelta(minutes=30))
     assert set(between) == {("mixed", 43)}
 
 
@@ -606,7 +606,7 @@ def test_a_learner_rekeyed_then_removed_is_sent_once(conn):
     _rekeyed_tombstone(
         conn,
         queries.LEARNER_CHANGES,
-        LATER + datetime.timedelta(hours=1),
+        LATER + dt.timedelta(hours=1),
         organization_key="org",
         user_pk="declined-rekeyed",
         sso_organization_id=ORG_ID,
@@ -615,7 +615,7 @@ def test_a_learner_rekeyed_then_removed_is_sent_once(conn):
     rows, total = _page(conn, queries.learners(SCHEMA, _filters(updated_since=LATER)))
     assert [(row["learner_id"], row["removed"]) for row in rows] == [("declined", 1)]
     assert total == 1
-    between, _ = _learners(conn, updated_since=LATER + datetime.timedelta(minutes=30))
+    between, _ = _learners(conn, updated_since=LATER + dt.timedelta(minutes=30))
     assert set(between) == {"declined"}
 
 

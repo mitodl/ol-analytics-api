@@ -7,7 +7,7 @@ pin what it filters on and what it binds.
 """
 
 import ast
-import datetime
+import datetime as dt
 import pathlib
 
 import pytest
@@ -35,9 +35,9 @@ ORG_ID = "8f14e45f-ceea-467a-9c1b-2f4b9c0a3d21"
 OTHER_ORG_ID = "22222222-2222-2222-2222-222222222222"
 LEARNER_ID = "3e1a9c74-5b2d-4f88-9a01-7c6de2b4f019"
 OTHER_LEARNER_ID = "c04e8a17-3d62-4b95-a7e8-51fb2c8d9042"
-_AS_OF = datetime.datetime(2026, 8, 13, 6, 15)  # noqa: DTZ001 - StarRocks returns naive UTC
+_AS_OF = dt.datetime(2026, 8, 13, 6, 15)  # noqa: DTZ001 - StarRocks returns naive UTC
 # Before every cursor the retention window accepts.
-_LOG_START = datetime.datetime(2026, 5, 1)  # noqa: DTZ001
+_LOG_START = dt.datetime(2026, 5, 1)  # noqa: DTZ001
 _CONTRACT_PATH = (
     pathlib.Path(__file__).resolve().parents[1] / "docs/openapi/b2b-learner-records-v1.yaml"
 )
@@ -165,13 +165,13 @@ def app():
 
 # The tests' updated_since values are fixed dates, which the 90-day retention
 # check would start refusing as real time passes.
-NOW = datetime.datetime(2026, 8, 13, tzinfo=datetime.UTC)
+NOW = dt.datetime(2026, 8, 13, tzinfo=dt.UTC)
 
 
 def _bound(*args):
     # A cursor bound as the query binds it: UTC with the zone dropped, for
     # comparison against the change log's zone-less UTC DATETIME.
-    return datetime.datetime(*args, tzinfo=datetime.UTC).replace(tzinfo=None)
+    return dt.datetime(*args, tzinfo=dt.UTC).replace(tzinfo=None)
 
 
 @pytest.fixture(autouse=True)
@@ -375,7 +375,7 @@ def test_models_keep_activity_when_shared():
         **_enrollment_row(
             outcomes_shared=1,
             completion_status="in_progress",
-            last_active_on=datetime.date(2026, 8, 11),
+            last_active_on=dt.date(2026, 8, 11),
             days_active=34,
             videos_watched=212,
             problems_attempted=88,
@@ -388,7 +388,7 @@ def test_models_keep_activity_when_shared():
         enrollment.videos_watched,
         enrollment.problems_attempted,
         enrollment.chatbot_interactions,
-    ) == (datetime.date(2026, 8, 11), 34, 212, 88, 14)
+    ) == (dt.date(2026, 8, 11), 34, 212, 88, 14)
 
 
 async def test_enrollments_project_the_activity_columns(app, monkeypatch):
@@ -531,7 +531,7 @@ async def test_names_are_read_from_the_view_as_published(app, monkeypatch, path)
 
 
 async def test_recomputed_learners_report_the_staler_view(app, monkeypatch):
-    older = datetime.datetime(2026, 8, 12, 6, 0)  # noqa: DTZ001
+    older = dt.datetime(2026, 8, 12, 6, 0)  # noqa: DTZ001
     pool = _FakePool(as_of_by_mv={queries.ENROLLMENT_MV: older})
     response = await _get(
         app,
@@ -648,7 +648,7 @@ async def test_malformed_parameters_are_400_with_a_string_detail(app, monkeypatc
 
 def test_cursor_value_is_a_prefix_of_stored_values_in_the_same_second():
     bound = queries._cursor_value(  # noqa: SLF001
-        datetime.datetime(2026, 8, 12, 6, 15, 0, 999999, tzinfo=datetime.UTC)
+        dt.datetime(2026, 8, 12, 6, 15, 0, 999999, tzinfo=dt.UTC)
     )
     assert bound == "2026-08-12T06:15:00"
     for stored in ("2026-08-12T06:15:00", "2026-08-12T06:15:00.000", "2026-08-12T06:15:00.000000"):
@@ -661,7 +661,7 @@ def test_round_up_cursor_value_never_excludes_a_row_before_the_requested_instant
     # a row stored at "...:00.250" (which precedes .500) on the wrong side of
     # `<`, silently dropping it rather than re-sending it in the next window.
     bound = queries._cursor_value(  # noqa: SLF001
-        datetime.datetime(2026, 8, 12, 6, 15, 0, 500000, tzinfo=datetime.UTC), round_up=True
+        dt.datetime(2026, 8, 12, 6, 15, 0, 500000, tzinfo=dt.UTC), round_up=True
     )
     assert bound == "2026-08-12T06:15:01"
     assert bound > "2026-08-12T06:15:00.250000"
@@ -669,7 +669,7 @@ def test_round_up_cursor_value_never_excludes_a_row_before_the_requested_instant
 
 def test_round_up_cursor_value_is_unchanged_on_a_whole_second():
     bound = queries._cursor_value(  # noqa: SLF001
-        datetime.datetime(2026, 8, 12, 6, 15, 0, tzinfo=datetime.UTC), round_up=True
+        dt.datetime(2026, 8, 12, 6, 15, 0, tzinfo=dt.UTC), round_up=True
     )
     assert bound == "2026-08-12T06:15:00"
 
@@ -720,7 +720,7 @@ def _course_row(**overrides):
         "contract_name": "Contoso 2026 Site Licence",
         "contract_is_active": 1,
         "contract_start_date": None,
-        "contract_end_date": datetime.date(2026, 12, 31),
+        "contract_end_date": dt.date(2026, 12, 31),
         "seat_limit": None,
         "courserun_id": "course-v1:MITxT+14.310x+2T2026",
         "courserun_title": "Data Analysis for Social Scientists",
@@ -842,7 +842,7 @@ async def test_every_error_carries_the_code_its_contract_documents(app, monkeypa
 
 @pytest.mark.parametrize("days", [91, 365])
 async def test_updated_since_older_than_the_retention_window_is_refused(app, monkeypatch, days):
-    since = (NOW - datetime.timedelta(days=days)).isoformat().replace("+00:00", "Z")
+    since = (NOW - dt.timedelta(days=days)).isoformat().replace("+00:00", "Z")
     response = await _get(
         app,
         f"/organizations/{ORG_ID}/enrollments?updated_since={since}",
@@ -856,7 +856,7 @@ async def test_updated_since_older_than_the_retention_window_is_refused(app, mon
 
 
 async def test_updated_since_inside_the_retention_window_is_accepted(app, monkeypatch):
-    since = (NOW - datetime.timedelta(days=89)).isoformat().replace("+00:00", "Z")
+    since = (NOW - dt.timedelta(days=89)).isoformat().replace("+00:00", "Z")
     response = await _get(
         app,
         f"/organizations/{ORG_ID}/learners?updated_since={since}",
@@ -938,7 +938,7 @@ async def test_updated_since_before_change_tracking_began_is_refused(
     app, monkeypatch, since, status
 ):
     # A record removed before the change log was created has no row in it.
-    pool = _FakePool(log_start=datetime.datetime(2026, 8, 1, 6, 0, 0))  # noqa: DTZ001
+    pool = _FakePool(log_start=dt.datetime(2026, 8, 1, 6, 0, 0))  # noqa: DTZ001
     response = await _get(
         app,
         f"/organizations/{ORG_ID}/learners?updated_since={since}",
@@ -975,6 +975,6 @@ async def test_the_change_log_start_is_cached(app, monkeypatch):
 
 
 async def test_a_full_read_does_not_consult_the_change_log_start(app, monkeypatch):
-    pool = _FakePool(log_start=datetime.datetime(2026, 8, 1))  # noqa: DTZ001
+    pool = _FakePool(log_start=dt.datetime(2026, 8, 1))  # noqa: DTZ001
     await _get(app, f"/organizations/{ORG_ID}/learners", _partner_token(ORG_ID), pool, monkeypatch)
     assert not any("MIN(changed_on)" in query for query, _ in pool.calls)

@@ -39,7 +39,7 @@ smoke tests — a wrong column name fails this query at request time.
 from __future__ import annotations
 
 import asyncio
-import datetime
+import datetime as dt
 from collections import defaultdict
 
 from cachetools import TTLCache
@@ -50,7 +50,7 @@ from ol_analytics_api.core.db.client import starrocks_pool
 # minutes of staleness on the freshness timestamp is immaterial; caching it
 # keeps the extra information_schema round-trip off the hot path.
 _AS_OF_CACHE_TTL_SECONDS = 300
-_cache: TTLCache[tuple[str, str], datetime.datetime | None] = TTLCache(
+_cache: TTLCache[tuple[str, str], dt.datetime | None] = TTLCache(
     maxsize=64, ttl=_AS_OF_CACHE_TTL_SECONDS
 )
 _locks: defaultdict[tuple[str, str], asyncio.Lock] = defaultdict(asyncio.Lock)
@@ -62,7 +62,7 @@ _LATEST_REFRESH_QUERY = (
 )
 
 
-async def latest_refresh_timestamp(schema: str, table: str) -> datetime.datetime | None:
+async def latest_refresh_timestamp(schema: str, table: str) -> dt.datetime | None:
     """Last-refresh time of ``schema.table`` (a materialized view), or ``None``
     if that MV has never finished a refresh (or is absent from
     information_schema)."""

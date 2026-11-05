@@ -7,7 +7,7 @@ how consent shapes it.
 """
 
 import base64
-import datetime
+import datetime as dt
 import json
 import re
 import sqlite3
@@ -35,10 +35,10 @@ ORG_ID = "11111111-1111-1111-1111-111111111111"
 OTHER_ORG_ID = "22222222-2222-2222-2222-222222222222"
 CONTRACT_ID = 101
 PATH = f"/api/v1/analytics/organizations/{ORG_ID}/contracts/{CONTRACT_ID}/learner-progress"
-_AS_OF = datetime.datetime(2026, 9, 15, 6, 0)  # noqa: DTZ001 - StarRocks returns naive UTC
+_AS_OF = dt.datetime(2026, 9, 15, 6, 0)  # noqa: DTZ001 - StarRocks returns naive UTC
 # What the cluster answers UTC_TODAY_QUERY with: _AS_OF's date.
 # Fixed, so the SQL these tests assert on is stable.
-_TODAY = datetime.date(2026, 9, 15)
+_TODAY = dt.date(2026, 9, 15)
 _TODAY_SQL = "'2026-09-15'"
 
 
@@ -311,7 +311,7 @@ def test_needs_attention_boundary_is_computed_from_real_rows():
         ("completion_status TEXT", "needs_attention_since TEXT"),
         [
             ("not_started", "2026-02-03"),  # never started: dated from the enrollment
-            ("in_progress", (_TODAY + datetime.timedelta(days=1)).isoformat()),  # 29 days quiet
+            ("in_progress", (_TODAY + dt.timedelta(days=1)).isoformat()),  # 29 days quiet
             ("in_progress", _TODAY.isoformat()),  # quiet exactly 30 days
             ("in_progress", None),  # graded, but no tracked activity at all
             ("certified", None),  # finished: the view never dates these
@@ -338,7 +338,7 @@ def test_needs_attention_count_respects_the_consent_gate(monkeypatch):
     # all need attention and differ only in the recorded consent decision. A
     # recorded decision wins either way; consent_fail_open decides the rest.
     needs_attention = _needs_attention_sql(_TODAY)
-    due = (_TODAY - datetime.timedelta(days=1)).isoformat()
+    due = (_TODAY - dt.timedelta(days=1)).isoformat()
     conn = _enrollment_db(
         ("needs_attention_since TEXT", "outcomes_decision INTEGER"),
         # two undecided, one consented, one declined
@@ -376,7 +376,7 @@ def test_needs_attention_is_two_valued_so_the_filter_partitions_rows():
         [
             ("2026-02-03",),  # never started
             (None,),  # graded, but no tracked activity at all
-            ((_TODAY + datetime.timedelta(days=1)).isoformat(),),  # active 29 days ago
+            ((_TODAY + dt.timedelta(days=1)).isoformat(),),  # active 29 days ago
             (_TODAY.isoformat(),),  # active exactly 30 days ago
             (None,),  # certified
             (None,),  # passed
@@ -492,7 +492,7 @@ def test_today_query_reads_no_table_and_asks_for_utc():
         # Which of these a DATE column arrives as depends on the driver and
         # the StarRocks build, so all three normalize to the same literal
         # rather than 500ing the endpoint on a type surprise.
-        datetime.datetime(2026, 9, 15, 9, 30),  # noqa: DTZ001 - StarRocks returns naive
+        dt.datetime(2026, 9, 15, 9, 30),  # noqa: DTZ001 - StarRocks returns naive
         "2026-09-15",
     ],
 )

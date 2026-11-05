@@ -49,7 +49,7 @@ outcomes from: ``mv_b2b_learner``'s organization-grain one, or under
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -86,7 +86,7 @@ CHANGE_LOG_COLUMNS = {
 # refused and the client reloads in full, so the change logs need keep removed
 # rows only this long; the purge that will drop older ones is
 # tk-purge-learner-records-change-log-tombstones-olde-76e06b in ol-data-platform.
-REMOVED_RECORD_RETENTION = datetime.timedelta(days=90)
+REMOVED_RECORD_RETENTION = dt.timedelta(days=90)
 
 
 def _outcomes_shared() -> str:
@@ -161,12 +161,12 @@ class RecordFilters:
     contract_id: int | None = None
     contract_is_active: bool | None = None
     courserun_id: str | None = None
-    courserun_starts_after: datetime.datetime | None = None
-    courserun_starts_before: datetime.datetime | None = None
+    courserun_starts_after: dt.datetime | None = None
+    courserun_starts_before: dt.datetime | None = None
     learner_ids: tuple[uuid.UUID, ...] = ()
     completion_statuses: tuple[str, ...] = ()
-    updated_since: datetime.datetime | None = None
-    updated_before: datetime.datetime | None = None
+    updated_since: dt.datetime | None = None
+    updated_before: dt.datetime | None = None
     include_inactive: bool = False
 
 
@@ -189,7 +189,7 @@ def _placeholders(count: int) -> str:
     return ", ".join(["%s"] * count)
 
 
-def _whole_second(value: datetime.datetime, *, round_up: bool = False) -> datetime.datetime:
+def _whole_second(value: dt.datetime, *, round_up: bool = False) -> dt.datetime:
     """A zone-less UTC bound, rounded to the whole second toward re-sending.
 
     The MVs store every MITx Online timestamp as a zone-less UTC ISO-8601
@@ -210,13 +210,13 @@ def _whole_second(value: datetime.datetime, *, round_up: bool = False) -> dateti
     there (its ``since`` floors to the same second), never lost between them.
     """
     if value.tzinfo is not None:
-        value = value.astimezone(datetime.UTC).replace(tzinfo=None)
+        value = value.astimezone(dt.UTC).replace(tzinfo=None)
     if round_up and value.microsecond:
-        return value.replace(microsecond=0) + datetime.timedelta(seconds=1)
+        return value.replace(microsecond=0) + dt.timedelta(seconds=1)
     return value.replace(microsecond=0)
 
 
-def _cursor_value(value: datetime.datetime, *, round_up: bool = False) -> str:
+def _cursor_value(value: dt.datetime, *, round_up: bool = False) -> str:
     """``_whole_second`` as the ISO-8601 text an MV timestamp string compares with."""
     return _whole_second(value, round_up=round_up).isoformat()
 
@@ -258,8 +258,8 @@ def _assemble(  # noqa: PLR0913, PLR0917
 
 def _window_predicates(
     column: str,
-    since: datetime.datetime | None,
-    before: datetime.datetime | None,
+    since: dt.datetime | None,
+    before: dt.datetime | None,
     *,
     string_column: bool = False,
 ) -> tuple[list[str], list[Any]]:

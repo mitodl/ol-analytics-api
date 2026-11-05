@@ -8,12 +8,12 @@ issuing their own.
 from __future__ import annotations
 
 import asyncio
-import datetime
+import datetime as dt
 from unittest.mock import AsyncMock, patch
 
 from ol_analytics_api.core.db.refresh_metadata import _clear_cache, latest_refresh_timestamp
 
-_AS_OF = datetime.datetime(2026, 7, 2, 4, 0, 0)  # noqa: DTZ001
+_AS_OF = dt.datetime(2026, 7, 2, 4, 0, 0)  # noqa: DTZ001
 
 
 def _patch_fetch_all(fetch_all):
