@@ -6,6 +6,31 @@ the switch to scriv were reconstructed from the git history.
 
 <!-- scriv-insert-here -->
 
+<a id='changelog-2026.11.5.1'></a>
+## 2026.11.5.1 (2026-11-05)
+
+### Added
+
+- `b2b_dashboard`: the organization and contract `/contract-utilization`, `/enrollment-funnel` and `/content-engagement` endpoints and `/admin/contract-health` return `actively_enrolled_learners`, the learners whose enrollment is still active, and `/enrollment-funnel` returns `actively_enrolled_rate_pct`. `active_learners` read as course activity, which is `monthly_active_learners`, so the enrollment measure gets its own name. Requires `mv_b2b_enrollment_completion_funnel`, `mv_b2b_contract_utilization`, `mv_b2b_mit_admin_contract_health`, `mv_b2b_content_engagement_depth` and `mv_b2b_contract_content_engagement_depth` built from ol-data-platform#3222 or later.
+
+### Changed
+
+- `b2b_dashboard`: the `EnrollmentCompletionFunnel` schema description now says why withholding `active_learners` by the complement rule protects nothing from an organization's managers, and that the rule still matters for the consent-gated `passing_learners` and `certified_learners`. Responses are unchanged.
+
+- `b2b_dashboard`: `/admin/contract-health` turns `health_status` to `at_risk` per request from the view's `at_risk_since`, so the status no longer stays as it was at the view's last refresh. The response shape does not change. Requires a `mv_b2b_mit_admin_contract_health` with `at_risk_since`; before that the SELECT names a column the view does not have.
+
+- `b2b_learner_records`: Breaking: `/learners` and `/enrollments` return removed records under `updated_since`, so `data` items are a `Learner` or `RemovedLearner` (an `Enrollment` or `RemovedEnrollment`), told apart by `removed`. A removed record carries only its identity fields and `removed: true`; a client drops the record it names. Full records gain `removed: false`. A client generated from the previous spec rejects the removed shape.
+- `b2b_learner_records`: `updated_since` and `updated_before` compare each record's change time from the MV change logs (`mv_b2b_learner_changes`, `mv_b2b_learner_enrollment_changes`) instead of `record_updated_on`, so any change to a record's fields returns it, activity and `content_progress` included. Requires the change logs from ol-data-platform#2862 in the target environment; the first incremental read after they are created returns every record once.
+- `b2b_learner_records`: an `updated_since` more than 90 days old, earlier than the oldest `changed_on` in a change log the request reads, or sent while that log is empty, is a 400 (`invalid_parameter`): either could miss a removal, so the client reloads in full. Removed records are served for 90 days. Both cursor bounds are compared to the whole second, rounded toward re-sending a record.
+
+### Deprecated
+
+- `b2b_dashboard`: `active_learners` on `/contract-utilization`, `/enrollment-funnel` and `/admin/contract-health`, `active_rate_pct` on `/enrollment-funnel`, and `total_enrolled_learners` on `/content-engagement`. Each always equals its replacement and is withheld with it; they will be removed once MIT Learn reads the new names.
+
+### Removed
+
+- `b2b_learner_records` contract (`docs/openapi/b2b-learner-records-v1.yaml`): `Learner.is_current`, which was never implemented. A learner no longer in the organization arrives as a `RemovedLearner`.
+
 <a id='changelog-2026.10.28.1'></a>
 ## 2026.10.28.1 (2026-10-28)
 
