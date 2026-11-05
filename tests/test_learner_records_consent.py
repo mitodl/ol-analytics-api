@@ -562,6 +562,63 @@ def test_a_removal_whose_identity_is_live_again_is_not_sent(conn):
     assert not any(row["removed"] for row in rows.values())
 
 
+def _rekeyed_tombstone(conn, log, changed_on, **columns):
+    """A log row for a replacement key that has since been deleted too."""
+    names = [*columns, "row_hash", "changed_on", "is_deleted"]
+    conn.execute(
+        f"INSERT INTO {SCHEMA}.{log} ({', '.join(names)})"  # noqa: S608
+        f" VALUES ({', '.join('?' * len(names))})",
+        (*columns.values(), None, _sql_value(changed_on), True),
+    )
+
+
+def _page(conn, query):
+    rows = _run(conn, query.page, (*query.params, 100, 0)).fetchall()
+    return rows, _run(conn, query.count, query.params).fetchone()["total_count"]
+
+
+def test_an_enrollment_rekeyed_then_removed_is_sent_once(conn):
+    _remove_enrollment(conn, "mixed", 43, LATER)
+    _rekeyed_tombstone(
+        conn,
+        queries.ENROLLMENT_CHANGES,
+        LATER + datetime.timedelta(hours=1),
+        contract_pk="contract-43",
+        courserun_pk="run-43",
+        user_pk="mixed-rekeyed",
+        sso_organization_id=ORG_ID,
+        contract_id=43,
+        courserun_readable_id="run-43",
+        user_global_id="mixed",
+    )
+    rows, total = _page(conn, queries.enrollments(SCHEMA, _filters(updated_since=LATER)))
+    assert [(row["learner_id"], row["contract_id"], row["removed"]) for row in rows] == [
+        ("mixed", 43, 1)
+    ]
+    assert total == 1
+    # The later removal is the one a cursor between the two must still see.
+    between, _ = _enrollments(conn, updated_since=LATER + datetime.timedelta(minutes=30))
+    assert set(between) == {("mixed", 43)}
+
+
+def test_a_learner_rekeyed_then_removed_is_sent_once(conn):
+    _remove_from_roster(conn, "declined", LATER)
+    _rekeyed_tombstone(
+        conn,
+        queries.LEARNER_CHANGES,
+        LATER + datetime.timedelta(hours=1),
+        organization_key="org",
+        user_pk="declined-rekeyed",
+        sso_organization_id=ORG_ID,
+        user_global_id="declined",
+    )
+    rows, total = _page(conn, queries.learners(SCHEMA, _filters(updated_since=LATER)))
+    assert [(row["learner_id"], row["removed"]) for row in rows] == [("declined", 1)]
+    assert total == 1
+    between, _ = _learners(conn, updated_since=LATER + datetime.timedelta(minutes=30))
+    assert set(between) == {"declined"}
+
+
 def test_a_learner_off_the_roster_is_sent_as_removed(conn):
     _remove_from_roster(conn, "declined", LATER)
     rows, withheld = _learners(conn, updated_since=LATER)

@@ -387,16 +387,21 @@ def enrollments(schema: str, filters: RecordFilters) -> RecordQuery:
     # A status filter can't match a removed record, which has no status, so a
     # filtered sync gets no removals; the contract says so.
     if filters.updated_since is not None and not filters.completion_statuses:
+        # A re-key leaves a tombstone on the old key, and deleting the new key
+        # leaves another, so one identity can hold several. Its removal is the
+        # latest of them.
         removed = (
-            "SELECT c.user_pk, c.user_global_id AS learner_id,"  # noqa: S608
+            "SELECT MAX(c.user_pk) AS user_pk, c.user_global_id AS learner_id,"  # noqa: S608
             " c.sso_organization_id AS organization_id, c.contract_id,"
-            " c.courserun_readable_id AS courserun_id, c.changed_on"
+            " c.courserun_readable_id AS courserun_id, MAX(c.changed_on) AS changed_on"
             f" FROM {schema}.{ENROLLMENT_CHANGES} c"
             f" WHERE c.is_deleted = TRUE AND {' AND '.join(f'c.{p}' for p in identity)}"
             f" AND NOT EXISTS (SELECT 1 FROM {schema}.{ENROLLMENT_MV} m"
             " WHERE m.sso_organization_id = c.sso_organization_id"
             " AND m.user_global_id = c.user_global_id AND m.contract_id = c.contract_id"
             " AND m.courserun_readable_id = c.courserun_readable_id)"
+            " GROUP BY c.user_global_id, c.sso_organization_id, c.contract_id,"
+            " c.courserun_readable_id"
         )
         records = _with_removed(
             records,
@@ -662,11 +667,13 @@ def _removed_learners(schema: str, filters: RecordFilters) -> tuple[str, list[An
         f" AND m.user_global_id = g.learner_id{in_contract.format(alias='m.')})"
         for view in views
     )
+    # Grouped by identity, not user_pk: a re-keyed learner who is then removed
+    # leaves tombstones under both keys and is one removal.
     removed = (
         "SELECT user_pk, learner_id, organization_id, changed_on"  # noqa: S608
-        " FROM (SELECT user_pk, MAX(user_global_id) AS learner_id,"
+        " FROM (SELECT MAX(user_pk) AS user_pk, user_global_id AS learner_id,"
         " MAX(sso_organization_id) AS organization_id, MAX(changed_on) AS changed_on"
-        f" FROM ({logs}) c GROUP BY user_pk"
+        f" FROM ({logs}) c GROUP BY user_global_id"
         " HAVING MIN(CASE WHEN is_deleted THEN 1 ELSE 0 END) = 1) g"
         f" WHERE TRUE{still_held}"
     )
