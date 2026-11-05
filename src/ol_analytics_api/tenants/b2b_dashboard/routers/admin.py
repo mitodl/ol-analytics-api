@@ -6,7 +6,7 @@ are relative to that mount point.
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
@@ -39,7 +39,7 @@ _MV = "mv_b2b_mit_admin_contract_health"
 _ORDER_BY = ("organization_key", "contract_pk")
 
 
-def _with_at_risk(row: MitAdminContractHealth, today: datetime.date) -> MitAdminContractHealth:
+def _with_at_risk(row: MitAdminContractHealth, today: dt.date) -> MitAdminContractHealth:
     """``row`` with ``health_status`` at_risk once ``at_risk_since`` has arrived.
 
     The rule is the view's. ``at_risk_since`` is set only for a contract the
@@ -62,7 +62,7 @@ async def contract_health(
         MitAdminContractHealth,
         settings.anonymization_floor,
     )
-    today = datetime.datetime.now(datetime.UTC).date()
+    today = dt.datetime.now(dt.UTC).date()
     return AdminAnalyticsResponse(
         # Per-MV freshness: this endpoint's own backing MV, not a schema-wide
         # MAX that a fresher, unrelated MV could inflate.

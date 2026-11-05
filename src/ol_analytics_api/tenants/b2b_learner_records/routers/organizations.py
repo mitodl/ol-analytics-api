@@ -5,7 +5,7 @@ Mounted at /api/v1/learner-records by tenants/b2b_learner_records/app.py.
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 import uuid
 from collections.abc import Callable
 from enum import StrEnum
@@ -68,16 +68,16 @@ LearnerIds = Annotated[
 _RETENTION_DAYS = queries.REMOVED_RECORD_RETENTION.days
 
 
-def _utc_now() -> datetime.datetime:
-    return datetime.datetime.now(datetime.UTC)
+def _utc_now() -> dt.datetime:
+    return dt.datetime.now(dt.UTC)
 
 
-def _within_retention(value: datetime.datetime | None) -> datetime.datetime | None:
+def _within_retention(value: dt.datetime | None) -> dt.datetime | None:
     # Removed records are kept this long. An older cursor could have missed one,
     # and an upsert-only client would keep the record forever, so it reloads.
     if value is None:
         return value
-    aware = value if value.tzinfo is not None else value.replace(tzinfo=datetime.UTC)
+    aware = value if value.tzinfo is not None else value.replace(tzinfo=dt.UTC)
     if aware < _utc_now() - queries.REMOVED_RECORD_RETENTION:
         msg = (
             f"older than the {_RETENTION_DAYS} days removed records are kept; "
@@ -88,7 +88,7 @@ def _within_retention(value: datetime.datetime | None) -> datetime.datetime | No
 
 
 UpdatedSince = Annotated[
-    datetime.datetime | None,
+    dt.datetime | None,
     Query(
         description=(
             "Return only records changed at or after this instant, plus removed records. "
@@ -99,7 +99,7 @@ UpdatedSince = Annotated[
     AfterValidator(_within_retention),
 ]
 UpdatedBefore = Annotated[
-    datetime.datetime | None,
+    dt.datetime | None,
     Query(
         description=(
             "Return only records changed strictly before this instant. Paired with "
@@ -112,7 +112,7 @@ IncludeInactive = Annotated[
 ]
 
 
-async def _as_of(sources: tuple[str, ...]) -> datetime.datetime | None:
+async def _as_of(sources: tuple[str, ...]) -> dt.datetime | None:
     # A response built from two views is only as fresh as the staler one.
     refreshed = [await latest_refresh_timestamp(settings.starrocks_schema, mv) for mv in sources]
     known = [timestamp for timestamp in refreshed if timestamp is not None]
@@ -123,16 +123,16 @@ async def _as_of(sources: tuple[str, ...]) -> datetime.datetime | None:
 # same staleness bound as as_of. For that long after a hand recreation, a cursor
 # from before it is still accepted.
 _LOG_START_CACHE_TTL_SECONDS = 300
-_log_start_cache: TTLCache[tuple[str, str], datetime.datetime | None] = TTLCache(
+_log_start_cache: TTLCache[tuple[str, str], dt.datetime | None] = TTLCache(
     maxsize=8, ttl=_LOG_START_CACHE_TTL_SECONDS
 )
 
 
-async def _change_log_start(log: str) -> datetime.datetime | None:
+async def _change_log_start(log: str) -> dt.datetime | None:
     key = (settings.starrocks_schema, log)
     if key not in _log_start_cache:
         rows = await starrocks_pool.fetch_all(queries.change_log_start(*key))
-        started: datetime.datetime | None = rows[0]["started"]
+        started: dt.datetime | None = rows[0]["started"]
         _log_start_cache[key] = started
     return _log_start_cache[key]
 
@@ -143,7 +143,7 @@ def clear_log_start_cache() -> None:
 
 
 async def _require_change_log_coverage(
-    change_logs: tuple[str, ...], updated_since: datetime.datetime | None
+    change_logs: tuple[str, ...], updated_since: dt.datetime | None
 ) -> None:
     """Refuse a cursor older than a change log it reads.
 
@@ -153,12 +153,12 @@ async def _require_change_log_coverage(
     """
     if updated_since is None:
         return
-    since = updated_since if updated_since.tzinfo else updated_since.replace(tzinfo=datetime.UTC)
+    since = updated_since if updated_since.tzinfo else updated_since.replace(tzinfo=dt.UTC)
     for log in change_logs:
         started = await _change_log_start(log)
         if started is None:
             began = "change tracking has no records yet"
-        elif since < started.replace(tzinfo=datetime.UTC):
+        elif since < started.replace(tzinfo=dt.UTC):
             began = f"earlier than change tracking began ({started.isoformat()}Z)"
         else:
             continue
@@ -186,7 +186,7 @@ async def _respond(
     organization_id: uuid.UUID,
     page: Page,
     build: Build,
-    updated_since: datetime.datetime | None = None,
+    updated_since: dt.datetime | None = None,
 ) -> LearnerRecordsResponse[Any]:
     await _require_change_log_coverage(query.change_logs, updated_since)
     # Freshness first. A refresh landing between this and the record queries then
@@ -292,7 +292,7 @@ async def list_courses(  # noqa: PLR0913
     contract_is_active: bool | None = None,
     courserun_id: str | None = None,
     courserun_starts_after: Annotated[
-        datetime.datetime | None,
+        dt.datetime | None,
         Query(
             description=(
                 "Return only course runs starting at or after this instant. Self-paced or "
@@ -303,7 +303,7 @@ async def list_courses(  # noqa: PLR0913
         ),
     ] = None,
     courserun_starts_before: Annotated[
-        datetime.datetime | None,
+        dt.datetime | None,
         Query(description="Return only course runs starting strictly before this instant."),
     ] = None,
 ) -> LearnerRecordsResponse[Any]:

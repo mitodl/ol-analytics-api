@@ -34,7 +34,7 @@ with the new text here.
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 from typing import ClassVar, Literal
 
 from pydantic import BaseModel
@@ -82,7 +82,7 @@ class OrgAnalyticsResponse[RowT: SQLModel](BaseModel):
     """
 
     organization_id: str
-    as_of: datetime.datetime | None
+    as_of: dt.datetime | None
     total_count: int
     data: list[RowT]
 
@@ -94,7 +94,7 @@ class AdminAnalyticsResponse[RowT: SQLModel](BaseModel):
     ``total_count`` carries the same meaning as on ``OrgAnalyticsResponse``,
     over all orgs rather than one."""
 
-    as_of: datetime.datetime | None
+    as_of: dt.datetime | None
     total_count: int
     data: list[RowT]
 
@@ -163,10 +163,10 @@ class ContractUtilization(SQLModel):
     contract_id: int = Field(description="The contract's ID in MITx Online.")
     b2b_contract_name: str = Field(description="The contract's name.")
     b2b_contract_is_active: bool = Field(description="Whether the contract is currently active.")
-    b2b_contract_start_date: datetime.date | None = Field(
+    b2b_contract_start_date: dt.date | None = Field(
         description="When the contract starts. Empty if no start date is set."
     )
-    b2b_contract_end_date: datetime.date | None = Field(
+    b2b_contract_end_date: dt.date | None = Field(
         description="When the contract ends. Empty if it has no end date."
     )
     seat_limit: int | None = Field(
@@ -784,10 +784,10 @@ class MitAdminContractHealth(SQLModel):
     contract_id: int = Field(description="The contract's ID in MITx Online.")
     b2b_contract_name: str = Field(description="The contract's name.")
     b2b_contract_is_active: bool = Field(description="Whether the contract is currently active.")
-    b2b_contract_start_date: datetime.date | None = Field(
+    b2b_contract_start_date: dt.date | None = Field(
         description="When the contract starts. Empty if no start date is set."
     )
-    b2b_contract_end_date: datetime.date | None = Field(
+    b2b_contract_end_date: dt.date | None = Field(
         description="When the contract ends. Empty if it has no end date."
     )
     seat_limit: int | None = Field(
@@ -832,7 +832,7 @@ class MitAdminContractHealth(SQLModel):
         )
     )
     # Selected so health_status can be derived from it, never returned.
-    at_risk_since: datetime.date | None = Field(
+    at_risk_since: dt.date | None = Field(
         exclude=True,
         description=(
             "The date from which the contract counts as at risk. Empty if it can't be at risk."

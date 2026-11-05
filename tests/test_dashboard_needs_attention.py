@@ -15,7 +15,7 @@ not part of what is under test.
 """
 
 import base64
-import datetime
+import datetime as dt
 import json
 import sqlite3
 from unittest.mock import AsyncMock, patch
@@ -37,10 +37,10 @@ OTHER_ORG_ID = "22222222-2222-2222-2222-222222222222"
 CONTRACT_ID = 101
 ORG_PATH = f"/api/v1/analytics/organizations/{ORG_ID}/needs-attention"
 CONTRACT_PATH = f"/api/v1/analytics/organizations/{ORG_ID}/contracts/{CONTRACT_ID}/needs-attention"
-_AS_OF = datetime.datetime(2026, 9, 15, 6, 0)  # noqa: DTZ001 - StarRocks returns naive UTC
+_AS_OF = dt.datetime(2026, 9, 15, 6, 0)  # noqa: DTZ001 - StarRocks returns naive UTC
 # What the cluster answers UTC_TODAY_QUERY with: _AS_OF's date. Fixed, so the
 # SQL these tests assert on is stable.
-_TODAY = datetime.date(2026, 9, 15)
+_TODAY = dt.date(2026, 9, 15)
 # Bound into the page query's HAVING by the tests whose subject is the
 # needs-attention rule rather than the k-anonymity floor: their fixtures are a
 # handful of learners on purpose, and the real floor would gate them all out.
@@ -58,8 +58,8 @@ _MV_COLUMNS = (
     "outcomes_shared INTEGER",
 )
 # A needs_attention_since that has arrived, and one that has not.
-_DUE = (_TODAY - datetime.timedelta(days=1)).isoformat()
-_NOT_DUE = (_TODAY + datetime.timedelta(days=29)).isoformat()
+_DUE = (_TODAY - dt.timedelta(days=1)).isoformat()
+_NOT_DUE = (_TODAY + dt.timedelta(days=29)).isoformat()
 
 
 def _enrollment(
@@ -240,7 +240,7 @@ def test_boundary_is_the_same_day_the_learner_directory_uses():
             # so on their 30th quiet day the date is today.
             _enrollment("day-30", needs_attention_since=_TODAY.isoformat()),
             _enrollment(
-                "day-29", needs_attention_since=(_TODAY + datetime.timedelta(days=1)).isoformat()
+                "day-29", needs_attention_since=(_TODAY + dt.timedelta(days=1)).isoformat()
             ),
             # Never started: dated from the enrollment, so long since due.
             _enrollment("never-started", needs_attention_since="2026-02-03"),

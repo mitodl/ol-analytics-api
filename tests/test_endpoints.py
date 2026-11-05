@@ -8,7 +8,7 @@ as_of lookup, envelope shape) is exercised for real.
 """
 
 import base64
-import datetime
+import datetime as dt
 import json
 from unittest.mock import AsyncMock, patch
 
@@ -30,7 +30,7 @@ from ol_analytics_api.tenants.b2b_dashboard.models import (
 from ol_analytics_api.tenants.b2b_dashboard.routers import admin, organizations
 from tests.membership import answer_membership_probe, is_membership_probe
 
-_AS_OF = datetime.datetime(2026, 7, 2, 4, 0, 0)  # noqa: DTZ001
+_AS_OF = dt.datetime(2026, 7, 2, 4, 0, 0)  # noqa: DTZ001
 
 
 def _userinfo_header(payload: dict) -> str:
@@ -1150,8 +1150,8 @@ _CONTRACT_HEALTH_ROW = {
 @pytest.mark.parametrize(
     ("at_risk_since", "health_status"),
     [
-        (datetime.date(2000, 1, 2), "at_risk"),
-        (datetime.date(2999, 10, 3), "early_stage"),
+        (dt.date(2000, 1, 2), "at_risk"),
+        (dt.date(2999, 10, 3), "early_stage"),
         (None, "early_stage"),
     ],
 )
@@ -1183,12 +1183,12 @@ async def test_admin_health_status_follows_at_risk_since_and_does_not_return_it(
     [(-1, "at_risk"), (0, "at_risk"), (1, "early_stage")],
 )
 def test_at_risk_includes_the_day_at_risk_since_arrives(days_until, health_status):
-    today = datetime.date(2026, 11, 2)
+    today = dt.date(2026, 11, 2)
     row = MitAdminContractHealth(
         **{
             **_CONTRACT_HEALTH_ROW,
             "health_status": "early_stage",
-            "at_risk_since": today + datetime.timedelta(days=days_until),
+            "at_risk_since": today + dt.timedelta(days=days_until),
         }
     )
     assert admin._with_at_risk(row, today).health_status == health_status  # noqa: SLF001
