@@ -64,7 +64,24 @@ def _load(exposure: str) -> dict[str, dict[str, dict[str, Any]]]:
 
 
 _DASHBOARD = _load("ol_analytics_api_b2b_dashboard")
-_LEARNER_RECORDS = _load("ol_analytics_api_b2b_learner_records")
+# The change logs are not dbt models, so the exposure doesn't list them. Their
+# columns are the API's declaration; test_change_log_key_and_identity_are_view_columns
+# ties the ones copied from a view back to it.
+_LEARNER_RECORDS = {
+    **_load("ol_analytics_api_b2b_learner_records"),
+    **{
+        log: {column: {"name": column} for column in columns}
+        for log, columns in learner_records.CHANGE_LOG_COLUMNS.items()
+    },
+}
+
+
+def test_change_log_key_and_identity_are_view_columns():
+    exposure = _load("ol_analytics_api_b2b_learner_records")
+    for log, columns in learner_records.CHANGE_LOG_COLUMNS.items():
+        view = log.removesuffix(learner_records.CHANGE_LOG_SUFFIX)
+        copied = set(columns) - {"row_hash", "changed_on", "is_deleted"}
+        assert copied <= set(exposure[view]), f"{log}: {copied - set(exposure[view])}"
 
 
 @dataclass(frozen=True)
@@ -304,6 +321,16 @@ _HAND_WRITTEN = [
         )
         for include_inactive in (False, True)
     ),
+    # A status filter leaves out the removed records, so the filter above never
+    # reads them.
+    _Query(
+        "learner_records.enrollments (removed records)",
+        _LEARNER_RECORDS,
+        _LR_SCHEMA,
+        lambda: learner_records.enrollments(
+            _LR_SCHEMA, dataclasses.replace(_EVERY_RECORD_FILTER, completion_statuses=())
+        ),
+    ),
     _Query(
         "learner_records.courses",
         _LEARNER_RECORDS,
@@ -404,15 +431,17 @@ def test_every_column_a_hand_written_query_reads_exists_in_the_view(query, state
         pytest.fail(f"{query.label} {statement}: {error}")
 
 
-def _unread_star_columns(tree: exp.Expression, query: _Query) -> set[tuple[str, str]]:
-    """The ``(view, column)`` pairs the statement reaches only through ``SELECT *``.
+def _column_reads(tree: exp.Expression, query: _Query) -> tuple[set, set]:
+    """``(read, unread)``: the ``(view, column)`` pairs a reference resolves to,
+    and those the statement reaches only through ``SELECT *``.
 
     The recomputed learner rollup reads mv_b2b_learner as ``(SELECT * ...) l``
     and names only the ``l`` columns it uses. The view's other columns are in
     the star's expansion but nothing reads them, so dropping one from the view
     changes no reference and qualify has nothing to fail on. A column counts
     as read when a reference in any scope resolves to it, directly or through a
-    ``SELECT *`` subquery or CTE.
+    ``SELECT *`` subquery or CTE. A correlated reference (the removed records'
+    ``NOT EXISTS``) resolves in an enclosing scope.
     """
     qualified = qualify(
         tree.copy(), schema=_sqlglot_schema(query), dialect="starrocks", expand_stars=False
@@ -427,19 +456,25 @@ def _unread_star_columns(tree: exp.Expression, query: _Query) -> set[tuple[str, 
             for inner in source.sources.values():
                 reads(inner, column)
 
+    def source_of(scope: Scope, table: str) -> exp.Table | Scope:
+        while table not in scope.sources:
+            scope = scope.parent
+        return scope.sources[table]
+
     for scope in traverse_scope(qualified):
         if scope.expression.is_star:
             star_views.update(
                 source.name for source in scope.sources.values() if isinstance(source, exp.Table)
             )
         for column in scope.columns:
-            reads(scope.sources[column.table], column.name)
-    return {
+            reads(source_of(scope, column.table), column.name)
+    unread = {
         (view, column)
         for view in star_views
         for column in query.exposure[view]
         if (view, column) not in read
     }
+    return read, unread
 
 
 @pytest.mark.parametrize(("query", "statement"), _STATEMENTS)
@@ -448,14 +483,18 @@ def test_dropping_a_column_the_query_names_fails_the_hand_written_check(query, s
     # references, or stopped following them through a subquery, CTE or join,
     # the test above would pass for every query.
     tree = _parse(getattr(query.build(), statement))
-    named = {column.name for column in tree.find_all(exp.Column)}
+    read, unread = _column_reads(tree, query)
+    # Every column the SQL names that some view has must resolve to one of
+    # them, so a qualify that stopped following references can't empty `read`
+    # and pass this test vacuously.
     views = {table.name for table in tree.find_all(exp.Table) if table.db == query.schema}
-    unread = _unread_star_columns(tree, query)
+    named = {column.name for column in tree.find_all(exp.Column)}
+    view_columns = {column for view in views for column in query.exposure[view]}
+    reached = {column for _view, column in read | unread}
+    assert not (named & view_columns) - reached, f"{query.label} {statement}: unresolved"
     resolved, misattributed = [], []
-    for view in sorted(views):
-        for column in sorted(named & set(query.exposure[view])):
-            if (view, column) in unread:
-                continue
+    for view, column in sorted(read):
+        if view in query.exposure and (view, column) not in unread:
             try:
                 _resolve_columns(tree.copy(), _sqlglot_schema(query, without=(view, column)))
             except OptimizeError as error:

@@ -23,6 +23,7 @@ from ol_analytics_api.tenants.b2b_learner_records.auth import NO_GRANT_DETAIL
 from ol_analytics_api.tenants.b2b_learner_records.config import settings
 from ol_analytics_api.tenants.b2b_learner_records.errors import ErrorCode
 from ol_analytics_api.tenants.b2b_learner_records.models import CourseRun, Enrollment, Learner
+from ol_analytics_api.tenants.b2b_learner_records.routers import organizations
 from tests.conftest import bearer, mint
 
 # What _outcomes_shared() renders with consent_fail_open off and on.
@@ -35,6 +36,8 @@ OTHER_ORG_ID = "22222222-2222-2222-2222-222222222222"
 LEARNER_ID = "3e1a9c74-5b2d-4f88-9a01-7c6de2b4f019"
 OTHER_LEARNER_ID = "c04e8a17-3d62-4b95-a7e8-51fb2c8d9042"
 _AS_OF = datetime.datetime(2026, 8, 13, 6, 15)  # noqa: DTZ001 - StarRocks returns naive UTC
+# Before every cursor the retention window accepts.
+_LOG_START = datetime.datetime(2026, 5, 1)  # noqa: DTZ001
 _CONTRACT_PATH = (
     pathlib.Path(__file__).resolve().parents[1] / "docs/openapi/b2b-learner-records-v1.yaml"
 )
@@ -59,6 +62,7 @@ def _partner_token(*organization_ids, scope="learner-records:read"):
 
 def _learner_row(**overrides):
     return {
+        "removed": 0,
         "learner_id": LEARNER_ID,
         "email": "rgarcia@contoso.example",
         "full_name": "R. Garcia",
@@ -83,6 +87,7 @@ def _learner_row(**overrides):
 
 def _enrollment_row(**overrides):
     return {
+        "removed": 0,
         "learner_id": LEARNER_ID,
         "email": "rgarcia@contoso.example",
         "full_name": None,
@@ -115,7 +120,9 @@ def _enrollment_row(**overrides):
     }
 
 
-@pytest.mark.parametrize("name", ["Learner", "Enrollment", "CourseRun"])
+@pytest.mark.parametrize(
+    "name", ["Learner", "Enrollment", "CourseRun", "RemovedLearner", "RemovedEnrollment"]
+)
 def test_every_record_field_is_required_in_the_generated_schema(name):
     # The contract lists pending fields as required and nullable. A defaulted
     # field would generate as optional, and a client would treat it as absent.
@@ -127,14 +134,17 @@ class _FakePool:
     """Answers the as_of probe, the count query and the page query, and records
     every call so a test can inspect the one it cares about."""
 
-    def __init__(self, rows=(), total_count=0, withheld=0, as_of_by_mv=None):
+    def __init__(self, rows=(), total_count=0, withheld=0, as_of_by_mv=None, log_start=_LOG_START):
         self.rows = list(rows)
+        self.log_start = log_start
         self.counts = {"total_count": total_count, "outcomes_withheld_count": withheld}
         self.as_of_by_mv = as_of_by_mv or {}
         self.calls = []
 
     async def fetch_all(self, query, params=()):
         self.calls.append((query, params))
+        if "MIN(changed_on)" in query:
+            return [{"started": self.log_start}]
         if "information_schema" in query:
             return [{"as_of": self.as_of_by_mv.get(params[1], _AS_OF)}]
         if "COUNT(*)" in query:
@@ -153,11 +163,29 @@ def app():
     return create_app()
 
 
+# The tests' updated_since values are fixed dates, which the 90-day retention
+# check would start refusing as real time passes.
+NOW = datetime.datetime(2026, 8, 13, tzinfo=datetime.UTC)
+
+
+def _bound(*args):
+    # A cursor bound as the query binds it: UTC with the zone dropped, for
+    # comparison against the change log's zone-less UTC DATETIME.
+    return datetime.datetime(*args, tzinfo=datetime.UTC).replace(tzinfo=None)
+
+
+@pytest.fixture(autouse=True)
+def _pin_clock(monkeypatch):
+    monkeypatch.setattr(organizations, "_utc_now", lambda: NOW)
+
+
 @pytest.fixture(autouse=True)
 def _clear_as_of_cache():
     _clear_cache()
+    organizations.clear_log_start_cache()
     yield
     _clear_cache()
+    organizations.clear_log_start_cache()
 
 
 async def _get(app, path, token=None, pool=None, monkeypatch=None):
@@ -274,7 +302,10 @@ async def test_outcome_columns_are_gated_on_the_consent_expression(app, monkeypa
     for name in ("grade", "content_progress"):
         assert f"CASE WHEN {_CLOSED} THEN {name} END AS {name}" in page_query
     count_query, _ = pool.count_call()
-    assert f"SUM(CASE WHEN {_CLOSED} THEN 0 ELSE 1 END) AS outcomes_withheld_count" in count_query
+    assert (
+        f"SUM(CASE WHEN removed OR {_CLOSED} THEN 0 ELSE 1 END) AS outcomes_withheld_count"
+        in count_query
+    )
 
 
 async def test_consent_fail_open_discloses_outcomes(app, monkeypatch):
@@ -287,7 +318,10 @@ async def test_consent_fail_open_discloses_outcomes(app, monkeypatch):
     assert f"{_OPEN} AS outcomes_shared" in page_query
     assert f"CASE WHEN {_OPEN} THEN grade END AS grade" in page_query
     count_query, _ = pool.count_call()
-    assert f"SUM(CASE WHEN {_OPEN} THEN 0 ELSE 1 END) AS outcomes_withheld_count" in count_query
+    assert (
+        f"SUM(CASE WHEN removed OR {_OPEN} THEN 0 ELSE 1 END) AS outcomes_withheld_count"
+        in count_query
+    )
 
 
 def test_consent_fails_closed_by_default():
@@ -377,7 +411,7 @@ async def test_default_learners_project_the_activity_columns(app, monkeypatch):
     query, _ = pool.page_call()
     assert "NULL AS last_active_on" not in query
     assert "NULL AS courses_in_progress" not in query
-    assert "last_active_on, courses_in_progress, record_updated_on FROM" in query
+    assert "last_active_on, courses_in_progress, changed_on, FALSE AS removed FROM" in query
 
 
 async def test_recomputed_learners_count_the_views_flags(app, monkeypatch):
@@ -427,7 +461,8 @@ async def test_default_learners_read_the_precomputed_rollup(app, monkeypatch):
     pool = _FakePool()
     await _get(app, f"/organizations/{ORG_ID}/learners", _partner_token(ORG_ID), pool, monkeypatch)
     query, params = pool.page_call()
-    assert f"FROM b2b_learner_records.{queries.LEARNER_MV} WHERE" in query
+    assert f"FROM b2b_learner_records.{queries.LEARNER_MV} LEFT JOIN" in query
+    assert f"FROM b2b_learner_records.{queries.LEARNER_CHANGES}) log" in query
     assert queries.ENROLLMENT_MV not in query
     # The view publishes the sum, so the default rollup does not restate it.
     assert " courses_certified, certificates_earned," in query
@@ -462,8 +497,9 @@ async def test_contract_filter_recomputes_learners_from_that_contracts_enrollmen
         "COUNT(DISTINCT CASE WHEN is_passing = TRUE THEN courserun_pk END) AS courses_passed"
         in query
     )
-    # Both org predicates are bound, then the contract, then paging.
-    assert params == (ORG_ID, ORG_ID, 42, 10, 20)
+    # The learner view's org, the contract's enrollments, the learner log's org,
+    # the contract's enrollment log, then paging.
+    assert params == (ORG_ID, ORG_ID, 42, ORG_ID, ORG_ID, 42, 10, 20)
 
 
 async def test_include_inactive_learners_keep_every_roster_member(app, monkeypatch):
@@ -478,7 +514,7 @@ async def test_include_inactive_learners_keep_every_roster_member(app, monkeypat
     query, params = pool.page_call()
     assert "FULL OUTER JOIN" in query
     assert "enrollment_is_active" not in query
-    assert params == (ORG_ID, ORG_ID, 100, 0)
+    assert params == (ORG_ID, ORG_ID, ORG_ID, ORG_ID, 100, 0)
 
 
 @pytest.mark.parametrize(
@@ -531,8 +567,8 @@ async def test_enrollment_filters_are_bound_in_order(app, monkeypatch):
         "course-v1:MITxT+14.310x+2T2026",
         LEARNER_ID,
         OTHER_LEARNER_ID,
-        # UTC, truncated to the second, so the boundary record is re-sent.
-        "2026-08-12T04:15:00",
+        # UTC, floored to the second, so the boundary record is re-sent.
+        _bound(2026, 8, 12, 4, 15, 0),
         "passed",
         100,
         0,
@@ -552,9 +588,17 @@ async def test_updated_before_bounds_the_window_exclusively(app, monkeypatch):
         monkeypatch,
     )
     query, params = pool.page_call()
-    assert "record_updated_on >= %s" in query
-    assert "record_updated_on < %s" in query
-    assert params == (ORG_ID, "2026-08-12T00:00:00", "2026-08-13T00:00:00", 100, 0)
+    assert "changed_on >= %s" in query
+    assert "changed_on < %s" in query
+    # The live records' organization, the removed records', then the window.
+    assert params == (
+        ORG_ID,
+        ORG_ID,
+        _bound(2026, 8, 12),
+        _bound(2026, 8, 13),
+        100,
+        0,
+    )
 
 
 async def test_omitted_list_filters_add_no_predicate(app, monkeypatch):
@@ -794,3 +838,143 @@ async def test_every_error_carries_the_code_its_contract_documents(app, monkeypa
     assert unavailable.status_code == 503
     assert unavailable.json()["code"] == "unavailable"
     assert unavailable.headers["Retry-After"] == "1"
+
+
+@pytest.mark.parametrize("days", [91, 365])
+async def test_updated_since_older_than_the_retention_window_is_refused(app, monkeypatch, days):
+    since = (NOW - datetime.timedelta(days=days)).isoformat().replace("+00:00", "Z")
+    response = await _get(
+        app,
+        f"/organizations/{ORG_ID}/enrollments?updated_since={since}",
+        _partner_token(ORG_ID),
+        monkeypatch=monkeypatch,
+    )
+    assert response.status_code == 400
+    body = response.json()
+    assert body["code"] == "invalid_parameter"
+    assert "reload in full" in body["detail"]
+
+
+async def test_updated_since_inside_the_retention_window_is_accepted(app, monkeypatch):
+    since = (NOW - datetime.timedelta(days=89)).isoformat().replace("+00:00", "Z")
+    response = await _get(
+        app,
+        f"/organizations/{ORG_ID}/learners?updated_since={since}",
+        _partner_token(ORG_ID),
+        monkeypatch=monkeypatch,
+    )
+    assert response.status_code == 200
+
+
+async def test_removed_records_carry_only_their_identity(app, monkeypatch):
+    removed = dict.fromkeys(_enrollment_row()) | {
+        "learner_id": OTHER_LEARNER_ID,
+        "organization_id": ORG_ID,
+        "contract_id": 42,
+        "courserun_id": "course-v1:MITxT+14.310x+2T2026",
+        "outcomes_shared": 0,
+        "outcomes_consent_status": "not_recorded",
+        "removed": 1,
+    }
+    pool = _FakePool(rows=[_enrollment_row(), removed], total_count=2, withheld=1)
+    response = await _get(
+        app,
+        f"/organizations/{ORG_ID}/enrollments?updated_since=2026-08-12T00:00:00Z",
+        _partner_token(ORG_ID),
+        pool,
+        monkeypatch,
+    )
+    assert response.status_code == 200
+    live, gone = response.json()["data"]
+    assert live["removed"] is False
+    assert gone == {
+        "learner_id": OTHER_LEARNER_ID,
+        "organization_id": ORG_ID,
+        "contract_id": 42,
+        "courserun_id": "course-v1:MITxT+14.310x+2T2026",
+        "removed": True,
+    }
+
+
+async def test_removed_learners_carry_only_their_identity(app, monkeypatch):
+    removed = dict.fromkeys(_learner_row()) | {
+        "learner_id": OTHER_LEARNER_ID,
+        "organization_id": ORG_ID,
+        "removed": 1,
+    }
+    pool = _FakePool(rows=[removed], total_count=1)
+    response = await _get(
+        app,
+        f"/organizations/{ORG_ID}/learners?updated_since=2026-08-12T00:00:00Z",
+        _partner_token(ORG_ID),
+        pool,
+        monkeypatch,
+    )
+    assert response.json()["data"] == [
+        {"learner_id": OTHER_LEARNER_ID, "organization_id": ORG_ID, "removed": True}
+    ]
+
+
+async def test_removed_records_are_requested_only_with_updated_since(app, monkeypatch):
+    for query, expected in (("", False), ("?updated_since=2026-08-12T00:00:00Z", True)):
+        pool = _FakePool()
+        await _get(
+            app,
+            f"/organizations/{ORG_ID}/enrollments{query}",
+            _partner_token(ORG_ID),
+            pool,
+            monkeypatch,
+        )
+        page_query, _ = pool.page_call()
+        assert (
+            queries.ENROLLMENT_CHANGES + " c WHERE c.is_deleted = TRUE" in page_query
+        ) is expected
+
+
+@pytest.mark.parametrize(
+    ("since", "status"), [("2026-08-01T05:59:59Z", 400), ("2026-08-01T06:00:00Z", 200)]
+)
+async def test_updated_since_before_change_tracking_began_is_refused(
+    app, monkeypatch, since, status
+):
+    # A record removed before the change log was created has no row in it.
+    pool = _FakePool(log_start=datetime.datetime(2026, 8, 1, 6, 0, 0))  # noqa: DTZ001
+    response = await _get(
+        app,
+        f"/organizations/{ORG_ID}/learners?updated_since={since}",
+        _partner_token(ORG_ID),
+        pool,
+        monkeypatch,
+    )
+    assert response.status_code == status
+    if status == 400:
+        assert response.json()["code"] == "invalid_parameter"
+        assert "reload in full" in response.json()["detail"]
+        assert not any("LIMIT %s OFFSET %s" in query for query, _ in pool.calls)
+
+
+async def test_an_empty_change_log_refuses_a_cursor(app, monkeypatch):
+    response = await _get(
+        app,
+        f"/organizations/{ORG_ID}/learners?updated_since=2026-08-01T00:00:00Z",
+        _partner_token(ORG_ID),
+        _FakePool(log_start=None),
+        monkeypatch,
+    )
+    assert response.status_code == 400
+    assert "no records yet" in response.json()["detail"]
+
+
+async def test_the_change_log_start_is_cached(app, monkeypatch):
+    pool = _FakePool()
+    path = f"/organizations/{ORG_ID}/learners?updated_since=2026-08-01T00:00:00Z"
+    for _ in range(2):
+        response = await _get(app, path, _partner_token(ORG_ID), pool, monkeypatch)
+        assert response.status_code == 200
+    assert sum("MIN(changed_on)" in query for query, _ in pool.calls) == 1
+
+
+async def test_a_full_read_does_not_consult_the_change_log_start(app, monkeypatch):
+    pool = _FakePool(log_start=datetime.datetime(2026, 8, 1))  # noqa: DTZ001
+    await _get(app, f"/organizations/{ORG_ID}/learners", _partner_token(ORG_ID), pool, monkeypatch)
+    assert not any("MIN(changed_on)" in query for query, _ in pool.calls)

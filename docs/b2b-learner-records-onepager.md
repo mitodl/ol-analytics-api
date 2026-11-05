@@ -61,8 +61,8 @@ MITx Online and reaches the service through the learner-records MVs
 (ol-data-platform#2785). One upstream
 property is a hard requirement and cheap only if specified now: *withdrawal must
 be a retained state change, not a deleted row*. A deleted consent row is
-indistinguishable from one never granted and does not move the record's change
-timestamp, so the withdrawal never reaches the partner holding a copy.
+indistinguishable from one never granted: the record's change time moves, but
+it arrives reading "no decision" rather than "withdrawn".
 
 ## Shape
 
@@ -72,8 +72,10 @@ complete it"), and **courses** (the contracts and course runs the identifiers
 refer to), plus an **exports** manifest returning presigned URLs to the bulk
 files. Incremental sync compares each record's change time with the previous
 sync's `as_of`. A consent withdrawal arrives as an ordinary changed record with
-outcomes nulled, and a learner who leaves the organization arrives with
-`is_current: false`, so a client that upserts normally drops the data it held.
+outcomes nulled, and a learner who leaves the organization or an enrollment that
+is deleted arrives as a removed record (its identity and `removed: true`), so a
+client that upserts normally drops the data it held. Removed records are kept
+for 90 days, which bounds how old `updated_since` can be.
 
 Out of scope for v1: program-level progress, per-assessment detail, any write
 operation, and non-MITx-Online platforms.
@@ -102,7 +104,6 @@ Every collection returns the same envelope, with `data` typed to its record:
   "organization_id": "8f14e45f-ceea-467a-9c1b-2f4b9c0a3d21",
   "organization_name": "Contoso Manufacturing",
   "membership_source": "both",
-  "is_current": true,
   "is_organization_manager": false,
   "first_enrolled_on": "2026-02-03T14:22:11Z",
   "last_enrolled_on": "2026-05-19T09:04:52Z",
@@ -244,9 +245,8 @@ land: learners recording a consent decision (the field landed in
 ol-data-platform#2785), without which a record reads `outcomes_shared: false`;
 a per-learner activity model, without which "last
 active" and the engagement counters are null (wired in tenant-side, gated on
-ol-data-platform#2693 merging and the MVs rebuilding with the new columns);
-and learner removal on `mv_b2b_learner`, without which `is_current` is always
-true.
+ol-data-platform#2693 merging and the MVs rebuilding with the new columns).
+Removals come from the MV change logs (ol-data-platform#2862).
 
 Blocking the first partner: the per-contract Keycloak client template and a
 bearer-only gateway route. No partner can authenticate without both.
