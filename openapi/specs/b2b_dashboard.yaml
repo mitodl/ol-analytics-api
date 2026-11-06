@@ -744,7 +744,7 @@ paths:
         required: false
         schema:
           type: integer
-          maximum: 25
+          maximum: 100
           minimum: 1
           default: 25
           title: Limit

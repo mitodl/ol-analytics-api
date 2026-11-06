@@ -71,10 +71,14 @@ class B2BDashboardSettings(BaseSettings):
     # each learner expands to one row per active enrollment, so a page is up
     # to max_learner_page_size times the contract's course runs in rows.
     # Nothing caps a contract's runs, so this bounds a page only through that
-    # product: at 25, a 40-run contract reaches max_page_size's 1,000 rows.
-    # 25 is also the page size the mit-learn progress grid requests.
+    # product: at 100, a 40-run contract reaches 4,000 rows. The progress grid
+    # requests the default; bulk readers such as its CSV export may request up
+    # to the max. Kept well below the manage-seats export's 500 because a page
+    # here is learners times runs, not one row per item, and every page is
+    # built in memory on a single-worker pod: raise it only after measuring a
+    # large contract's memory per page.
     default_learner_page_size: int = 25
-    max_learner_page_size: int = 25
+    max_learner_page_size: int = 100
 
     # Whether a learner with no recorded consent decision shares their outcomes
     # on the learner-progress endpoint. A recorded decision always wins
