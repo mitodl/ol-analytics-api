@@ -19,7 +19,9 @@ floor is enforced per-column, driven by a `CohortPolicy` the row model declares:
 - the ``primary`` cohort gates the whole row (below floor -> row withheld),
 - each ``secondary`` count is independently nulled when it is sub-floor,
 - each ``secondary`` count is *also* nulled when its COMPLEMENT within a cohort
-  containing it is sub-floor, and
+  containing it is sub-floor, or when it is larger than that cohort (a false
+  containment declaration fails closed, whether the container is published or
+  withheld), and
 - each ``derived`` value is nulled whenever a cohort it is computed over is
   suppressed (else the hidden count is trivially back-computed from the rate,
   or read off directly as an average over k<floor entities).
@@ -333,17 +335,30 @@ def _suppressed_cohorts(
     """The secondary cohorts of one row that must not be published."""
     suppressed = {column for column in policy.secondary if _is_disclosive(row.get(column), floor)}
     # Suppressing a cohort can hide the container of another pair, which
-    # removes that pair from play rather than adding one, so this settles in
-    # at most one pass per level of nesting. Cycles are rejected at
-    # policy-definition time, so the loop terminates.
+    # changes that pair's check from the complement to the bound below, so
+    # one suppression can lead to another. The set only grows and is bounded
+    # by the secondary cohorts, so the loop terminates.
     changed = True
     while changed:
         changed = False
         for subset, container in pairs:
-            if subset in suppressed or container in suppressed:
-                # A complement needs both sides visible to be computed; if the
-                # container is already withheld, the subset discloses nothing
-                # beyond itself.
+            if subset in suppressed:
+                continue
+            if container in suppressed:
+                # A complement needs both sides visible to be computed, so a
+                # withheld container leaves nothing to subtract from. But the
+                # declaration makes a published subset a lower bound on the
+                # container: 6 video watchers next to a withheld active count
+                # tells the reader at least 6 were active. A subset larger
+                # than the container means the declaration is false for this
+                # row, and a false declaration fails closed whether or not
+                # the container is visible (see `_complement_is_disclosive`).
+                # `.get` because a container withheld for being NULL or
+                # missing has no value to compare against.
+                hidden = row.get(container)
+                if hidden is not None and row[subset] > hidden:
+                    suppressed.add(subset)
+                    changed = True
                 continue
             # Indexing, not `.get`: a column missing from the row reads as a
             # NULL cohort, which is suppressed above and skipped just before
