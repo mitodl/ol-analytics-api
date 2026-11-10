@@ -119,9 +119,9 @@ async def _as_of(sources: tuple[str, ...]) -> dt.datetime | None:
     return min(known) if len(known) == len(refreshed) else None
 
 
-# The start moves only when a log is restamped or recreated, so this holds the
-# same staleness bound as as_of. For that long after a hand recreation, a cursor
-# from before it is still accepted.
+# The start moves only when a log is recreated, so this holds the same staleness
+# bound as as_of. For that long after a hand recreation, a cursor from before it
+# is still accepted.
 _LOG_START_CACHE_TTL_SECONDS = 300
 _log_start_cache: TTLCache[tuple[str, str], dt.datetime | None] = TTLCache(
     maxsize=8, ttl=_LOG_START_CACHE_TTL_SECONDS
@@ -131,8 +131,8 @@ _log_start_cache: TTLCache[tuple[str, str], dt.datetime | None] = TTLCache(
 async def _change_log_start(log: str) -> dt.datetime | None:
     key = (settings.starrocks_schema, log)
     if key not in _log_start_cache:
-        rows = await starrocks_pool.fetch_all(queries.change_log_start(*key))
-        started: dt.datetime | None = rows[0]["started"]
+        rows = await starrocks_pool.fetch_all(*queries.change_log_start(*key))
+        started: dt.datetime | None = rows[0]["started"] if rows else None
         _log_start_cache[key] = started
     return _log_start_cache[key]
 
@@ -149,7 +149,8 @@ async def _require_change_log_coverage(
 
     A record removed before the log existed (or before it was last recreated)
     has no row in it, so a sync from earlier would never learn of the removal.
-    An empty log has no start to compare, so it refuses every cursor.
+    An empty log, or one information_schema doesn't show this user, has no
+    start to compare, so it refuses every cursor.
     """
     if updated_since is None:
         return
@@ -157,7 +158,7 @@ async def _require_change_log_coverage(
     for log in change_logs:
         started = await _change_log_start(log)
         if started is None:
-            began = "change tracking has no records yet"
+            began = "change tracking has not started"
         elif since < started.replace(tzinfo=dt.UTC):
             began = f"earlier than change tracking began ({started.isoformat()}Z)"
         else:
