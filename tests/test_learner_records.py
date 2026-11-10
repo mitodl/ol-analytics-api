@@ -38,6 +38,8 @@ OTHER_LEARNER_ID = "c04e8a17-3d62-4b95-a7e8-51fb2c8d9042"
 _AS_OF = dt.datetime(2026, 8, 13, 6, 15)  # noqa: DTZ001 - StarRocks returns naive UTC
 # Before every cursor the retention window accepts.
 _LOG_START = dt.datetime(2026, 5, 1)  # noqa: DTZ001
+_LOG_START_QUERY = "SELECT (SELECT create_time FROM information_schema.tables"
+NULL_START = object()
 _CONTRACT_PATH = (
     pathlib.Path(__file__).resolve().parents[1] / "docs/openapi/b2b-learner-records-v1.yaml"
 )
@@ -136,6 +138,8 @@ class _FakePool:
 
     def __init__(self, rows=(), total_count=0, withheld=0, as_of_by_mv=None, log_start=_LOG_START):
         self.rows = list(rows)
+        # None stands for an empty log, which returns no row; NULL_START for a
+        # log information_schema doesn't show, whose subquery is null.
         self.log_start = log_start
         self.counts = {"total_count": total_count, "outcomes_withheld_count": withheld}
         self.as_of_by_mv = as_of_by_mv or {}
@@ -143,8 +147,10 @@ class _FakePool:
 
     async def fetch_all(self, query, params=()):
         self.calls.append((query, params))
-        if "MIN(changed_on)" in query:
-            return [{"started": self.log_start}]
+        if _LOG_START_QUERY in query:
+            if self.log_start is None:
+                return []
+            return [{"started": None if self.log_start is NULL_START else self.log_start}]
         if "information_schema" in query:
             return [{"as_of": self.as_of_by_mv.get(params[1], _AS_OF)}]
         if "COUNT(*)" in query:
@@ -953,16 +959,49 @@ async def test_updated_since_before_change_tracking_began_is_refused(
         assert not any("LIMIT %s OFFSET %s" in query for query, _ in pool.calls)
 
 
-async def test_an_empty_change_log_refuses_a_cursor(app, monkeypatch):
+@pytest.mark.parametrize("log_start", [None, NULL_START], ids=["empty log", "not visible"])
+async def test_a_log_with_no_start_refuses_a_cursor(app, monkeypatch, log_start):
+    # An empty log returns no row; one information_schema doesn't show this
+    # user returns a null start. Either way the check fails closed.
     response = await _get(
         app,
         f"/organizations/{ORG_ID}/learners?updated_since=2026-08-01T00:00:00Z",
         _partner_token(ORG_ID),
-        _FakePool(log_start=None),
+        _FakePool(log_start=log_start),
         monkeypatch,
     )
     assert response.status_code == 400
-    assert "no records yet" in response.json()["detail"]
+    assert "has not started" in response.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    ("path", "logs"),
+    [
+        ("learners", [queries.LEARNER_CHANGES]),
+        ("enrollments", [queries.ENROLLMENT_CHANGES]),
+    ],
+)
+async def test_the_change_log_start_is_the_log_tables_create_time(app, monkeypatch, path, logs):
+    """The start is the log table's create_time, read for the logs the
+    collection uses. A restamp (INSERT OVERWRITE) moves every row's
+    changed_on but keeps create_time, so a cursor from before it is served;
+    MIN(changed_on) jumped to the restamp time and refused it. The fake can't
+    restamp, so this pins the query; the StarRocks behaviour was measured on
+    4.1.6.
+    """
+    pool = _FakePool(log_start=dt.datetime(2026, 8, 1, 6, 0, 0))  # noqa: DTZ001
+    response = await _get(
+        app,
+        f"/organizations/{ORG_ID}/{path}?updated_since=2026-08-10T00:00:00Z",
+        _partner_token(ORG_ID),
+        pool,
+        monkeypatch,
+    )
+    assert response.status_code == 200
+    started = [params for query, params in pool.calls if _LOG_START_QUERY in query]
+    assert [log for _, log in started] == logs
+    assert all(schema == settings.starrocks_schema for schema, _ in started)
+    assert not any("MIN(changed_on)" in query for query, _ in pool.calls)
 
 
 async def test_the_change_log_start_is_cached(app, monkeypatch):
@@ -971,10 +1010,10 @@ async def test_the_change_log_start_is_cached(app, monkeypatch):
     for _ in range(2):
         response = await _get(app, path, _partner_token(ORG_ID), pool, monkeypatch)
         assert response.status_code == 200
-    assert sum("MIN(changed_on)" in query for query, _ in pool.calls) == 1
+    assert sum(_LOG_START_QUERY in query for query, _ in pool.calls) == 1
 
 
 async def test_a_full_read_does_not_consult_the_change_log_start(app, monkeypatch):
     pool = _FakePool(log_start=dt.datetime(2026, 8, 1))  # noqa: DTZ001
     await _get(app, f"/organizations/{ORG_ID}/learners", _partner_token(ORG_ID), pool, monkeypatch)
-    assert not any("MIN(changed_on)" in query for query, _ in pool.calls)
+    assert not any(_LOG_START_QUERY in query for query, _ in pool.calls)
