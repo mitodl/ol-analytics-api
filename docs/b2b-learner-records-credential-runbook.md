@@ -49,16 +49,18 @@ A provider working for two organizations under two contracts gets two clients.
        description: Contoso LMS integration for Contoso Manufacturing
        organizations:
          - 8f14e45f-ceea-467a-9c1b-2f4b9c0a3d21
-       contract_end_date: "2027-06-30"
+       access_end_date: "2027-06-30"
    ```
 
    `name` becomes the client id `learner-records-<name>` and the Vault path.
-   Always set `contract_end_date` for a partner. It is optional in the schema
-   only because internal test clients have no contract.
+   Always set `access_end_date` for a partner. It is optional in the schema
+   only because internal test clients have no contract. It is the last day the
+   partner may read learner records, which is the contract's end date unless
+   the contract keeps its data available after that.
 
    Anyone can file the PR. Platform engineering reviews it and checks that the
    opt-in is linked, that the UUIDs belong to the right organizations in that
-   environment, and that the end date matches the contract.
+   environment, and that the access end date matches the contract.
 3. Merge, then deploy. In the `docker-packer-pulumi-keycloak` Concourse
    pipeline, only CI deploys on merge. QA and Production each wait on a
    `[bot] Pulumi ol-substructure-keycloak <Stack> ready to deploy.` GitHub
@@ -70,7 +72,7 @@ A provider working for two organizations under two contracts gets two clients.
 4. The apply writes the credential to Vault at
    `secret-operations/sso/learner-records/<name>`: `client_id`,
    `client_secret`, `issuer`, `token_url`, `scope`, `organizations` and
-   `contract_end_date`. That document is what the partner receives. The API
+   `access_end_date`. That document is what the partner receives. The API
    itself has no read access to this path.
 5. Smoke-test before handing it over. This keeps the secret out of files and
    out of process arguments:
@@ -178,17 +180,17 @@ and its Vault document.
 - Planned end: open the removal PR before the end date, and deploy it after
   12:00 UTC on the day after the end date. Deploying earlier cuts the partner
   off before the end of the end date in its own timezone. Once #73 merges, every `learner_records_access` log line carries
-  the client's `contract_end_date`, so a Loki alert can warn ahead of a lapse.
+  the client's `access_end_date`, so a Loki alert can warn ahead of a lapse.
   That alert rule doesn't exist yet.
 - Early termination: the same removal PR, deployed immediately.
 - An organization dropping out of a multi-organization client: remove its UUID
   from `organizations`. Tokens issued before the deploy still list it until
   they expire. The other organizations keep working.
 - Backstop: once #73 merges (it is stacked on #69), the API refuses a token
-  whose `learner_records_contract_end_date` has passed, from 12:00 UTC on the
+  whose `learner_records_access_end_date` has passed, from 12:00 UTC on the
   day after the end date (the end date is inclusive and read as Anywhere on
-  Earth). It logs `learner_records_contract_ended` at warning level when it
-  does. That means a client outlived its contract, so remove it now. Until #73
+  Earth). It logs `learner_records_access_ended` at warning level when it
+  does. That means a client outlived its access, so remove it now. Until #73
   merges there is no backstop, and a forgotten client keeps reading.
 
 When the bulk export channel exists, a partner's cross-account IAM role and
