@@ -6,6 +6,13 @@ the switch to scriv were reconstructed from the git history.
 
 <!-- scriv-insert-here -->
 
+<a id='changelog-2026.11.12.1'></a>
+## 2026.11.12.1 (2026-11-12)
+
+### Changed
+
+- `b2b_dashboard`: `/learners` accepts `limit` up to 100 learners, up from 25, so MIT Learn's learner CSV export can fetch a large contract in a quarter of the requests. The default page size stays 25.
+
 <a id='changelog-2026.11.5.1'></a>
 ## 2026.11.5.1 (2026-11-05)
 
