@@ -143,8 +143,9 @@ def test_finer_grain_declarations_match_the_contract_endpoint_they_name():
         assert spec.finer_grain.model is finer_model
         # additive_columns names only the event sums that add up exactly
         # across contracts regardless of overlap; the cohort counts get their
-        # own guard in `_register` (CrossGrainAdditives.guarded_cohorts),
-        # unconditionally, so they have no business showing up here too.
+        # own guard in `_register` (CrossGrainAdditives.guarded_cohorts, or
+        # added to the additive columns when the finer grain partitions the
+        # coarse one), so they have no business showing up here too.
         # _OrgEndpoint.__post_init__ enforces that additive/non-additive
         # partition the coarse model's derived columns; this pins the halves
         # it does not know how to check.
@@ -153,6 +154,10 @@ def test_finer_grain_declarations_match_the_contract_endpoint_they_name():
         assert additives <= set(policy.derived), f"{spec.mv}: additive column is not a derived sum"
         assert not additives & {policy.primary, *policy.secondary}
         assert additives, f"{spec.mv}: a finer grain with no additive column guards nothing"
+        if spec.finer_grain.partitions:
+            # The coarse policy's cohorts are looked up in the finer rows, so
+            # the two grains must share one policy.
+            assert finer_model.cohort_policy is policy
 
 
 def test_finer_grain_must_classify_every_derived_column():
@@ -173,6 +178,32 @@ def test_finer_grain_rejects_a_column_that_is_not_derived():
     )
     with pytest.raises(ValueError, match="not derived columns"):
         replace(trend, finer_grain=bogus)
+
+
+def test_finer_grain_rejects_a_ratio_computed_from_an_unknown_column():
+    # A typo here would leave a ratio unblanked when the column it is really
+    # computed from is hidden.
+    depth = next(spec for spec in organizations.ENDPOINTS if spec.path == "/content-engagement")
+    bogus = replace(
+        depth.finer_grain,
+        non_additive_columns=dict(depth.finer_grain.non_additive_columns)
+        | {"chatbot_adoption_pct": ("chatbot_userz", "total_enrolled_learners")},
+    )
+    with pytest.raises(ValueError, match="chatbot_userz"):
+        replace(depth, finer_grain=bogus)
+
+
+def test_finer_grain_rejects_a_ratio_computed_from_a_column_never_reported_hidden():
+    # courserun_title is a real column, but the scan never reports it hidden,
+    # so listing it would blank nothing.
+    depth = next(spec for spec in organizations.ENDPOINTS if spec.path == "/content-engagement")
+    bogus = replace(
+        depth.finer_grain,
+        non_additive_columns=dict(depth.finer_grain.non_additive_columns)
+        | {"chatbot_adoption_pct": ("courserun_title", "total_enrolled_learners")},
+    )
+    with pytest.raises(ValueError, match="never reports as hidden"):
+        replace(depth, finer_grain=bogus)
 
 
 @_cases
