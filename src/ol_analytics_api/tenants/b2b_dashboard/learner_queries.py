@@ -38,7 +38,8 @@ count queries share.
 inner ``records`` select scopes to the organization and contract and renames
 the MV's columns; the outer select applies consent, search and the status
 filter, so the page and its count always share one WHERE clause. ``learners``
-builds on the same ``records`` and the same WHERE clause and adds a paging
+builds the same ``records`` over ``MEMBER_MV`` instead, which adds a row for
+each contract member with no active enrollment, and adds a matching and paging
 layer over learners; its docstring describes it.
 
 Consent gates outcome fields, not the row. The MV carries the learner's
@@ -62,7 +63,14 @@ from ol_analytics_api.core.db.identifiers import validate_sql_identifier
 from ol_analytics_api.tenants.b2b_dashboard.config import settings
 
 ENROLLMENT_MV = "mv_b2b_learner_enrollment"
+# Current contract members, with their active enrollments in current runs, plus
+# one row with a null course run for each member with none. A member who enrolled
+# is here only once they consent to share their progress. Read by `learners`.
+MEMBER_MV = "mv_b2b_contract_member_enrollment"
 CONTRACT_COURSERUN_MV = "mv_b2b_contract_courserun"
+
+# The /learners status for a member with no enrollment in the selected modules.
+NOT_ENROLLED = "not_enrolled"
 
 # needs_attention_since is defined against the UTC date, so ask for that
 # explicitly rather than CURRENT_DATE(), which follows the session timezone.
@@ -231,9 +239,14 @@ def _contains_pattern(term: str) -> str:
 
 
 def _records(
-    organization_id: str, contract_id: int, *, include_inactive: bool, today: dt.date
+    organization_id: str,
+    contract_id: int,
+    *,
+    include_inactive: bool,
+    today: dt.date,
+    view: str = ENROLLMENT_MV,
 ) -> _Records:
-    table = f"{validate_sql_identifier(settings.learner_records_schema)}.{ENROLLMENT_MV}"
+    table = f"{validate_sql_identifier(settings.learner_records_schema)}.{view}"
     # The org predicate stays next to the contract one: contract ids are
     # globally unique but not secret.
     # shortcut: learners with no global_id (non-SSO accounts) are excluded because
@@ -258,15 +271,20 @@ def _records(
     )
 
 
-def _where(
+def _where(predicates: list[str]) -> str:
+    """``predicates`` as `` WHERE ...``, or empty when there are none."""
+    return f" WHERE {' AND '.join(predicates)}" if predicates else ""
+
+
+def _predicates(
     records: _Records,
     *,
     search: str | None,
     completion_statuses: tuple[str, ...],
     needs_attention: bool | None,
     courserun_readable_ids: tuple[str, ...] = (),
-) -> tuple[str, tuple[Any, ...]]:
-    """The filter over ``records`` as `` WHERE ...`` (or empty), and its params.
+) -> tuple[list[str], list[Any]]:
+    """The filter over ``records``, one predicate per filter, and its params.
 
     Every predicate tests one row, so filters combine on a single enrollment.
     """
@@ -308,8 +326,7 @@ def _where(
         # withheld rows are reachable only by leaving this filter off.
         negate = "" if needs_attention else "NOT "
         predicates.append(f"({shared} AND {negate}({records.needs_attention}))")
-    where = f" WHERE {' AND '.join(predicates)}" if predicates else ""
-    return where, tuple(params)
+    return predicates, params
 
 
 def _projection(records: _Records) -> str:
@@ -337,7 +354,7 @@ def learner_progress(filters: ProgressFilters, today: dt.date) -> ProgressQuery:
         include_inactive=filters.include_inactive,
         today=today,
     )
-    where, where_params = _where(
+    predicates, where_params = _predicates(
         records,
         search=filters.search,
         completion_statuses=filters.completion_statuses,
@@ -346,6 +363,7 @@ def learner_progress(filters: ProgressFilters, today: dt.date) -> ProgressQuery:
         ),
         needs_attention=filters.needs_attention,
     )
+    where = _where(predicates)
     shared = records.shared
 
     direction = "DESC" if filters.descending else "ASC"
@@ -382,24 +400,105 @@ _LEARNER_ORDER = (
 )
 
 
-def learners(filters: LearnerFilters, today: dt.date) -> ProgressQuery:
-    """Learners with at least one enrollment matching every filter, paged by
-    learner, each with ALL of their active enrollments.
+# A member row has no course run; every other row of MEMBER_MV is an enrollment.
+_ENROLLED = "courserun_pk IS NOT NULL"
 
-    In the page statement the filter runs only inside the ``matched``
-    subquery, which ``paged`` orders and limits to pick the page of learners.
-    The final select joins that page back to the unfiltered ``records``, so a
-    matched learner's other enrollments come back too. The count applies the
-    same filter to ``records`` directly, so ``total_count`` counts exactly the
-    learners the pages walk through. ``_where`` tests one
-    row at a time, so filters combine on a single enrollment: a learner with
-    one passed enrollment and a different quiet one does not match
-    ``passed`` plus ``needs_attention``.
+
+def _any_enrollment(predicates: list[str]) -> str:
+    """1 when one of the learner's enrollments passes every predicate, else 0."""
+    return f"MAX(CASE WHEN {' AND '.join([_ENROLLED, *predicates])} THEN 1 ELSE 0 END)"
+
+
+def _modules(filters: LearnerFilters) -> tuple[str, tuple[Any, ...]]:
+    """The modules ``not_enrolled`` checks, as two CTEs to append after
+    ``records``, and their params.
+
+    ``modules`` is the selected modules that are on the contract, or every
+    module on it when none is selected, read from the view behind
+    ``course_runs``, which is where the Learners page takes its module columns
+    from. ``modules_total`` counts them. A selected id that isn't on the
+    contract has no column, so it isn't one a learner can be missing.
+    """
+    table = f"{validate_sql_identifier(settings.learner_records_schema)}.{CONTRACT_COURSERUN_MV}"
+    scope = ["sso_organization_id = %s", "contract_id = %s"]
+    params: list[Any] = [filters.organization_id, filters.contract_id]
+    if filters.courserun_readable_ids:
+        marks = ", ".join(["%s"] * len(filters.courserun_readable_ids))
+        scope.append(f"courserun_readable_id IN ({marks})")
+        params.extend(filters.courserun_readable_ids)
+    ctes = (
+        ", modules AS (SELECT DISTINCT courserun_readable_id AS module_id"  # noqa: S608
+        f" FROM {table} WHERE {' AND '.join(scope)}),"
+        " modules_total AS (SELECT COUNT(*) AS module_count FROM modules)"
+    )
+    return ctes, tuple(params)
+
+
+def _learner_match(
+    records: _Records, filters: LearnerFilters, *, not_enrolled: bool
+) -> tuple[str, tuple[Any, ...]]:
+    """Which learners ``filters`` select, as a `` HAVING ...`` over each
+    learner's rows (or empty), and its params.
+
+    A learner matches when one of their enrollments passes every filter at
+    once, as in ``_where``. So with several modules selected, a status matches
+    a learner who has it in any one of them. ``not_enrolled`` follows the same
+    rule: it matches a learner with no enrollment in at least one of
+    ``_modules``, which ``learners`` joins in when ``not_enrolled`` is true.
+    That can't be a row predicate, since there is no row for the enrollment
+    that's missing. It has no needs-attention value either, so
+    ``needs_attention`` leaves it out, as it leaves out withheld rows.
+    """
+    statuses = filters.completion_statuses
+    if not (statuses or filters.courserun_readable_ids or filters.needs_attention is not None):
+        return "", ()
+    alternatives: list[str] = []
+    params: list[Any] = []
+    row_statuses = tuple(status for status in statuses if status != NOT_ENROLLED)
+    if row_statuses or not statuses:
+        predicates, row_params = _predicates(
+            records,
+            search=None,
+            completion_statuses=row_statuses,
+            needs_attention=filters.needs_attention,
+            courserun_readable_ids=filters.courserun_readable_ids,
+        )
+        alternatives.append(f"{_any_enrollment(predicates)} = 1")
+        params.extend(row_params)
+    if not_enrolled:
+        # Enrolled in fewer of the modules than there are. A member row joins
+        # no module, so it adds nothing to the count.
+        alternatives.append("COUNT(DISTINCT module_id) < MIN(module_count)")
+    return f" HAVING {' OR '.join(alternatives) or 'FALSE'}", tuple(params)
+
+
+def learners(filters: LearnerFilters, today: dt.date) -> ProgressQuery:
+    """Contract members matching the filters, paged by learner, each with ALL
+    of their active enrollments. With no filter, every member is listed,
+    including those with no active enrollment.
+
+    ``MEMBER_MV`` gives a member with no active enrollment one row with a null
+    course run, which the projection carries through so the member is still
+    listed, and which ``LearnerWithEnrollments.from_rows`` turns into an empty
+    ``enrollments``. Search tests that row like any other; ``_learner_match``
+    keeps it from matching an enrollment filter.
+
+    Both statements group ``records`` by learner in the same ``matched``
+    subquery: search is a WHERE on rows, since every row of a learner shares
+    their name and email, and the other filters are ``_learner_match``'s
+    HAVING. In the page, ``paged`` orders and limits ``matched`` to pick the
+    page of learners, and the final select joins that page back to the
+    unfiltered ``records``, so a matched learner's other enrollments come back
+    too. The count counts ``matched``, so ``total_count`` counts exactly the
+    learners the pages walk through. For ``not_enrolled``, ``matched`` also
+    left-joins each row to ``_modules`` and cross-joins their one-row total.
+    ``modules`` holds each module once, so neither join repeats a row.
 
     Revealing those other enrollments discloses nothing the filter didn't:
     consent is recorded per learner per contract, so all of a learner's rows
     share it, and the projection gates their outcomes exactly as on the
-    row-level endpoint.
+    row-level endpoint. A member row has no outcomes, so it never counts as
+    withheld, whatever consent it carries.
 
     ``records`` is one CTE, so its params bind once and the page still takes
     ``params`` plus LIMIT and OFFSET. ``paged`` is the only place with a LIMIT
@@ -410,36 +509,51 @@ def learners(filters: LearnerFilters, today: dt.date) -> ProgressQuery:
     ``paged`` orders, so the ORDER BY reads plain columns rather than
     aggregate aliases.
     """
+    # The member view holds active enrollments only, and a member row has no
+    # enrollment_is_active, so the active-only predicate would drop it.
     records = _records(
-        filters.organization_id, filters.contract_id, include_inactive=False, today=today
+        filters.organization_id,
+        filters.contract_id,
+        include_inactive=True,
+        today=today,
+        view=MEMBER_MV,
     )
-    where, where_params = _where(
-        records,
-        search=filters.search,
-        completion_statuses=filters.completion_statuses,
-        courserun_readable_ids=filters.courserun_readable_ids,
-        needs_attention=filters.needs_attention,
+    predicates, where_params = _predicates(
+        records, search=filters.search, completion_statuses=(), needs_attention=None
+    )
+    where = _where(predicates)
+    not_enrolled = NOT_ENROLLED in filters.completion_statuses and filters.needs_attention is None
+    modules, joins = "", ""
+    modules_params: tuple[Any, ...] = ()
+    if not_enrolled:
+        modules, modules_params = _modules(filters)
+        joins = (
+            " LEFT JOIN modules ON records.courserun_readable_id = modules.module_id"
+            " CROSS JOIN modules_total"
+        )
+    having, having_params = _learner_match(records, filters, not_enrolled=not_enrolled)
+    matched = (
+        "SELECT learner_id AS page_learner_id, MIN(full_name) AS page_full_name,"  # noqa: S608
+        f" MIN(email) AS page_email, {_any_enrollment([f'NOT {records.shared}'])} AS withheld"
+        f" FROM records{joins}{where} GROUP BY learner_id{having}"
     )
     page = (
-        f"WITH records AS ({records.select}),"  # noqa: S608
+        f"WITH records AS ({records.select}){modules},"  # noqa: S608
         " paged AS ("
-        "SELECT page_learner_id, page_full_name, page_email FROM ("
-        "SELECT learner_id AS page_learner_id, MIN(full_name) AS page_full_name,"
-        f" MIN(email) AS page_email FROM records{where} GROUP BY learner_id) matched"
+        f"SELECT page_learner_id, page_full_name, page_email FROM ({matched}) matched"
         f" ORDER BY {_LEARNER_ORDER} LIMIT %s OFFSET %s)"
         f" SELECT {_projection(records)}"
         " FROM records JOIN paged ON records.learner_id = paged.page_learner_id"
         f" ORDER BY {_LEARNER_ORDER}, courserun_readable_id, courserun_pk"
     )
-    # Consent is per learner per contract, so a withheld learner's rows all
-    # agree and this counts learners, like total_count.
     count = (
-        "SELECT COUNT(DISTINCT learner_id) AS total_count,"  # noqa: S608
-        f" COUNT(DISTINCT CASE WHEN NOT {records.shared} THEN learner_id END)"
-        " AS outcomes_withheld_count"
-        f" FROM ({records.select}) records{where}"
+        f"WITH records AS ({records.select}){modules}"  # noqa: S608
+        " SELECT COUNT(*) AS total_count,"
+        " COALESCE(SUM(withheld), 0) AS outcomes_withheld_count"
+        f" FROM ({matched}) matched"
     )
-    return ProgressQuery(page, count, (*records.params, *where_params))
+    params = (*records.params, *modules_params, *where_params, *having_params)
+    return ProgressQuery(page, count, params)
 
 
 @dataclass(frozen=True)

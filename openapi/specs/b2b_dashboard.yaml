@@ -669,12 +669,17 @@ paths:
       - learners
       summary: Each learner under the contract with all of their enrollments, paged
         by learner
-      description: 'A learner is listed when at least one of their active enrollments
-        matches every filter at once. Their other active enrollments are returned
-        too, whether or not they match. `limit` and `offset` count learners, not enrollments.
-        `completion_status`, `courserun_readable_id` and `needs_attention` narrow
-        together: several values of one filter OR, and different filters AND on a
-        single enrollment.'
+      description: 'With no filter, every current member of the contract is listed,
+        including those with no active enrollment, whose `enrollments` is empty. A
+        member who enrolled but hasn''t agreed to share their progress isn''t listed,
+        so `unknown` matches nobody here. Otherwise a learner is listed when at least
+        one of their active enrollments matches every filter at once, or, for `not_enrolled`,
+        when they have no active enrollment in at least one of the selected modules.
+        Their other active enrollments are returned too, whether or not they match.
+        `limit` and `offset` count learners, not enrollments. `completion_status`,
+        `courserun_readable_id` and `needs_attention` narrow together: several values
+        of one filter OR, and different filters AND on a single enrollment. `needs_attention`
+        never matches `not_enrolled`, which has no enrollment to judge.'
       operationId: learners_list
       parameters:
       - name: organization_id
@@ -707,10 +712,16 @@ paths:
         schema:
           type: array
           items:
-            $ref: '#/components/schemas/CompletionStatusFilter'
-          description: Repeat for several. `unknown` selects rows with withheld outcomes.
+            $ref: '#/components/schemas/LearnerStatusFilter'
+          description: Repeat for several. `unknown` selects learners with withheld
+            outcomes. `not_enrolled` selects learners missing an enrollment in at
+            least one selected module, or in at least one of the contract's modules
+            when none is selected.
           title: Completion Status
-        description: Repeat for several. `unknown` selects rows with withheld outcomes.
+        description: Repeat for several. `unknown` selects learners with withheld
+          outcomes. `not_enrolled` selects learners missing an enrollment in at least
+          one selected module, or in at least one of the contract's modules when none
+          is selected.
       - name: courserun_readable_id
         in: query
         required: false
@@ -2665,6 +2676,16 @@ components:
         ``data``) plus ``outcomes_withheld_count``, so a client can show how many
 
         rows carry withheld outcomes without paging through all of them.'
+    LearnerStatusFilter:
+      type: string
+      enum:
+      - not_started
+      - in_progress
+      - passed
+      - certified
+      - unknown
+      - not_enrolled
+      title: LearnerStatusFilter
     LearnerWithEnrollments:
       properties:
         learner_id:
@@ -2691,7 +2712,8 @@ components:
           type: array
           title: Enrollments
           description: Every course the learner is enrolled in under the contract,
-            including the ones that didn't match the filters.
+            including the ones that didn't match the filters. Empty if they haven't
+            enrolled in any yet.
       type: object
       required:
       - learner_id
@@ -2716,8 +2738,8 @@ components:
         total_count:
           type: integer
           title: Total Count
-          description: Learners with at least one enrollment that matches the filters,
-            across all pages.
+          description: Learners on the contract who match the filters, across all
+            pages.
         outcomes_withheld_count:
           type: integer
           title: Outcomes Withheld Count

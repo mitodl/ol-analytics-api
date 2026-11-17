@@ -261,7 +261,7 @@ class LearnerWithEnrollments(LearnerIdentity):
     enrollments: list[LearnerEnrollment] = Field(
         description=(
             "Every course the learner is enrolled in under the contract, including the ones "
-            "that didn't match the filters."
+            "that didn't match the filters. Empty if they haven't enrolled in any yet."
         )
     )
 
@@ -271,14 +271,16 @@ class LearnerWithEnrollments(LearnerIdentity):
 
         Keyed by ``learner_id`` rather than grouped by adjacency, so a change
         to the query's ordering can't emit one learner twice. The learner's
-        name and email come from their first row.
+        name and email come from their first row. A row with no course run is
+        a member with no active enrollment, so it adds the learner only.
         """
         learners: dict[str, Self] = {}
         for row in rows:
             learner = learners.get(row["learner_id"])
             if learner is None:
                 learner = learners[row["learner_id"]] = cls(**row, enrollments=[])
-            learner.enrollments.append(LearnerEnrollment(**row))
+            if row["courserun_readable_id"] is not None:
+                learner.enrollments.append(LearnerEnrollment(**row))
         return list(learners.values())
 
 
@@ -396,9 +398,7 @@ class LearnersResponse(BaseModel):
         description="When the data was last updated. Empty before the first update."
     )
     total_count: int = Field(
-        description=(
-            "Learners with at least one enrollment that matches the filters, across all pages."
-        )
+        description="Learners on the contract who match the filters, across all pages."
     )
     outcomes_withheld_count: int = Field(
         description=(

@@ -95,15 +95,18 @@ class _FakePool:
             return [{"as_of": _AS_OF}]
         if is_membership_probe(query):
             return answer_membership_probe(query, params, self.loaded)
-        if "COUNT(" in query:
+        if "total_count" in query:
             return [{"total_count": self.total_count, "outcomes_withheld_count": 3}]
         return self.rows
 
     def page_call(self):
-        return next(call for call in self.calls if call[0].startswith("WITH records AS ("))
+        return next(call for call in self.calls if " JOIN paged " in call[0])
+
+    def as_of_call(self):
+        return next(call for call in self.calls if "information_schema" in call[0])
 
     def count_call(self):
-        return next(call for call in self.calls if "COUNT(" in call[0])
+        return next(call for call in self.calls if "total_count" in call[0])
 
 
 @pytest.fixture
@@ -118,7 +121,7 @@ def _clear_as_of_cache():
     _clear_cache()
 
 
-async def _get(app, pool, *, is_manager=True, params=None):
+async def _get(app, pool, *, is_manager=True, params=None, path=PATH):
     with (
         patch("ol_analytics_api.core.db.client.starrocks_pool.fetch_all", new=pool.fetch_all),
         patch(
@@ -127,7 +130,7 @@ async def _get(app, pool, *, is_manager=True, params=None):
         ),
     ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            return await client.get(PATH, params=params, headers={"X-Userinfo": _manager_header()})
+            return await client.get(path, params=params, headers={"X-Userinfo": _manager_header()})
 
 
 async def test_rows_nest_into_learners_under_a_learner_count(app):
@@ -218,11 +221,32 @@ async def test_page_and_count_share_one_filter_and_one_date(app):
         assert _TODAY_SQL in query
         assert f"(COALESCE(outcomes_decision, FALSE) AND ({attention}))" in query
         assert "NOT COALESCE(outcomes_decision, FALSE)" in query
-        assert "enrollment_is_active = TRUE" in query
+        assert f".{learner_queries.MEMBER_MV} " in query
+        # The view holds active enrollments only, and its member rows have no
+        # enrollment_is_active for this to test.
+        assert "enrollment_is_active = TRUE" not in query
         # learner_id is the group, page and count key, so a null one is excluded.
         assert "user_global_id IS NOT NULL" in query
     # The filter picks learners; the final select joins back to every row.
     assert "FROM records JOIN paged" in page_query
+    assert pool.as_of_call()[1] == (settings.learner_records_schema, learner_queries.MEMBER_MV)
+
+
+async def test_not_enrolled_is_a_status_of_learners_only(app):
+    params = {"completion_status": ["not_enrolled"]}
+    pool = _FakePool()
+    assert (await _get(app, pool, params=params)).status_code == 200
+    # The modules it checks are the contract's, read in the same statement.
+    for query, query_params in (pool.page_call(), pool.count_call()):
+        assert f".{learner_queries.CONTRACT_COURSERUN_MV} " in query
+        assert query_params[:4] == (ORG_ID, CONTRACT_ID, ORG_ID, CONTRACT_ID)
+    # Without it, the statements don't read them.
+    pool = _FakePool()
+    await _get(app, pool, params={"completion_status": ["passed"]})
+    assert learner_queries.CONTRACT_COURSERUN_MV not in pool.page_call()[0]
+    # /learner-progress has a row per enrollment, so nothing for it to select.
+    progress = PATH.removesuffix("/learners") + "/learner-progress"
+    assert (await _get(app, _FakePool(), params=params, path=progress)).status_code == 422
 
 
 @pytest.mark.parametrize(
@@ -241,7 +265,7 @@ async def test_invalid_filters_are_rejected(app, params):
     assert response.status_code == 422
     # The router-level contract gate runs before query validation, so only the
     # learner data itself is guaranteed untouched.
-    assert all(learner_queries.ENROLLMENT_MV not in query for query, _ in pool.calls)
+    assert all(learner_queries.MEMBER_MV not in query for query, _ in pool.calls)
 
 
 async def test_non_manager_is_refused_before_any_query(app):
@@ -253,7 +277,7 @@ async def test_non_manager_is_refused_before_any_query(app):
 async def test_contract_outside_the_org_is_refused(app):
     pool = _FakePool(loaded=((OTHER_ORG_ID, CONTRACT_ID),))
     assert (await _get(app, pool)).status_code == 403
-    assert all(learner_queries.ENROLLMENT_MV not in query for query, _ in pool.calls)
+    assert all(learner_queries.MEMBER_MV not in query for query, _ in pool.calls)
 
 
 def test_learner_progress_is_exactly_identity_plus_enrollment():
@@ -290,9 +314,18 @@ def test_from_rows_never_emits_a_learner_twice():
     ]
 
 
+def test_from_rows_lists_a_member_row_with_no_enrollment():
+    member = dict.fromkeys(_row()) | {"learner_id": "n", "email": "n@x", "full_name": "Ned"}
+    learners = LearnerWithEnrollments.from_rows([_row(learner_id="a"), member])
+    assert [(learner.learner_id, len(learner.enrollments)) for learner in learners] == [
+        ("a", 1),
+        ("n", 0),
+    ]
+
+
 # --- Executed against an MV-shaped sqlite table -------------------------------
 
-_ENROLLMENT_MV_COLUMNS = (
+_MEMBER_MV_COLUMNS = (
     "user_pk",
     "courserun_pk",
     "user_global_id",
@@ -346,6 +379,9 @@ _STALE = {
 }
 _NOT_STARTED = {"completion_status": "not_started", "needs_attention_since": "2026-02-03"}
 
+# The contract's modules, as the Learners page shows them.
+_MODULES = ("run-1", "run-2", "run-3")
+
 # learner_id: (full_name, email, consent decision, [(run, outcome)]).
 _LEARNERS = {
     "ann": (
@@ -370,41 +406,56 @@ _ALL_ORDER = ["ann", "bob", "eve", "gus-a", "gus-b", "cy", "dee"]
 def mv(monkeypatch):
     monkeypatch.setattr(settings, "consent_fail_open", False)
     schema = settings.learner_records_schema
-    table = f"{schema}.{learner_queries.ENROLLMENT_MV}"
+    table = f"{schema}.{learner_queries.MEMBER_MV}"
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     conn.execute(f"ATTACH ':memory:' AS {schema}")
-    conn.execute(f"CREATE TABLE {table} ({', '.join(_ENROLLMENT_MV_COLUMNS)})")
+    conn.execute(f"CREATE TABLE {table} ({', '.join(_MEMBER_MV_COLUMNS)})")
+    # The contract's modules, which not_enrolled checks. Another contract's
+    # module must not count.
+    modules = f"{schema}.{learner_queries.CONTRACT_COURSERUN_MV}"
+    conn.execute(
+        f"CREATE TABLE {modules} (sso_organization_id, contract_id, courserun_readable_id)"
+    )
+    conn.executemany(
+        f"INSERT INTO {modules} VALUES (?, ?, ?)",  # noqa: S608
+        [*((ORG_ID, CONTRACT_ID, run) for run in _MODULES), (ORG_ID, CONTRACT_ID + 1, "run-8")],
+    )
 
-    def insert(learner, run, outcome, *, active=True):
+    def member(learner, **enrollment):
+        """With no enrollment, the view's row for a member with none."""
         learner_id, full_name, email, decision = learner
         row = {
             "user_pk": learner_id,
-            "courserun_pk": run,
             "user_global_id": learner_id,
             "email": email,
             "full_name": full_name,
             "sso_organization_id": ORG_ID,
             "contract_id": CONTRACT_ID,
-            "courserun_readable_id": run,
-            "courserun_title": run,
-            "enrollment_created_on": "2026-02-03T00:00:00",
-            "enrollment_is_active": active,
             "outcomes_shared": decision,
-            **outcome,
+            **enrollment,
         }
         conn.execute(
-            f"INSERT INTO {table} VALUES ({', '.join('?' * len(_ENROLLMENT_MV_COLUMNS))})",  # noqa: S608
-            [row.get(column) for column in _ENROLLMENT_MV_COLUMNS],
+            f"INSERT INTO {table} VALUES ({', '.join('?' * len(_MEMBER_MV_COLUMNS))})",  # noqa: S608
+            [row.get(column) for column in _MEMBER_MV_COLUMNS],
         )
 
+    def insert(learner, run, outcome):
+        member(
+            learner,
+            courserun_pk=run,
+            courserun_readable_id=run,
+            courserun_title=run,
+            enrollment_created_on="2026-02-03T00:00:00",
+            enrollment_is_active=True,
+            **outcome,
+        )
+
+    # The view holds active enrollments only, so there are no inactive ones here.
     for learner_id, (full_name, email, decision, enrollments) in _LEARNERS.items():
         for run, outcome in enrollments:
             insert((learner_id, full_name, email, decision), run, outcome)
-    # Inactive only: never listed, and never a reason to list anyone.
-    insert(("fay", "Fay", "fay@x", True), "run-1", _STALE, active=False)
-    insert(("bob", "Bob Ray", "bob@x", True), "run-9", _STALE, active=False)
-    yield SimpleNamespace(conn=conn, insert=insert)
+    yield SimpleNamespace(conn=conn, insert=insert, member=member)
     conn.close()
 
 
@@ -433,8 +484,6 @@ def test_learners_sort_by_name_nulls_last_then_email_then_id(mv):
     assert [learner.learner_id for learner in learners] == _ALL_ORDER
     assert total == len(_ALL_ORDER)
     assert _shape(learners)["ann"] == ["run-1", "run-2", "run-3"]
-    # Inactive enrollments are neither listed nor counted.
-    assert _shape(learners)["bob"] == ["run-1", "run-2"]
 
 
 def test_pages_split_learners_never_enrollments(mv):
@@ -484,8 +533,6 @@ def test_several_modules_or_together_and_count_learners(mv):
 
 def test_an_unknown_module_lists_nobody(mv):
     assert _run(mv, courserun_readable_ids=("run-404",)) == ([], 0)
-    # bob's run-9 enrollment is inactive, so it is no match.
-    assert _run(mv, courserun_readable_ids=("run-9",)) == ([], 0)
 
 
 def test_modules_compose_with_status_and_needs_attention(mv):
@@ -551,6 +598,100 @@ def test_withheld_count_counts_learners_and_agrees_with_unknown(mv):
 )
 def test_withheld_count_is_zero_under_outcome_filters(mv, filters):
     assert _counts(mv, **filters)[1] == 0
+
+
+# A member with no active enrollment and no consent recorded.
+_NED = ("ned", "Ned Ma", "ned@x", None)
+_NOT_ENROLLED = (learner_queries.NOT_ENROLLED,)
+
+
+@pytest.mark.parametrize("decision", [True, False, None])
+def test_a_member_with_no_enrollment_is_listed_with_none(mv, decision):
+    mv.member(("ned", "Ned Ma", "ned@x", decision))
+    learners, total = _run(mv)
+    # Sorted by name like everyone else: after the Gus pair, before the nameless.
+    assert [learner.learner_id for learner in learners] == [*_ALL_ORDER[:5], "ned", *_ALL_ORDER[5:]]
+    assert _shape(learners)["ned"] == []
+    # There is no outcome to withhold, whatever consent the row carries.
+    assert (total, _counts(mv)[1]) == (len(_ALL_ORDER) + 1, 1)
+    assert "ned" not in _shape(_run(mv, completion_statuses=("unknown",))[0])
+    assert _shape(_run(mv, search="NED")[0]) == {"ned": []}
+
+
+@pytest.mark.parametrize("decision", [True, False, None])
+@pytest.mark.parametrize(
+    "filters",
+    [
+        {"completion_statuses": ("not_started", "in_progress", "passed", "certified", "unknown")},
+        {"needs_attention": True},
+        {"needs_attention": False},
+        {"courserun_readable_ids": ("run-1",)},
+    ],
+)
+def test_a_member_row_matches_no_enrollment_filter(mv, decision, filters):
+    # A consented member row reads as shared, with no needs_attention_since,
+    # so only the course-run guard keeps needs_attention=false off it.
+    mv.member(("ned", "Ned Ma", "ned@x", decision))
+    assert "ned" not in _shape(_run(mv, **filters)[0])
+
+
+def test_not_enrolled_is_a_missing_enrollment_in_any_selected_module(mv):
+    mv.member(_NED)
+    # ann is the only learner enrolled in run-3. eve withheld her outcomes,
+    # but whether she enrolled isn't an outcome.
+    missing_run_3 = ["bob", "eve", "gus-a", "gus-b", "ned", "cy", "dee"]
+    learners, total = _run(mv, completion_statuses=_NOT_ENROLLED, courserun_readable_ids=("run-3",))
+    assert (list(_shape(learners)), total) == (missing_run_3, 7)
+    # Several modules: missing any one of them, as the other statuses match
+    # any one. gus-a has run-1 but not run-2; ann, bob and eve have both.
+    learners, total = _run(
+        mv, completion_statuses=_NOT_ENROLLED, courserun_readable_ids=("run-1", "run-2")
+    )
+    assert (list(_shape(learners)), total) == (["gus-a", "gus-b", "ned", "cy", "dee"], 5)
+    # No module selected means every module on the contract, where only ann
+    # has all three. Another contract's run-8 isn't one of them.
+    learners, total = _run(mv, completion_statuses=_NOT_ENROLLED)
+    assert (list(_shape(learners)), total) == (missing_run_3, 7)
+
+
+def test_not_enrolled_ignores_modules_not_on_the_contract(mv):
+    mv.member(_NED)
+    # No column for run-404 or run-8, so nobody can be missing them.
+    for modules in (("run-404",), ("run-8",)):
+        assert _run(mv, completion_statuses=_NOT_ENROLLED, courserun_readable_ids=modules) == (
+            [],
+            0,
+        )
+    learners, _ = _run(
+        mv, completion_statuses=_NOT_ENROLLED, courserun_readable_ids=("run-3", "run-404")
+    )
+    assert "ann" not in _shape(learners)
+
+
+def test_not_enrolled_ors_with_the_other_statuses(mv):
+    mv.member(_NED)
+    learners, total = _run(
+        mv, completion_statuses=("passed", *_NOT_ENROLLED), courserun_readable_ids=("run-1",)
+    )
+    # ann passed run-1; gus-b and ned have no run-1 enrollment; eve's pass is withheld.
+    assert (list(_shape(learners)), total) == (["ann", "gus-b", "ned"], 3)
+    # Every status at once lists every member, as no filter does.
+    every = ("not_started", "in_progress", "passed", "certified", "unknown", *_NOT_ENROLLED)
+    assert _run(mv, completion_statuses=every) == _run(mv)
+    for modules in (("run-1",), ("run-1", "run-3")):
+        learners, total = _run(mv, completion_statuses=every, courserun_readable_ids=modules)
+        assert (list(_shape(learners)), total) == ([*_ALL_ORDER[:5], "ned", *_ALL_ORDER[5:]], 8)
+
+
+@pytest.mark.parametrize("needs_attention", [True, False])
+def test_needs_attention_never_matches_not_enrolled(mv, needs_attention):
+    mv.member(_NED)
+    assert _run(mv, completion_statuses=_NOT_ENROLLED, needs_attention=needs_attention) == ([], 0)
+    # It still narrows the other statuses: ann's in-progress run-2 is quiet.
+    learners, _ = _run(
+        mv, completion_statuses=("in_progress", *_NOT_ENROLLED), needs_attention=needs_attention
+    )
+    assert list(_shape(learners)) == (["ann"] if needs_attention else ["bob", "cy", "dee"])
 
 
 def test_the_projection_is_exactly_the_row_model(mv):

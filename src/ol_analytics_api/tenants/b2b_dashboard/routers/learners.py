@@ -8,8 +8,10 @@ learners on seats their own organization purchased and assigned. Authorization
 is the same as the contract endpoints: ``require_org_manager``, then
 ``require_contract_in_org``.
 
-Reads ``mv_b2b_learner_enrollment`` from the learner-records StarRocks
-database, which is kept apart from the aggregate ``b2b_analytics`` views.
+``/learner-progress`` reads ``mv_b2b_learner_enrollment`` and ``/learners``
+reads ``mv_b2b_contract_member_enrollment``, which also lists contract members
+with no active enrollment. Both are in the learner-records StarRocks database,
+which is kept apart from the aggregate ``b2b_analytics`` views.
 
 Mounted at /api/v1/analytics by tenants/b2b_dashboard/app.py.
 """
@@ -74,6 +76,18 @@ class CompletionStatusFilter(StrEnum):
     UNKNOWN = "unknown"
 
 
+# /learners' status filter: CompletionStatusFilter plus `not_enrolled`, which
+# matches a missing enrollment, so /learner-progress, one row per enrollment,
+# has nothing for it to select.
+class LearnerStatusFilter(StrEnum):
+    NOT_STARTED = "not_started"
+    IN_PROGRESS = "in_progress"
+    PASSED = "passed"
+    CERTIFIED = "certified"
+    UNKNOWN = "unknown"
+    NOT_ENROLLED = learner_queries.NOT_ENROLLED
+
+
 SearchParam = Annotated[
     str | None,
     Query(min_length=1, max_length=254, description="Case-insensitive match on email or name."),
@@ -82,6 +96,17 @@ CompletionStatusParam = Annotated[
     list[CompletionStatusFilter],
     Query(
         description="Repeat for several. `unknown` selects rows with withheld outcomes.",
+        default_factory=list,
+    ),
+]
+LearnerStatusParam = Annotated[
+    list[LearnerStatusFilter],
+    Query(
+        description=(
+            "Repeat for several. `unknown` selects learners with withheld outcomes. "
+            "`not_enrolled` selects learners missing an enrollment in at least one selected "
+            "module, or in at least one of the contract's modules when none is selected."
+        ),
         default_factory=list,
     ),
 ]
@@ -117,12 +142,10 @@ async def _utc_today() -> dt.date:
     return today
 
 
-async def _enrollment_as_of() -> dt.datetime | None:
+async def _as_of(view: str) -> dt.datetime | None:
     # Read before the data queries, so a refresh landing mid-request labels
     # newer rows with the older as_of rather than the reverse.
-    return await latest_refresh_timestamp(
-        settings.learner_records_schema, learner_queries.ENROLLMENT_MV
-    )
+    return await latest_refresh_timestamp(settings.learner_records_schema, view)
 
 
 @router.get(
@@ -177,7 +200,7 @@ async def learner_progress(  # noqa: PLR0913
         ),
         today,
     )
-    as_of = await _enrollment_as_of()
+    as_of = await _as_of(learner_queries.ENROLLMENT_MV)
     rows = await starrocks_pool.fetch_all(query.page, (*query.params, page.limit, page.offset))
     counts = (await starrocks_pool.fetch_all(query.count, query.params))[0]
     return LearnerProgressResponse(
@@ -204,11 +227,18 @@ async def learner_progress(  # noqa: PLR0913
     operation_id="learners_list",
     summary="Each learner under the contract with all of their enrollments, paged by learner",
     description=(
-        "A learner is listed when at least one of their active enrollments matches every "
-        "filter at once. Their other active enrollments are returned too, whether or not they "
-        "match. `limit` and `offset` count learners, not enrollments. `completion_status`, "
+        "With no filter, every current member of the contract is listed, including those "
+        "with no active enrollment, whose `enrollments` is empty. A member who enrolled but "
+        "hasn't agreed to share their progress isn't listed, so `unknown` matches nobody "
+        "here. Otherwise a learner is "
+        "listed when at least one of their active enrollments matches every filter at once, "
+        "or, for `not_enrolled`, when they have no active enrollment in at least one of the "
+        "selected modules. "
+        "Their other active enrollments are returned too, whether or not they match. `limit` "
+        "and `offset` count learners, not enrollments. `completion_status`, "
         "`courserun_readable_id` and `needs_attention` narrow together: several values of "
-        "one filter OR, and different filters AND on a single enrollment."
+        "one filter OR, and different filters AND on a single enrollment. `needs_attention` "
+        "never matches `not_enrolled`, which has no enrollment to judge."
     ),
 )
 async def learners(  # noqa: PLR0913
@@ -217,7 +247,7 @@ async def learners(  # noqa: PLR0913
     contract_id: int,
     page: Annotated[Pagination, Depends(learner_pagination)],
     search: SearchParam = None,
-    completion_status: CompletionStatusParam,
+    completion_status: LearnerStatusParam,
     courserun_readable_id: CourserunListParam,
     needs_attention: Annotated[
         bool | None,
@@ -241,7 +271,7 @@ async def learners(  # noqa: PLR0913
         ),
         today,
     )
-    as_of = await _enrollment_as_of()
+    as_of = await _as_of(learner_queries.MEMBER_MV)
     rows = await starrocks_pool.fetch_all(query.page, (*query.params, page.limit, page.offset))
     counts = (await starrocks_pool.fetch_all(query.count, query.params))[0]
     return LearnersResponse(
