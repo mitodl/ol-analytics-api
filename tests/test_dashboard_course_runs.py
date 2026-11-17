@@ -176,17 +176,20 @@ _COURSERUN_MV_COLUMNS = (
 )
 
 # readable id: (title, start, program_sort_order, course_order_in_program), in
-# the order the endpoint lists them. Start dates and titles run against that
-# order, so only the program keys can produce it.
+# the order the endpoint lists them. Start dates run against the program keys,
+# and runs tied on the earlier keys run against readable id order, so
+# dropping any key but the last changes the result.
 _RUNS = {
-    "intro": ("Introduction to Universal AI", "2026-09-01", 1, 1),
-    "intro-rerun": ("Introduction to Universal AI", "2027-01-01", 1, 1),
+    # Two runs of one course: start date orders them.
+    "intro-b": ("Introduction to Universal AI", "2026-09-01", 1, 1),
+    "intro-a": ("Introduction to Universal AI", "2027-01-01", 1, 1),
     "module-12": ("Module 12", "2026-01-15", 1, 2),
     "second-program": ("Module 1", "2026-01-10", 2, 1),
     # A program MITx Online never ordered.
     "unordered-program": ("Module 2", "2026-01-05", None, 1),
-    # In none of the contract's programs.
-    "outside": ("A module", "2026-01-01", None, None),
+    # In none of the contract's programs. Title orders the same-day pair.
+    "outside-b": ("A module", "2026-01-01", None, None),
+    "outside-a": ("B module", "2026-01-01", None, None),
     "outside-self-paced": ("A module", None, None, None),
 }
 
