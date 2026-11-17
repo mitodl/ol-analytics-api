@@ -29,7 +29,11 @@ from ol_analytics_api.tenants.b2b_dashboard.learner_models import (
     LearnersResponse,
     LearnerWithEnrollments,
 )
-from ol_analytics_api.tenants.b2b_dashboard.routers.learners import MAX_COURSERUN_FILTERS
+from ol_analytics_api.tenants.b2b_dashboard.routers.learners import (
+    MAX_COURSERUN_FILTERS,
+    CompletionStatusFilter,
+    LearnerStatusFilter,
+)
 from tests.membership import answer_membership_probe, is_membership_probe
 
 ORG_ID = "11111111-1111-1111-1111-111111111111"
@@ -233,6 +237,8 @@ async def test_page_and_count_share_one_filter_and_one_date(app):
 
 
 async def test_not_enrolled_is_a_status_of_learners_only(app):
+    # A status added to /learner-progress's filter must reach /learners' too.
+    assert set(LearnerStatusFilter) == {*CompletionStatusFilter, learner_queries.NOT_ENROLLED}
     params = {"completion_status": ["not_enrolled"]}
     pool = _FakePool()
     assert (await _get(app, pool, params=params)).status_code == 200

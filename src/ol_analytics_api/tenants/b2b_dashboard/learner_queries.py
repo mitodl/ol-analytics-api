@@ -441,7 +441,7 @@ def _learner_match(
     learner's rows (or empty), and its params.
 
     A learner matches when one of their enrollments passes every filter at
-    once, as in ``_where``. So with several modules selected, a status matches
+    once, as in ``_predicates``. So with several modules selected, a status matches
     a learner who has it in any one of them. ``not_enrolled`` follows the same
     rule: it matches a learner with no enrollment in at least one of
     ``_modules``, which ``learners`` joins in when ``not_enrolled`` is true.
