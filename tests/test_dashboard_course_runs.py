@@ -2,13 +2,16 @@
 
 Same harness as test_dashboard_learner_progress.py: drives the mounted app
 over ASGITransport with an org manager's X-Userinfo header, stubbing only the
-StarRocks pool and the MITx Online manager check.
+StarRocks pool and the MITx Online manager check. The order test at the end
+executes ``learner_queries.course_runs()`` verbatim against an MV-shaped sqlite
+table instead.
 """
 
 import base64
 import datetime as dt
 import json
 import re
+import sqlite3
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -16,6 +19,8 @@ from httpx import ASGITransport, AsyncClient
 
 from ol_analytics_api.core.db.refresh_metadata import _clear_cache
 from ol_analytics_api.main import create_app
+from ol_analytics_api.tenants.b2b_dashboard import learner_queries
+from ol_analytics_api.tenants.b2b_dashboard.config import settings
 from ol_analytics_api.tenants.b2b_dashboard.learner_models import CourseRun, CourseRunsResponse
 from tests.membership import answer_membership_probe, is_membership_probe
 
@@ -128,16 +133,6 @@ async def test_empty_contract_returns_no_rows(app):
     assert body["data"] == []
 
 
-async def test_nulls_start_date_sorts_last(app):
-    pool = _FakePool()
-    await _get(app, pool)
-    assert pool.page_call()[0].endswith(
-        "ORDER BY courserun_start_on IS NULL, courserun_start_on, courserun_title,"
-        " courserun_readable_id"
-        " LIMIT %s OFFSET %s"
-    )
-
-
 async def test_contract_not_in_org_is_403(app):
     pool = _FakePool(loaded=((OTHER_ORG_ID, CONTRACT_ID),))
     response = await _get(app, pool)
@@ -162,3 +157,55 @@ def test_every_field_has_a_manager_facing_description(model):
         assert field.description, f"{name} has no description"
         named = set(re.findall(r"\b[a-z]+(?:_[a-z]+)+\b", field.description)) & field_names
         assert not named, f"{name}'s description names {named}"
+
+
+# --- Executed against an MV-shaped sqlite table -------------------------------
+#
+# sqlite sorts NULL first ascending, so these rows also prove the IS NULL keys
+# that move nulls last.
+
+_COURSERUN_MV_COLUMNS = (
+    "sso_organization_id",
+    "contract_id",
+    "courserun_readable_id",
+    "courserun_title",
+    "courserun_start_on",
+    "courserun_end_on",
+    "program_sort_order",
+    "course_order_in_program",
+)
+
+# readable id: (title, start, program_sort_order, course_order_in_program), in
+# the order the endpoint lists them. Start dates run against the program keys,
+# and runs tied on the earlier keys run against readable id order, so
+# dropping any key but the last changes the result.
+_RUNS = {
+    # Two runs of one course: start date orders them.
+    "intro-b": ("Introduction to Universal AI", "2026-09-01", 1, 1),
+    "intro-a": ("Introduction to Universal AI", "2027-01-01", 1, 1),
+    "module-12": ("Module 12", "2026-01-15", 1, 2),
+    "second-program": ("Module 1", "2026-01-10", 2, 1),
+    # A program MITx Online never ordered.
+    "unordered-program": ("Module 2", "2026-01-05", None, 1),
+    # In none of the contract's programs. Title orders the same-day pair.
+    "outside-b": ("A module", "2026-01-01", None, None),
+    "outside-a": ("B module", "2026-01-01", None, None),
+    "outside-self-paced": ("A module", None, None, None),
+}
+
+
+def test_runs_follow_program_order_with_null_sort_keys_last():
+    schema = settings.learner_records_schema
+    table = f"{schema}.{learner_queries.CONTRACT_COURSERUN_MV}"
+    conn = sqlite3.connect(":memory:")
+    conn.execute(f"ATTACH ':memory:' AS {schema}")
+    conn.execute(f"CREATE TABLE {table} ({', '.join(_COURSERUN_MV_COLUMNS)})")
+    for run_id, (title, start, program_order, course_order) in reversed(_RUNS.items()):
+        conn.execute(
+            f"INSERT INTO {table} VALUES ({', '.join('?' * len(_COURSERUN_MV_COLUMNS))})",  # noqa: S608
+            (ORG_ID, CONTRACT_ID, run_id, title, start, None, program_order, course_order),
+        )
+    query = learner_queries.course_runs(ORG_ID, CONTRACT_ID)
+    rows = conn.execute(query.page.replace("%s", "?"), (*query.params, 100, 0)).fetchall()
+    conn.close()
+    assert [row[0] for row in rows] == list(_RUNS)
