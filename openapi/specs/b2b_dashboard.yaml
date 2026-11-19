@@ -718,15 +718,15 @@ paths:
           type: array
           items:
             $ref: '#/components/schemas/LearnerStatusFilter'
-          description: Repeat for several. `unknown` selects learners with withheld
-            outcomes. `not_enrolled` selects learners missing an enrollment in at
-            least one selected module, or in at least one of the contract's modules
-            when none is selected.
+          description: Repeat for several. `unknown` matches nobody, because learners
+            with withheld outcomes aren't listed. `not_enrolled` selects learners
+            missing an enrollment in at least one selected module, or in at least
+            one of the contract's modules when none is selected.
           title: Completion Status
-        description: Repeat for several. `unknown` selects learners with withheld
-          outcomes. `not_enrolled` selects learners missing an enrollment in at least
-          one selected module, or in at least one of the contract's modules when none
-          is selected.
+        description: Repeat for several. `unknown` matches nobody, because learners
+          with withheld outcomes aren't listed. `not_enrolled` selects learners missing
+          an enrollment in at least one selected module, or in at least one of the
+          contract's modules when none is selected.
       - name: course_readable_id
         in: query
         required: false
@@ -763,12 +763,10 @@ paths:
           - type: boolean
           - type: 'null'
           description: Keep only learners with an enrollment that needs attention,
-            or with one that doesn't. Rows with withheld outcomes match neither, so
-            omit this to see them.
+            or with one that doesn't.
           title: Needs Attention
         description: Keep only learners with an enrollment that needs attention, or
-          with one that doesn't. Rows with withheld outcomes match neither, so omit
-          this to see them.
+          with one that doesn't.
       - name: limit
         in: query
         required: false
@@ -2907,9 +2905,7 @@ components:
           type: integer
           title: Outcomes Withheld Count
           description: How many of those learners haven't agreed to share their progress.
-            Always 0 when filtering exclusively by known completion statuses (without
-            unknown), or by needs attention either way, because withheld enrollments
-            can't match those filters.
+            Always 0, because this endpoint doesn't list them.
         data:
           items:
             $ref: '#/components/schemas/LearnerWithEnrollments'
