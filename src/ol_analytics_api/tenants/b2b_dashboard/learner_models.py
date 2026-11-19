@@ -402,10 +402,8 @@ class LearnersResponse(BaseModel):
     )
     outcomes_withheld_count: int = Field(
         description=(
-            "How many of those learners haven't agreed to share their progress. Always 0 "
-            "when filtering exclusively by known completion statuses (without unknown), "
-            "or by needs attention either way, because withheld enrollments can't match "
-            "those filters."
+            "How many of those learners haven't agreed to share their progress. Always 0, "
+            "because this endpoint doesn't list them."
         )
     )
     data: list[LearnerWithEnrollments] = Field(description="This page of learners.")

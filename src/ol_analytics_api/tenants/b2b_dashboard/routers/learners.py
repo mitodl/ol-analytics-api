@@ -103,9 +103,10 @@ LearnerStatusParam = Annotated[
     list[LearnerStatusFilter],
     Query(
         description=(
-            "Repeat for several. `unknown` selects learners with withheld outcomes. "
-            "`not_enrolled` selects learners missing an enrollment in at least one selected "
-            "module, or in at least one of the contract's modules when none is selected."
+            "Repeat for several. `unknown` matches nobody, because learners with withheld "
+            "outcomes aren't listed. `not_enrolled` selects learners missing an enrollment "
+            "in at least one selected module, or in at least one of the contract's modules "
+            "when none is selected."
         ),
         default_factory=list,
     ),
@@ -254,7 +255,7 @@ async def learners(  # noqa: PLR0913
         Query(
             description=(
                 "Keep only learners with an enrollment that needs attention, or with one that "
-                "doesn't. Rows with withheld outcomes match neither, so omit this to see them."
+                "doesn't."
             )
         ),
     ] = None,
