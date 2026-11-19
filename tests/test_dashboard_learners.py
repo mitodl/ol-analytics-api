@@ -794,6 +794,7 @@ def course_x(mv):
         # A certificate from any run wins, even an ended one.
         ([("x-ended-early", _CERTIFIED), ("x-open", _RECENT)], "x-ended-early"),
         ([("x-ended-early", _CERTIFIED), ("x-ended-late", _CERTIFIED)], "x-ended-late"),
+        ([("x-ended-early", _CERTIFIED), ("x-soon", _CERTIFIED)], "x-soon"),
         # Then the run open now, the latest start first and no start last.
         ([("x-ended-late", _PASSED), ("x-open", _RECENT), ("x-soon", _NOT_STARTED)], "x-open"),
         ([("x-open", _RECENT), ("x-open-late", _RECENT)], "x-open-late"),

@@ -2573,15 +2573,10 @@ components:
       - course_readable_id
       - course_title
       title: LearnerEnrollment
-      description: 'A learner''s enrollment in one course under the contract: the
-        run of it
+      description: 'A learner''s enrollment in one course under the contract, in the
+        run
 
-        the learner''s own dashboard shows (learner_queries._run_rank).
-
-
-        Keeps the schema name clients generated before courses were added already
-
-        import; the per-run fields alone are ``RunEnrollment``.'
+        their own dashboard shows.'
     LearnerProgress:
       properties:
         learner_id:

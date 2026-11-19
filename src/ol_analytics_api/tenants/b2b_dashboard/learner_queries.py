@@ -454,7 +454,9 @@ def _run_rank(records: _Records, today: dt.date) -> str:
         " ELSE 1 END"
     )
     return (
-        f"{tier}, CASE WHEN {upcoming} THEN courserun_start_on END,"
+        # Soonest first only among runs yet to start; a tie (NULL) in every other tier,
+        # so a certified run that starts later still ranks by latest start.
+        f"{tier}, CASE WHEN {tier} = 2 THEN courserun_start_on END,"
         " courserun_start_on IS NULL, courserun_start_on DESC, courserun_pk"
     )
 

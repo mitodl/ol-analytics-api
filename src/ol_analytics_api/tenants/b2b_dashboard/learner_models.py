@@ -256,12 +256,12 @@ class LearnerProgress(RunEnrollment, LearnerIdentity):
     """One learner's enrollment in one course run under the contract."""
 
 
+# The run is picked by learner_queries._run_rank. Named LearnerEnrollment because
+# clients generated before courses were added import that schema; the per-run
+# fields alone are RunEnrollment. This docstring is published in the spec.
 class LearnerEnrollment(RunEnrollment):
-    """A learner's enrollment in one course under the contract: the run of it
-    the learner's own dashboard shows (learner_queries._run_rank).
-
-    Keeps the schema name clients generated before courses were added already
-    import; the per-run fields alone are ``RunEnrollment``."""
+    """A learner's enrollment in one course under the contract, in the run
+    their own dashboard shows."""
 
     course_readable_id: str = Field(
         description="The course's ID, e.g. course-v1:MITxT+14.310x. Its runs share it."
