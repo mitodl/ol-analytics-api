@@ -1,6 +1,6 @@
 """Contract-scoped learner progress, as one row per learner per course run
-(``/learner-progress``) or one row per learner with all of their enrollments
-(``/learners``).
+(``/learner-progress``) or one row per learner with one enrollment per course
+(``/learners``, whose courses ``/courses`` lists).
 
 The only endpoints in this tenant that return individual learners, so they
 waive the k-anonymity floor every other endpoint applies. An org manager is viewing
@@ -35,8 +35,10 @@ from ol_analytics_api.tenants.b2b_dashboard.auth import (
 from ol_analytics_api.tenants.b2b_dashboard.config import settings
 from ol_analytics_api.tenants.b2b_dashboard.learner_models import (
     CompletionStatusCounts,
+    Course,
     CourseRun,
     CourseRunsResponse,
+    CoursesResponse,
     LearnerProgress,
     LearnerProgressResponse,
     LearnersResponse,
@@ -112,7 +114,7 @@ LearnerStatusParam = Annotated[
 ]
 
 MAX_COURSERUN_FILTERS = 50
-CourserunListParam = Annotated[
+ModuleListParam = Annotated[
     list[Annotated[str, Query(min_length=1)]],
     Query(
         max_length=MAX_COURSERUN_FILTERS,
@@ -225,19 +227,25 @@ async def learner_progress(  # noqa: PLR0913
     response_model=LearnersResponse,
     name="learners",
     operation_id="learners_list",
-    summary="Each learner under the contract with all of their enrollments, paged by learner",
+    summary="Each learner under the contract with one enrollment per course, paged by learner",
     description=(
+        "`enrollments` has one entry per course in `/courses`: when a learner has active "
+        "enrollments in more than one run of a course, the run their own dashboard shows, "
+        "and every field and filter reads that run. A run of a course `/courses` doesn't "
+        "list has no entry. "
         "With no filter, every current member of the contract is listed, including those "
         "with no active enrollment, whose `enrollments` is empty. A member who enrolled but "
         "hasn't agreed to share their progress isn't listed, so `unknown` matches nobody "
         "here. Otherwise a learner is "
-        "listed when at least one of their active enrollments matches every filter at once, "
-        "or, for `not_enrolled`, when they have no active enrollment in at least one of the "
-        "selected modules. "
-        "Their other active enrollments are returned too, whether or not they match. `limit` "
+        "listed when at least one of their entries matches every filter at once, "
+        "or, for `not_enrolled`, when they have no entry for at least one of the "
+        "selected courses. "
+        "Their other entries are returned too, whether or not they match. `limit` "
         "and `offset` count learners, not enrollments. `completion_status`, "
-        "`courserun_readable_id` and `needs_attention` narrow together: several values of "
-        "one filter OR, and different filters AND on a single enrollment. `needs_attention` "
+        "`course_readable_id`, `courserun_readable_id` and `needs_attention` narrow "
+        "together: several values of one filter OR, and different filters AND on a single "
+        "entry. `courserun_readable_id` matches the run an entry shows, and selects that "
+        "run's course for `not_enrolled`. `needs_attention` "
         "never matches `not_enrolled`, which has no enrollment to judge."
     ),
 )
@@ -248,7 +256,8 @@ async def learners(  # noqa: PLR0913
     page: Annotated[Pagination, Depends(learner_pagination)],
     search: SearchParam = None,
     completion_status: LearnerStatusParam,
-    courserun_readable_id: CourserunListParam,
+    course_readable_id: ModuleListParam,
+    courserun_readable_id: ModuleListParam,
     needs_attention: Annotated[
         bool | None,
         Query(
@@ -267,6 +276,7 @@ async def learners(  # noqa: PLR0913
             search=search,
             completion_statuses=tuple(status.value for status in completion_status),
             courserun_readable_ids=tuple(courserun_readable_id),
+            course_readable_ids=tuple(course_readable_id),
             needs_attention=needs_attention,
         ),
         today,
@@ -307,4 +317,31 @@ async def course_runs(
         as_of=as_of,
         total_count=int(counts["total_count"]),
         data=[CourseRun(**row) for row in rows],
+    )
+
+
+@router.get(
+    "/courses",
+    response_model=CoursesResponse,
+    name="courses",
+    operation_id="learners_courses_retrieve",
+    summary="Courses under the contract, in the learner dashboard's order, for the Learners page",
+)
+async def courses(
+    *,
+    organization_id: str,
+    contract_id: int,
+    page: Annotated[Pagination, Depends(pagination)],
+) -> CoursesResponse:
+    query = learner_queries.courses(organization_id, contract_id)
+    as_of = await latest_refresh_timestamp(
+        settings.learner_records_schema, learner_queries.CONTRACT_COURSERUN_MV
+    )
+    rows = await starrocks_pool.fetch_all(query.page, (*query.params, page.limit, page.offset))
+    counts = (await starrocks_pool.fetch_all(query.count, query.params))[0]
+    return CoursesResponse(
+        organization_id=organization_id,
+        as_of=as_of,
+        total_count=int(counts["total_count"]),
+        data=[Course(**row) for row in rows],
     )
