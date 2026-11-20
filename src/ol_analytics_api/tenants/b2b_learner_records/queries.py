@@ -681,19 +681,37 @@ def _removed_learners(schema: str, filters: RecordFilters) -> tuple[str, list[An
     return removed, [*log_params, *contract_params * len(views)]
 
 
-def change_log_start(schema: str, log: str) -> str:
-    """The earliest ``changed_on`` in *log*.
+def change_log_start(schema: str, log: str) -> tuple[str, tuple[str, str]]:
+    """When *log* was created, from StarRocks' own table metadata.
 
-    The seed stamps every row with the log's creation time and a stamp only
-    moves ``changed_on`` forward, so this is at or after the creation. A record
-    removed before the log existed has no row in it, so an ``updated_since``
-    earlier than this could miss that removal. Deliberately conservative: once
-    every seeded row has changed, it is later than the creation and refuses a
-    cursor that was safe, which costs that client a full reload, not a removal.
+    A record removed before the log existed has no row in it, so an
+    ``updated_since`` earlier than this could miss that removal. A stamp is an
+    INSERT OVERWRITE, which keeps the table's ``create_time``, and a hand drop
+    and recreate replaces it, which is the distinction ``MIN(changed_on)``
+    could not draw: after a restamp (e.g. a column added to the MV re-hashes
+    every row) it jumped to the restamp time and refused every held cursor.
+
+    ``create_time`` is rendered in the FE's system time zone whatever the
+    session's, and the FE runs in UTC (ol-infrastructure
+    applications/starrocks ``timeZone``), matching ``changed_on``'s
+    ``utc_timestamp()``.
+
+    An empty log returns no row, so it still refuses every cursor: a log can
+    exist before its first stamp (a hand CREATE, a CTAS whose insert failed),
+    and a removal in that gap has no tombstone. A log the user can't see in
+    information_schema gives a null start, which refuses too.
+
+    A TRUNCATE also keeps ``create_time`` while dropping every tombstone, so
+    the floor holds only if a log is reset by DROP and nothing else.
     """
     return (
-        "SELECT MIN(changed_on) AS started"  # noqa: S608
-        f" FROM {validate_sql_identifier(schema)}.{validate_sql_identifier(log)}"
+        (
+            "SELECT (SELECT create_time FROM information_schema.tables"  # noqa: S608
+            " WHERE table_schema = %s AND table_name = %s) AS started"
+            f" FROM {validate_sql_identifier(schema)}.{validate_sql_identifier(log)}"
+            " LIMIT 1"
+        ),
+        (schema, log),
     )
 
 
