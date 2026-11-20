@@ -1,9 +1,10 @@
 """Response schemas for the learner-progress and learners endpoints.
 
 ``LearnerProgress`` is one enrollment row, and is ``LearnerIdentity`` plus
-``LearnerEnrollment``. ``LearnerWithEnrollments`` carries the identity once and
-nests a ``LearnerEnrollment`` per course run, so both endpoints share one set
-of field definitions and one consent validator.
+``RunEnrollment``. ``LearnerWithEnrollments`` carries the identity once and
+nests a ``LearnerEnrollment``, a ``RunEnrollment`` plus its course, per
+course, so both endpoints share one set of field definitions and one consent
+validator.
 
 Kept apart from models.py, where every row model declares a ``cohort_policy``.
 These rows identify individual learners, so no floor applies and nothing here
@@ -126,7 +127,7 @@ class LearnerIdentity(BaseModel):
     full_name: str | None = Field(description="The learner's name, if they've provided one.")
 
 
-class LearnerEnrollment(BaseModel):
+class RunEnrollment(BaseModel):
     """One enrollment in one course run under the contract.
 
     Holds the ``_gate_outcomes`` validator, so every model built from it gates
@@ -248,20 +249,38 @@ class LearnerEnrollment(BaseModel):
         return self
 
 
-# LearnerEnrollment is listed first so that, with Pydantic collecting fields in
+# RunEnrollment is listed first so that, with Pydantic collecting fields in
 # reversed MRO order, the identity fields still come first and the published
 # schema keeps its field order.
-class LearnerProgress(LearnerEnrollment, LearnerIdentity):
+class LearnerProgress(RunEnrollment, LearnerIdentity):
     """One learner's enrollment in one course run under the contract."""
 
 
+# The run is picked by learner_queries._run_rank. Named LearnerEnrollment because
+# clients generated before courses were added import that schema; the per-run
+# fields alone are RunEnrollment. This docstring is published in the spec.
+class LearnerEnrollment(RunEnrollment):
+    """A learner's enrollment in one course under the contract, in the run
+    their own dashboard shows."""
+
+    course_readable_id: str = Field(
+        description="The course's ID, e.g. course-v1:MITxT+14.310x. Its runs share it."
+    )
+    course_title: str = Field(
+        description="The course's title, as the learner's dashboard shows it."
+    )
+
+
 class LearnerWithEnrollments(LearnerIdentity):
-    """One learner under the contract, with all of their active enrollments."""
+    """One learner under the contract, with one enrollment per course."""
 
     enrollments: list[LearnerEnrollment] = Field(
         description=(
-            "Every course the learner is enrolled in under the contract, including the ones "
-            "that didn't match the filters. Empty if they haven't enrolled in any yet."
+            "One per course the learner is enrolled in under the contract, including the ones "
+            "that didn't match the filters. When they have more than one run of a course, it's "
+            "the one their own dashboard shows: a run they earned a certificate in, else the run "
+            "open now, else the next to start, else the one that started most recently. Empty "
+            "if they haven't enrolled in any yet."
         )
     )
 
@@ -271,15 +290,16 @@ class LearnerWithEnrollments(LearnerIdentity):
 
         Keyed by ``learner_id`` rather than grouped by adjacency, so a change
         to the query's ordering can't emit one learner twice. The learner's
-        name and email come from their first row. A row with no course run is
-        a member with no active enrollment, so it adds the learner only.
+        name and email come from their first row. A row with no course is a
+        member with no active enrollment, or a run of a course the contract
+        doesn't list, so it adds the learner only.
         """
         learners: dict[str, Self] = {}
         for row in rows:
             learner = learners.get(row["learner_id"])
             if learner is None:
                 learner = learners[row["learner_id"]] = cls(**row, enrollments=[])
-            if row["courserun_readable_id"] is not None:
+            if row["course_readable_id"] is not None:
                 learner.enrollments.append(LearnerEnrollment(**row))
         return list(learners.values())
 
@@ -351,6 +371,34 @@ class CourseRunsResponse(BaseModel):
     )
     total_count: int = Field(description="Course runs under the contract, across all pages.")
     data: list[CourseRun] = Field(description="This page of course runs.")
+
+
+class Course(BaseModel):
+    """One course under the contract, for the Learners page's columns."""
+
+    course_readable_id: str = Field(
+        description="The course's ID, e.g. course-v1:MITxT+14.310x. Its runs share it."
+    )
+    course_title: str = Field(
+        description="The course's title, as the learner's dashboard shows it."
+    )
+
+
+class CoursesResponse(BaseModel):
+    """The org envelope (``organization_id``, ``as_of``, ``total_count``, ``data``),
+    matching ``CourseRunsResponse``'s shape."""
+
+    organization_id: str = Field(description="The organization's ID.")
+    as_of: UtcDatetime | None = Field(
+        description="When the data was last updated. Empty before the first update."
+    )
+    total_count: int = Field(description="Courses under the contract, across all pages.")
+    data: list[Course] = Field(
+        description=(
+            "This page of courses, in the order the learner's dashboard lists them: by "
+            "program, then by each course's place in its program."
+        )
+    )
 
 
 class LearnerProgressResponse(BaseModel):

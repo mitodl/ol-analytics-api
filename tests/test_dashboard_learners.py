@@ -28,6 +28,7 @@ from ol_analytics_api.tenants.b2b_dashboard.learner_models import (
     LearnerProgress,
     LearnersResponse,
     LearnerWithEnrollments,
+    RunEnrollment,
 )
 from ol_analytics_api.tenants.b2b_dashboard.routers.learners import (
     MAX_COURSERUN_FILTERS,
@@ -55,6 +56,8 @@ def _row(**overrides):
         "learner_id": "3e1a9c74-5b2d-4f88-9a01-7c6de2b4f019",
         "email": "rgarcia@contoso.example",
         "full_name": "R. Garcia",
+        "course_readable_id": "course-v1:MITxT+14.310x",
+        "course_title": "Data Analysis for Social Scientists",
         "courserun_readable_id": "course-v1:MITxT+14.310x+2T2026",
         "courserun_title": "Data Analysis for Social Scientists",
         "courserun_start_on": "2026-02-01T00:00:00",
@@ -183,7 +186,15 @@ async def test_limit_and_offset_bind_last_and_count_learners(app):
     _, page_params = pool.page_call()
     _, count_params = pool.count_call()
     assert page_params == (*count_params, settings.default_learner_page_size, 0)
-    assert count_params == (ORG_ID, CONTRACT_ID, "%garcia%", "%garcia%", "passed")
+    assert count_params == (
+        ORG_ID,
+        CONTRACT_ID,
+        ORG_ID,
+        CONTRACT_ID,
+        "%garcia%",
+        "%garcia%",
+        "passed",
+    )
 
     pool = _FakePool()
     await _get(app, pool, params={"limit": 25, "offset": 50})
@@ -195,7 +206,7 @@ async def test_modules_bind_as_an_in_list_on_page_and_count(app):
     await _get(app, pool, params={"courserun_readable_id": ["run-1", "run-2"]})
     for query, params in (pool.page_call(), pool.count_call()):
         assert "courserun_readable_id IN (%s, %s)" in query
-        assert params[2:4] == ("run-1", "run-2")
+        assert params[4:6] == ("run-1", "run-2")
 
 
 @pytest.mark.parametrize(
@@ -244,12 +255,12 @@ async def test_not_enrolled_is_a_status_of_learners_only(app):
     assert (await _get(app, pool, params=params)).status_code == 200
     # The modules it checks are the contract's, read in the same statement.
     for query, query_params in (pool.page_call(), pool.count_call()):
-        assert f".{learner_queries.CONTRACT_COURSERUN_MV} " in query
-        assert query_params[:4] == (ORG_ID, CONTRACT_ID, ORG_ID, CONTRACT_ID)
+        assert " modules AS (" in query
+        assert query_params[:6] == (ORG_ID, CONTRACT_ID) * 3
     # Without it, the statements don't read them.
     pool = _FakePool()
     await _get(app, pool, params={"completion_status": ["passed"]})
-    assert learner_queries.CONTRACT_COURSERUN_MV not in pool.page_call()[0]
+    assert " modules AS (" not in pool.page_call()[0]
     # /learner-progress has a row per enrollment, so nothing for it to select.
     progress = PATH.removesuffix("/learners") + "/learner-progress"
     assert (await _get(app, _FakePool(), params=params, path=progress)).status_code == 422
@@ -263,6 +274,8 @@ async def test_not_enrolled_is_a_status_of_learners_only(app):
         {"search": ""},
         {"courserun_readable_id": [""]},
         {"courserun_readable_id": [f"run-{i}" for i in range(MAX_COURSERUN_FILTERS + 1)]},
+        {"course_readable_id": [""]},
+        {"course_readable_id": [f"course-{i}" for i in range(MAX_COURSERUN_FILTERS + 1)]},
     ],
 )
 async def test_invalid_filters_are_rejected(app, params):
@@ -288,7 +301,7 @@ async def test_contract_outside_the_org_is_refused(app):
 
 def test_learner_progress_is_exactly_identity_plus_enrollment():
     assert set(LearnerProgress.model_fields) == (
-        set(LearnerIdentity.model_fields) | set(LearnerEnrollment.model_fields)
+        set(LearnerIdentity.model_fields) | set(RunEnrollment.model_fields)
     )
     # Identity first, so the published schema keeps its field order.
     assert list(LearnerProgress.model_fields)[:3] == ["learner_id", "email", "full_name"]
@@ -339,6 +352,8 @@ _MEMBER_MV_COLUMNS = (
     "full_name",
     "sso_organization_id",
     "contract_id",
+    "course_readable_id",
+    "course_title",
     "courserun_readable_id",
     "courserun_title",
     "courserun_start_on",
@@ -385,8 +400,14 @@ _STALE = {
 }
 _NOT_STARTED = {"completion_status": "not_started", "needs_attention_since": "2026-02-03"}
 
-# The contract's modules, as the Learners page shows them.
+# The contract's runs, as the Learners page shows them, each the one run of its
+# course (run-1 of course-1, ...), so a run and its course select the same entries.
 _MODULES = ("run-1", "run-2", "run-3")
+
+
+def _course(run):
+    return run.replace("run-", "course-")
+
 
 # learner_id: (full_name, email, consent decision, [(run, outcome)]).
 _LEARNERS = {
@@ -421,12 +442,20 @@ def mv(monkeypatch):
     # module must not count.
     modules = f"{schema}.{learner_queries.CONTRACT_COURSERUN_MV}"
     conn.execute(
-        f"CREATE TABLE {modules} (sso_organization_id, contract_id, courserun_readable_id)"
+        f"CREATE TABLE {modules} (sso_organization_id, contract_id, courserun_readable_id,"
+        " course_readable_id, course_order_in_program)"
     )
-    conn.executemany(
-        f"INSERT INTO {modules} VALUES (?, ?, ?)",  # noqa: S608
-        [*((ORG_ID, CONTRACT_ID, run) for run in _MODULES), (ORG_ID, CONTRACT_ID + 1, "run-8")],
-    )
+
+    def listed(run, course, order=1, contract_id=CONTRACT_ID):
+        """A contract run; order None puts its course in none of the contract's programs."""
+        conn.execute(
+            f"INSERT INTO {modules} VALUES (?, ?, ?, ?, ?)",  # noqa: S608
+            (ORG_ID, contract_id, run, course, order),
+        )
+
+    for order, run in enumerate(_MODULES, start=1):
+        listed(run, _course(run), order)
+    listed("run-8", "course-8", contract_id=CONTRACT_ID + 1)
 
     def member(learner, **enrollment):
         """With no enrollment, the view's row for a member with none."""
@@ -447,21 +476,23 @@ def mv(monkeypatch):
         )
 
     def insert(learner, run, outcome):
-        member(
-            learner,
-            courserun_pk=run,
-            courserun_readable_id=run,
-            courserun_title=run,
-            enrollment_created_on="2026-02-03T00:00:00",
-            enrollment_is_active=True,
-            **outcome,
-        )
+        """``outcome`` can also set the run's course and dates."""
+        enrollment = {
+            "courserun_pk": run,
+            "courserun_readable_id": run,
+            "courserun_title": run,
+            "course_readable_id": _course(run),
+            "course_title": _course(run),
+            "enrollment_created_on": "2026-02-03T00:00:00",
+            "enrollment_is_active": True,
+        }
+        member(learner, **(enrollment | outcome))
 
     # The view holds active enrollments only, so there are no inactive ones here.
     for learner_id, (full_name, email, decision, enrollments) in _LEARNERS.items():
         for run, outcome in enrollments:
             insert((learner_id, full_name, email, decision), run, outcome)
-    yield SimpleNamespace(conn=conn, insert=insert, member=member)
+    yield SimpleNamespace(conn=conn, insert=insert, member=member, listed=listed)
     conn.close()
 
 
@@ -707,4 +738,150 @@ def test_the_projection_is_exactly_the_row_model(mv):
         learner_queries.LearnerFilters(organization_id=ORG_ID, contract_id=CONTRACT_ID), _TODAY
     )
     cursor = mv.conn.execute(query.page.replace("%s", "?"), (*query.params, 100, 0))
-    assert {column[0] for column in cursor.description} == set(LearnerProgress.model_fields)
+    assert {column[0] for column in cursor.description} == (
+        set(LearnerIdentity.model_fields) | set(LearnerEnrollment.model_fields)
+    )
+
+
+# --- One entry per course (mitodl/hq#14464) ------------------------------------
+#
+# course-x has every kind of run. _TODAY is 2026-09-15.
+_X_RUNS = {
+    "x-ended-early": ("2025-01-01T00:00:00", "2025-06-01T00:00:00"),
+    "x-ended-late": ("2026-01-01T00:00:00", "2026-06-01T00:00:00"),
+    "x-open": ("2026-08-01T00:00:00", "2026-12-01T00:00:00"),
+    "x-open-late": ("2026-09-01T00:00:00", None),
+    "x-ends-today": ("2026-07-01T00:00:00", "2026-09-15T18:00:00"),
+    "x-starts-today": ("2026-09-15T12:00:00", None),
+    "x-no-dates": (None, None),
+    "x-soon": ("2026-10-01T00:00:00", None),
+    "x-later": ("2027-01-01T00:00:00", None),
+}
+_CERTIFIED = {
+    "completion_status": "certified",
+    "is_passing": True,
+    "grade_value": 0.95,
+    "certificate_issued_on": "2025-06-02T00:00:00",
+}
+_ZED = ("zed", "Zed", "zed@x", True)
+
+
+@pytest.fixture
+def course_x(mv):
+    for run in _X_RUNS:
+        mv.listed(run, "course-x", order=4)
+
+    def enroll(runs, learner=_ZED):
+        for run, outcome in runs:
+            start, end = _X_RUNS[run]
+            mv.insert(
+                learner,
+                run,
+                {
+                    "course_readable_id": "course-x",
+                    "courserun_start_on": start,
+                    "courserun_end_on": end,
+                    **outcome,
+                },
+            )
+
+    return enroll
+
+
+@pytest.mark.parametrize(
+    ("runs", "kept"),
+    [
+        # A certificate from any run wins, even an ended one.
+        ([("x-ended-early", _CERTIFIED), ("x-open", _RECENT)], "x-ended-early"),
+        ([("x-ended-early", _CERTIFIED), ("x-ended-late", _CERTIFIED)], "x-ended-late"),
+        ([("x-ended-early", _CERTIFIED), ("x-soon", _CERTIFIED)], "x-soon"),
+        # Then the run open now, the latest start first and no start last.
+        ([("x-ended-late", _PASSED), ("x-open", _RECENT), ("x-soon", _NOT_STARTED)], "x-open"),
+        ([("x-open", _RECENT), ("x-open-late", _RECENT)], "x-open-late"),
+        ([("x-open", _RECENT), ("x-no-dates", _RECENT)], "x-open"),
+        # Day-grained: a run starting or ending today is open.
+        ([("x-starts-today", _NOT_STARTED), ("x-soon", _NOT_STARTED)], "x-starts-today"),
+        ([("x-ends-today", _RECENT), ("x-soon", _NOT_STARTED)], "x-ends-today"),
+        # Then the next to start, then the ended run that started last.
+        (
+            [("x-later", _NOT_STARTED), ("x-soon", _NOT_STARTED), ("x-ended-late", _PASSED)],
+            "x-soon",
+        ),
+        ([("x-ended-early", _PASSED), ("x-ended-late", _STALE)], "x-ended-late"),
+    ],
+)
+def test_a_course_shows_the_run_the_overview_picks(mv, course_x, runs, kept):
+    course_x(runs)
+    [zed] = _run(mv, search="zed")[0]
+    assert [(e.course_readable_id, e.courserun_readable_id) for e in zed.enrollments] == [
+        ("course-x", kept)
+    ]
+
+
+def test_a_withheld_certificate_doesnt_pick_the_run(mv, course_x):
+    course_x([("x-ended-early", _CERTIFIED), ("x-open", _RECENT)], ("zed", "Zed", "zed@x", False))
+    [zed] = _run(mv, search="zed")[0]
+    assert [e.courserun_readable_id for e in zed.enrollments] == ["x-open"]
+    assert zed.enrollments[0].completion_status is None
+
+
+def test_filters_read_the_kept_run(mv, course_x):
+    # zed's kept run is the certified one; the quiet not-started run is hidden.
+    course_x([("x-ended-early", _CERTIFIED), ("x-open", _NOT_STARTED)])
+    matches = {
+        "certified": _run(mv, completion_statuses=("certified",))[0],
+        "not_started": _run(mv, completion_statuses=("not_started",), search="zed")[0],
+        "needs_attention": _run(mv, needs_attention=True, search="zed")[0],
+        "kept run": _run(mv, courserun_readable_ids=("x-ended-early",))[0],
+        "other run": _run(mv, courserun_readable_ids=("x-open",))[0],
+        "course": _run(mv, course_readable_ids=("course-x",))[0],
+    }
+    assert {name: list(_shape(learners)) for name, learners in matches.items()} == {
+        "certified": ["zed"],
+        "not_started": [],
+        "needs_attention": [],
+        "kept run": ["zed"],
+        "other run": [],
+        "course": ["zed"],
+    }
+
+
+def test_a_course_filter_matches_its_runs_filter(mv):
+    for run in _MODULES:
+        assert _run(mv, course_readable_ids=(_course(run),)) == _run(
+            mv, courserun_readable_ids=(run,)
+        )
+    assert _run(mv, course_readable_ids=("course-404",)) == ([], 0)
+
+
+@pytest.mark.parametrize("course", ["course-u", None])
+def test_a_course_off_the_list_has_no_entry_but_keeps_the_learner(mv, course):
+    # course-u has a contract run but is in none of its programs; None is a
+    # run whose course isn't in dim_course.
+    mv.listed("u-1", course, order=None)
+    unlisted = {"course_readable_id": course, **_PASSED}
+    mv.insert(("uma", "Uma", "uma@x", True), "u-1", unlisted)
+    mv.insert(("ann", "Ann Lee", "ann@x", True), "u-1", unlisted)
+    learners, total = _run(mv)
+    assert _shape(learners)["uma"] == []
+    assert _shape(learners)["ann"] == ["run-1", "run-2", "run-3"]
+    assert total == len(_ALL_ORDER) + 1
+    passed, _ = _run(mv, completion_statuses=("passed",))
+    assert "uma" not in _shape(passed)
+    assert _counts(mv, search="uma") == (1, 0)
+
+
+def test_not_enrolled_is_per_course(mv, course_x):
+    course_x([("x-open", _RECENT)])
+    # zed has course-x through x-open, so isn't missing it, whichever of its
+    # runs or the course selects it.
+    for filters in (
+        {"course_readable_ids": ("course-x",)},
+        {"courserun_readable_ids": ("x-soon",)},
+    ):
+        learners, _ = _run(mv, completion_statuses=_NOT_ENROLLED, **filters)
+        assert "zed" not in _shape(learners)
+        assert "ann" in _shape(learners)
+    # With no course selected, zed misses course-1 to course-3.
+    learners, _ = _run(mv, completion_statuses=_NOT_ENROLLED, search="zed")
+    assert list(_shape(learners)) == ["zed"]

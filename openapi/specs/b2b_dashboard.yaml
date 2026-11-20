@@ -667,19 +667,24 @@ paths:
     get:
       tags:
       - learners
-      summary: Each learner under the contract with all of their enrollments, paged
+      summary: Each learner under the contract with one enrollment per course, paged
         by learner
-      description: 'With no filter, every current member of the contract is listed,
-        including those with no active enrollment, whose `enrollments` is empty. A
-        member who enrolled but hasn''t agreed to share their progress isn''t listed,
-        so `unknown` matches nobody here. Otherwise a learner is listed when at least
-        one of their active enrollments matches every filter at once, or, for `not_enrolled`,
-        when they have no active enrollment in at least one of the selected modules.
-        Their other active enrollments are returned too, whether or not they match.
-        `limit` and `offset` count learners, not enrollments. `completion_status`,
-        `courserun_readable_id` and `needs_attention` narrow together: several values
-        of one filter OR, and different filters AND on a single enrollment. `needs_attention`
-        never matches `not_enrolled`, which has no enrollment to judge.'
+      description: '`enrollments` has one entry per course in `/courses`: when a learner
+        has active enrollments in more than one run of a course, the run their own
+        dashboard shows, and every field and filter reads that run. A run of a course
+        `/courses` doesn''t list has no entry. With no filter, every current member
+        of the contract is listed, including those with no active enrollment, whose
+        `enrollments` is empty. A member who enrolled but hasn''t agreed to share
+        their progress isn''t listed, so `unknown` matches nobody here. Otherwise
+        a learner is listed when at least one of their entries matches every filter
+        at once, or, for `not_enrolled`, when they have no entry for at least one
+        of the selected courses. Their other entries are returned too, whether or
+        not they match. `limit` and `offset` count learners, not enrollments. `completion_status`,
+        `course_readable_id`, `courserun_readable_id` and `needs_attention` narrow
+        together: several values of one filter OR, and different filters AND on a
+        single entry. `courserun_readable_id` matches the run an entry shows, and
+        selects that run''s course for `not_enrolled`. `needs_attention` never matches
+        `not_enrolled`, which has no enrollment to judge.'
       operationId: learners_list
       parameters:
       - name: organization_id
@@ -722,6 +727,20 @@ paths:
           with withheld outcomes aren't listed. `not_enrolled` selects learners missing
           an enrollment in at least one selected module, or in at least one of the
           contract's modules when none is selected.
+      - name: course_readable_id
+        in: query
+        required: false
+        schema:
+          type: array
+          items:
+            type: string
+            minLength: 1
+          maxItems: 50
+          description: Repeat for several modules; they OR together and AND with the
+            other filters. At most 50.
+          title: Course Readable Id
+        description: Repeat for several modules; they OR together and AND with the
+          other filters. At most 50.
       - name: courserun_readable_id
         in: query
         required: false
@@ -828,6 +847,63 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CourseRunsResponse'
+        '404':
+          description: The organization or contract has not been loaded into the warehouse
+            yet
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataNotLoadedResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/analytics/organizations/{organization_id}/contracts/{contract_id}/courses:
+    get:
+      tags:
+      - learners
+      summary: Courses under the contract, in the learner dashboard's order, for the
+        Learners page
+      operationId: learners_courses_retrieve
+      parameters:
+      - name: organization_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Organization Id
+      - name: contract_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Contract Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 100
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CoursesResponse'
         '404':
           description: The organization or contract has not been loaded into the warehouse
             yet
@@ -1977,6 +2053,23 @@ components:
         always equal to it and floored the same way, kept until clients read the
 
         new name. ``active_learners`` is the same for ``actively_enrolled_learners``.'
+    Course:
+      properties:
+        course_readable_id:
+          type: string
+          title: Course Readable Id
+          description: The course's ID, e.g. course-v1:MITxT+14.310x. Its runs share
+            it.
+        course_title:
+          type: string
+          title: Course Title
+          description: The course's title, as the learner's dashboard shows it.
+      type: object
+      required:
+      - course_readable_id
+      - course_title
+      title: Course
+      description: One course under the contract, for the Learners page's columns.
     CourseRun:
       properties:
         courserun_id:
@@ -2044,6 +2137,41 @@ components:
         ``data``),
 
         matching ``LearnerProgressResponse``''s shape.'
+    CoursesResponse:
+      properties:
+        organization_id:
+          type: string
+          title: Organization Id
+          description: The organization's ID.
+        as_of:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: As Of
+          description: When the data was last updated. Empty before the first update.
+        total_count:
+          type: integer
+          title: Total Count
+          description: Courses under the contract, across all pages.
+        data:
+          items:
+            $ref: '#/components/schemas/Course'
+          type: array
+          title: Data
+          description: 'This page of courses, in the order the learner''s dashboard
+            lists them: by program, then by each course''s place in its program.'
+      type: object
+      required:
+      - organization_id
+      - as_of
+      - total_count
+      - data
+      title: CoursesResponse
+      description: 'The org envelope (``organization_id``, ``as_of``, ``total_count``,
+        ``data``),
+
+        matching ``CourseRunsResponse``''s shape.'
     DataNotLoaded:
       properties:
         code:
@@ -2407,6 +2535,15 @@ components:
             activity was at least 30 days ago. False while they are passing or hold
             an unrevoked certificate, since going quiet after finishing is expected.
             Hidden if the learner hasn''t agreed to share their progress.'
+        course_readable_id:
+          type: string
+          title: Course Readable Id
+          description: The course's ID, e.g. course-v1:MITxT+14.310x. Its runs share
+            it.
+        course_title:
+          type: string
+          title: Course Title
+          description: The course's title, as the learner's dashboard shows it.
       type: object
       required:
       - courserun_readable_id
@@ -2431,13 +2568,13 @@ components:
       - problems_attempted
       - chatbot_interactions
       - needs_attention
+      - course_readable_id
+      - course_title
       title: LearnerEnrollment
-      description: 'One enrollment in one course run under the contract.
+      description: 'A learner''s enrollment in one course under the contract, in the
+        run
 
-
-        Holds the ``_gate_outcomes`` validator, so every model built from it gates
-
-        outcomes the same way.'
+        their own dashboard shows.'
     LearnerProgress:
       properties:
         learner_id:
@@ -2732,9 +2869,12 @@ components:
             $ref: '#/components/schemas/LearnerEnrollment'
           type: array
           title: Enrollments
-          description: Every course the learner is enrolled in under the contract,
-            including the ones that didn't match the filters. Empty if they haven't
-            enrolled in any yet.
+          description: 'One per course the learner is enrolled in under the contract,
+            including the ones that didn''t match the filters. When they have more
+            than one run of a course, it''s the one their own dashboard shows: a run
+            they earned a certificate in, else the run open now, else the next to
+            start, else the one that started most recently. Empty if they haven''t
+            enrolled in any yet.'
       type: object
       required:
       - learner_id
@@ -2742,7 +2882,7 @@ components:
       - full_name
       - enrollments
       title: LearnerWithEnrollments
-      description: One learner under the contract, with all of their active enrollments.
+      description: One learner under the contract, with one enrollment per course.
     LearnersResponse:
       properties:
         organization_id:

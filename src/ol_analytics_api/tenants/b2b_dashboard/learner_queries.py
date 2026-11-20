@@ -1,6 +1,6 @@
 """SQL for the contract-scoped learner endpoints: ``learner_progress`` (one row
-per enrollment), ``learners`` (paged by learner), the needs-attention
-aggregate and the course-runs list.
+per enrollment), ``learners`` (paged by learner, one entry per course), the
+needs-attention aggregate and the course-runs and courses lists.
 
 These rows identify individual learners, so they do not go through
 core/db/query.py's anonymization chokepoint: a k-anonymity floor would
@@ -26,7 +26,8 @@ parameter. The only per-request variation is which of a fixed set of
 predicates and orderings is included, and code chooses that, not input. That
 is the justification for each ``# noqa: S608`` below.
 
-The one spliced value is today's UTC date, and it is not caller-supplied: the
+The one spliced value is today's UTC date (and, in ``_run_rank``, the day after
+it), and it is not caller-supplied: the
 router reads it from StarRocks with ``UTC_TODAY_QUERY``, and ``_date_literal``
 narrows it to a ``datetime.date`` before rendering, so the text it produces can
 only ever be ``'YYYY-MM-DD'``. It is spliced rather than bound because it
@@ -69,6 +70,11 @@ ENROLLMENT_MV = "mv_b2b_learner_enrollment"
 MEMBER_MV = "mv_b2b_contract_member_enrollment"
 CONTRACT_COURSERUN_MV = "mv_b2b_contract_courserun"
 
+# A CONTRACT_COURSERUN_MV run whose course the learner Overview lists: one in the
+# contract's programs (mitodl/hq#14464). A run whose course isn't in dim_course
+# has no course to group by, so it isn't one either.
+_LISTED_COURSE = "course_order_in_program IS NOT NULL AND course_readable_id IS NOT NULL"
+
 # The /learners status for a member with no enrollment in the selected modules.
 NOT_ENROLLED = "not_enrolled"
 
@@ -98,6 +104,11 @@ def _date_literal(value: object) -> str:
     verbatim instead of rewriting it. StarRocks casts an ISO-8601 literal to
     DATE to compare it against a DATE column.
     """
+    return f"'{_as_date(value).isoformat()}'"
+
+
+def _as_date(value: object) -> dt.date:
+    """``value`` narrowed to a ``datetime.date``; see ``_date_literal``."""
     if isinstance(value, dt.datetime):
         value = value.date()
     elif isinstance(value, str):
@@ -105,7 +116,7 @@ def _date_literal(value: object) -> str:
     if type(value) is not dt.date:
         message = f"today must be a date, got {type(value).__name__}"
         raise TypeError(message)
-    return f"'{value.isoformat()}'"
+    return value
 
 
 def _needs_attention(today: dt.date) -> str:
@@ -199,6 +210,7 @@ class LearnerFilters:
     search: str | None = None
     completion_statuses: tuple[str, ...] = ()
     courserun_readable_ids: tuple[str, ...] = ()
+    course_readable_ids: tuple[str, ...] = ()
     needs_attention: bool | None = None
 
 
@@ -254,9 +266,11 @@ def _records(
     scope = ["sso_organization_id = %s", "contract_id = %s", "user_global_id IS NOT NULL"]
     if not include_inactive:
         scope.append("enrollment_is_active = TRUE")
+    # mv_b2b_learner_enrollment has no course: its change log hashes every column.
+    course = " course_readable_id, course_title," if view == MEMBER_MV else ""
     select = (
         "SELECT user_pk, courserun_pk, user_global_id AS learner_id, email, full_name,"  # noqa: S608
-        " courserun_readable_id, courserun_title, courserun_start_on, courserun_end_on,"
+        f"{course} courserun_readable_id, courserun_title, courserun_start_on, courserun_end_on,"
         " enrollment_created_on AS enrolled_on, enrollment_is_active, enrollment_mode,"
         " completion_status, is_passing, grade_value AS grade,"
         " letter_grade, content_progress, certificate_issued_on, certificate_is_revoked,"
@@ -276,13 +290,14 @@ def _where(predicates: list[str]) -> str:
     return f" WHERE {' AND '.join(predicates)}" if predicates else ""
 
 
-def _predicates(
+def _predicates(  # noqa: PLR0913 -- keyword-only filters
     records: _Records,
     *,
     search: str | None,
     completion_statuses: tuple[str, ...],
     needs_attention: bool | None,
     courserun_readable_ids: tuple[str, ...] = (),
+    course_readable_ids: tuple[str, ...] = (),
 ) -> tuple[list[str], list[Any]]:
     """The filter over ``records``, one predicate per filter, and its params.
 
@@ -304,6 +319,9 @@ def _predicates(
             else f"courserun_readable_id IN ({marks})"
         )
         params.extend(courserun_readable_ids)
+    if course_readable_ids:
+        predicates.append(f"course_readable_id IN ({', '.join(['%s'] * len(course_readable_ids))})")
+        params.extend(course_readable_ids)
     if completion_statuses:
         # Status values match only rows whose outcomes are shared; `unknown`
         # selects the withheld ones. Otherwise a status filter would reveal the
@@ -329,11 +347,11 @@ def _predicates(
     return predicates, params
 
 
-def _projection(records: _Records) -> str:
+def _projection(records: _Records, columns: tuple[str, ...] = _COLUMNS) -> str:
     shared = records.shared
     return ", ".join(
         [
-            *_COLUMNS,
+            *columns,
             f"{CONSENT_STATUS_SQL} AS outcomes_consent_status",
             f"{shared} AS outcomes_shared",
             *(f"CASE WHEN {shared} THEN {name} END AS {name}" for name in _OUTCOMES),
@@ -400,38 +418,86 @@ _LEARNER_ORDER = (
 )
 
 
-# A member row has no course run; every other row of MEMBER_MV is an enrollment.
-_ENROLLED = "courserun_pk IS NOT NULL"
+# A learner's kept run of a listed course: an entry on the Learners page. A
+# member row has no course, and a run of a course the Overview doesn't list
+# has none in `listed`, so neither is an entry, and the learner is still listed.
+_ENROLLED = "listed_course IS NOT NULL"
 
 
 def _any_enrollment(predicates: list[str]) -> str:
-    """1 when one of the learner's enrollments passes every predicate, else 0."""
+    """1 when one of the learner's entries passes every predicate, else 0."""
     return f"MAX(CASE WHEN {' AND '.join([_ENROLLED, *predicates])} THEN 1 ELSE 0 END)"
+
+
+def _run_rank(records: _Records, today: dt.date) -> str:
+    """The ORDER BY that ranks a learner's runs of one course, best first, so
+    ``learners`` keeps the run the learner Overview shows (mitodl/hq#14464).
+
+    A certified run, then an open one, then one yet to start, then an ended
+    one. A run is open unless it starts after today or ended before today, so
+    a run with no dates is open. Within each, the latest start comes first,
+    except that the soonest upcoming run does, and an open run with no start
+    goes last. ``courserun_pk`` breaks ties, so the pick is deterministic.
+
+    Ranked per request, not in the view, because the view refreshes nightly
+    and would keep the choice from its last refresh. Day-grained, like
+    ``needs_attention``: a run starting today is open, and so is one ending
+    today. Certified is consent-gated like any other read of an outcome. A
+    learner's rows share one decision, so a withheld learner is ranked by
+    dates alone.
+    """
+    tomorrow = _date_literal(_as_date(today) + dt.timedelta(days=1))
+    upcoming = f"courserun_start_on >= {tomorrow}"
+    tier = (
+        f"CASE WHEN {records.shared} AND completion_status = 'certified' THEN 0"
+        f" WHEN {upcoming} THEN 2 WHEN courserun_end_on < {_date_literal(today)} THEN 3"
+        " ELSE 1 END"
+    )
+    return (
+        # Soonest first only among runs yet to start; a tie (NULL) in every other tier,
+        # so a certified run that starts later still ranks by latest start.
+        f"{tier}, CASE WHEN {tier} = 2 THEN courserun_start_on END,"
+        " courserun_start_on IS NULL, courserun_start_on DESC, courserun_pk"
+    )
+
+
+def _listed_courses(filters: LearnerFilters, *, narrowed: bool) -> tuple[str, tuple[Any, ...]]:
+    """The contract's courses the Overview lists, as a select of
+    ``listed_course``, and its params. ``narrowed`` keeps only those the module
+    filters select, by run or by course; a selected id that isn't on the
+    contract selects none."""
+    table = f"{validate_sql_identifier(settings.learner_records_schema)}.{CONTRACT_COURSERUN_MV}"
+    scope = ["sso_organization_id = %s", "contract_id = %s", _LISTED_COURSE]
+    params: list[Any] = [filters.organization_id, filters.contract_id]
+    if narrowed:
+        for column, ids in (
+            ("courserun_readable_id", filters.courserun_readable_ids),
+            ("course_readable_id", filters.course_readable_ids),
+        ):
+            if ids:
+                scope.append(f"{column} IN ({', '.join(['%s'] * len(ids))})")
+                params.extend(ids)
+    select = (
+        "SELECT DISTINCT course_readable_id AS listed_course"  # noqa: S608
+        f" FROM {table} WHERE {' AND '.join(scope)}"
+    )
+    return select, tuple(params)
 
 
 def _modules(filters: LearnerFilters) -> tuple[str, tuple[Any, ...]]:
     """The modules ``not_enrolled`` checks, as two CTEs to append after
     ``records``, and their params.
 
-    ``modules`` is the selected modules that are on the contract, or every
-    module on it when none is selected, read from the view behind
-    ``course_runs``, which is where the Learners page takes its module columns
-    from. ``modules_total`` counts them. A selected id that isn't on the
-    contract has no column, so it isn't one a learner can be missing.
+    ``modules`` is the selected courses, or every course the Learners page
+    has a column for when none is selected. ``modules_total`` counts them.
     """
-    table = f"{validate_sql_identifier(settings.learner_records_schema)}.{CONTRACT_COURSERUN_MV}"
-    scope = ["sso_organization_id = %s", "contract_id = %s"]
-    params: list[Any] = [filters.organization_id, filters.contract_id]
-    if filters.courserun_readable_ids:
-        marks = ", ".join(["%s"] * len(filters.courserun_readable_ids))
-        scope.append(f"courserun_readable_id IN ({marks})")
-        params.extend(filters.courserun_readable_ids)
+    select, params = _listed_courses(filters, narrowed=True)
+    # Renamed so `listed_course` stays unambiguous in `matched`, which joins this.
     ctes = (
-        ", modules AS (SELECT DISTINCT courserun_readable_id AS module_id"  # noqa: S608
-        f" FROM {table} WHERE {' AND '.join(scope)}),"
+        f", modules AS (SELECT listed_course AS module_id FROM ({select}) selected),"  # noqa: S608
         " modules_total AS (SELECT COUNT(*) AS module_count FROM modules)"
     )
-    return ctes, tuple(params)
+    return ctes, params
 
 
 def _learner_match(
@@ -440,17 +506,22 @@ def _learner_match(
     """Which learners ``filters`` select, as a `` HAVING ...`` over each
     learner's rows (or empty), and its params.
 
-    A learner matches when one of their enrollments passes every filter at
+    A learner matches when one of their entries passes every filter at
     once, as in ``_predicates``. So with several modules selected, a status matches
     a learner who has it in any one of them. ``not_enrolled`` follows the same
-    rule: it matches a learner with no enrollment in at least one of
+    rule: it matches a learner with no entry for at least one of
     ``_modules``, which ``learners`` joins in when ``not_enrolled`` is true.
     That can't be a row predicate, since there is no row for the enrollment
     that's missing. It has no needs-attention value either, so
     ``needs_attention`` leaves it out, as it leaves out withheld rows.
     """
     statuses = filters.completion_statuses
-    if not (statuses or filters.courserun_readable_ids or filters.needs_attention is not None):
+    if not (
+        statuses
+        or filters.courserun_readable_ids
+        or filters.course_readable_ids
+        or filters.needs_attention is not None
+    ):
         return "", ()
     alternatives: list[str] = []
     params: list[Any] = []
@@ -462,50 +533,58 @@ def _learner_match(
             completion_statuses=row_statuses,
             needs_attention=filters.needs_attention,
             courserun_readable_ids=filters.courserun_readable_ids,
+            course_readable_ids=filters.course_readable_ids,
         )
         alternatives.append(f"{_any_enrollment(predicates)} = 1")
         params.extend(row_params)
     if not_enrolled:
-        # Enrolled in fewer of the modules than there are. A member row joins
-        # no module, so it adds nothing to the count.
+        # Has fewer of the modules than there are. A row that isn't an entry
+        # joins no module, so it adds nothing to the count.
         alternatives.append("COUNT(DISTINCT module_id) < MIN(module_count)")
     return f" HAVING {' OR '.join(alternatives) or 'FALSE'}", tuple(params)
 
 
 def learners(filters: LearnerFilters, today: dt.date) -> ProgressQuery:
-    """Contract members matching the filters, paged by learner, each with ALL
-    of their active enrollments. With no filter, every member is listed,
-    including those with no active enrollment.
+    """Contract members matching the filters, paged by learner, each with one
+    entry per course: the run of it the learner Overview shows. With no
+    filter, every member is listed, including those with no active enrollment.
 
-    ``MEMBER_MV`` gives a member with no active enrollment one row with a null
-    course run, which the projection carries through so the member is still
-    listed, and which ``LearnerWithEnrollments.from_rows`` turns into an empty
-    ``enrollments``. Search tests that row like any other; ``_learner_match``
-    keeps it from matching an enrollment filter.
+    ``runs`` is ``MEMBER_MV``'s rows. ``records`` keeps one row per learner per
+    course in ``listed``, the best by ``_run_rank``, so every filter, count
+    and field below reads the kept run, and the status, progress, last
+    activity and needs-attention mark all come from it. Each learner's rows
+    of no listed course share one partition, and one of them is kept: a
+    member's row with no enrollment, or a run of a course the Overview
+    doesn't list. Neither is an entry (``_ENROLLED``), so the learner is still
+    listed, as before, with no entry for it. The projection's
+    ``course_readable_id`` is ``listed_course``, so
+    ``LearnerWithEnrollments.from_rows`` can tell the two apart. Search tests
+    those rows like any other; ``_learner_match`` keeps them from matching an
+    enrollment filter.
 
     Both statements group ``records`` by learner in the same ``matched``
     subquery: search is a WHERE on rows, since every row of a learner shares
     their name and email, and the other filters are ``_learner_match``'s
     HAVING. In the page, ``paged`` orders and limits ``matched`` to pick the
     page of learners, and the final select joins that page back to the
-    unfiltered ``records``, so a matched learner's other enrollments come back
+    unfiltered ``records``, so a matched learner's other entries come back
     too. The count counts ``matched``, so ``total_count`` counts exactly the
     learners the pages walk through. For ``not_enrolled``, ``matched`` also
     left-joins each row to ``_modules`` and cross-joins their one-row total.
-    ``modules`` holds each module once, so neither join repeats a row.
+    ``modules`` holds each course once, so neither join repeats a row.
 
-    Revealing those other enrollments discloses nothing the filter didn't:
+    Revealing those other entries discloses nothing the filter didn't:
     consent is recorded per learner per contract, so all of a learner's rows
     share it, and the projection gates their outcomes exactly as on the
-    row-level endpoint. A member row has no outcomes, so it never counts as
-    withheld, whatever consent it carries.
+    row-level endpoint. A row that isn't an entry never counts as withheld,
+    whatever consent it carries.
 
-    ``records`` is one CTE, so its params bind once and the page still takes
-    ``params`` plus LIMIT and OFFSET. ``paged`` is the only place with a LIMIT
-    and is read once: a LIMITed CTE read twice could be evaluated twice and
-    pick different learners. Its columns are renamed ``page_*`` so the
-    projection's unqualified ``learner_id``, ``email`` and ``full_name`` stay
-    unambiguous after the join. The ``matched`` subquery groups before
+    ``runs`` and ``listed`` are CTEs, so their params bind once and the page
+    still takes ``params`` plus LIMIT and OFFSET. ``paged`` is the only place
+    with a LIMIT and is read once: a LIMITed CTE read twice could be evaluated
+    twice and pick different learners. Its columns are renamed ``page_*`` so
+    the projection's unqualified ``learner_id``, ``email`` and ``full_name``
+    stay unambiguous after the join. The ``matched`` subquery groups before
     ``paged`` orders, so the ORDER BY reads plain columns rather than
     aggregate aliases.
     """
@@ -518,6 +597,25 @@ def learners(filters: LearnerFilters, today: dt.date) -> ProgressQuery:
         today=today,
         view=MEMBER_MV,
     )
+    listed, listed_params = _listed_courses(filters, narrowed=False)
+    # Every `runs` column read below, named rather than `*`, so the dbt
+    # exposure check can follow each one to the view.
+    carried = (
+        "user_pk",
+        "courserun_pk",
+        "course_readable_id",
+        "course_title",
+        *_COLUMNS,
+        *_OUTCOMES,
+        "needs_attention_since",
+        "outcomes_decision",
+    )
+    ranked = (
+        f"SELECT {', '.join(f'runs.{column}' for column in carried)}, listed.listed_course,"  # noqa: S608
+        " ROW_NUMBER() OVER ("
+        f"PARTITION BY runs.learner_id, listed.listed_course ORDER BY {_run_rank(records, today)}"
+        ") AS run_rank FROM runs LEFT JOIN listed ON runs.course_readable_id = listed.listed_course"
+    )
     predicates, where_params = _predicates(
         records, search=filters.search, completion_statuses=(), needs_attention=None
     )
@@ -528,7 +626,7 @@ def learners(filters: LearnerFilters, today: dt.date) -> ProgressQuery:
     if not_enrolled:
         modules, modules_params = _modules(filters)
         joins = (
-            " LEFT JOIN modules ON records.courserun_readable_id = modules.module_id"
+            " LEFT JOIN modules ON records.listed_course = modules.module_id"
             " CROSS JOIN modules_total"
         )
     having, having_params = _learner_match(records, filters, not_enrolled=not_enrolled)
@@ -537,22 +635,26 @@ def learners(filters: LearnerFilters, today: dt.date) -> ProgressQuery:
         f" MIN(email) AS page_email, {_any_enrollment([f'NOT {records.shared}'])} AS withheld"
         f" FROM records{joins}{where} GROUP BY learner_id{having}"
     )
+    ctes = (
+        f"WITH runs AS ({records.select}), listed AS ({listed}), ranked AS ({ranked}),"  # noqa: S608
+        f" records AS (SELECT {', '.join(carried)}, listed_course FROM ranked WHERE run_rank = 1)"
+        f"{modules}"
+    )
+    columns = (*_COLUMNS, "listed_course AS course_readable_id", "course_title")
     page = (
-        f"WITH records AS ({records.select}){modules},"  # noqa: S608
-        " paged AS ("
+        f"{ctes}, paged AS ("  # noqa: S608
         f"SELECT page_learner_id, page_full_name, page_email FROM ({matched}) matched"
         f" ORDER BY {_LEARNER_ORDER} LIMIT %s OFFSET %s)"
-        f" SELECT {_projection(records)}"
+        f" SELECT {_projection(records, columns)}"
         " FROM records JOIN paged ON records.learner_id = paged.page_learner_id"
         f" ORDER BY {_LEARNER_ORDER}, courserun_readable_id, courserun_pk"
     )
     count = (
-        f"WITH records AS ({records.select}){modules}"  # noqa: S608
-        " SELECT COUNT(*) AS total_count,"
+        f"{ctes} SELECT COUNT(*) AS total_count,"  # noqa: S608
         " COALESCE(SUM(withheld), 0) AS outcomes_withheld_count"
         f" FROM ({matched}) matched"
     )
-    params = (*records.params, *modules_params, *where_params, *having_params)
+    params = (*records.params, *listed_params, *modules_params, *where_params, *having_params)
     return ProgressQuery(page, count, params)
 
 
@@ -654,7 +756,8 @@ def needs_attention_aggregate(
 
 @dataclass(frozen=True)
 class CourseRunsQuery:
-    """``params`` binds ``count``; ``page`` takes ``params`` plus LIMIT and OFFSET."""
+    """``course_runs`` or ``courses``. ``params`` binds ``count``; ``page`` takes
+    ``params`` plus LIMIT and OFFSET."""
 
     page: str
     count: str
@@ -689,4 +792,32 @@ def course_runs(organization_id: str, contract_id: int) -> CourseRunsQuery:
         " LIMIT %s OFFSET %s"
     )
     count = f"SELECT COUNT(*) AS total_count FROM {table} WHERE {where}"  # noqa: S608
+    return CourseRunsQuery(page, count, params)
+
+
+def courses(organization_id: str, contract_id: int) -> CourseRunsQuery:
+    """The contract's courses in the learner Overview's order, for the
+    Learners page's columns and module filter (mitodl/hq#14464).
+
+    The courses with a run on the contract that are in one of its programs,
+    which are the Overview's, ordered by the contract's program order, then
+    the course's place in its program. ``learners`` has an entry for these
+    courses only. Every run of a course shares its program keys (one
+    ``bridge_contract_course`` row per contract and course), so MIN only
+    turns them into one value per course. Catalog metadata, as in
+    ``course_runs``.
+    """
+    table = f"{validate_sql_identifier(settings.learner_records_schema)}.{CONTRACT_COURSERUN_MV}"
+    where = f"sso_organization_id = %s AND contract_id = %s AND {_LISTED_COURSE}"
+    params: tuple[Any, ...] = (organization_id, contract_id)
+    # Nulls last for a program MITx Online never ordered. The readable id is
+    # the unique tie-break that makes LIMIT/OFFSET paging deterministic.
+    page = (
+        "SELECT course_readable_id, MIN(course_title) AS course_title"  # noqa: S608
+        f" FROM {table} WHERE {where} GROUP BY course_readable_id"
+        " ORDER BY MIN(program_sort_order) IS NULL, MIN(program_sort_order),"
+        " MIN(course_order_in_program), course_readable_id"
+        " LIMIT %s OFFSET %s"
+    )
+    count = f"SELECT COUNT(DISTINCT course_readable_id) AS total_count FROM {table} WHERE {where}"  # noqa: S608
     return CourseRunsQuery(page, count, params)

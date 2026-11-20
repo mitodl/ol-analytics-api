@@ -366,6 +366,7 @@ _HAND_WRITTEN = [
                     search="a",
                     completion_statuses=("passed", "unknown", learner_queries.NOT_ENROLLED),
                     courserun_readable_ids=("course-v1:MITx+1+1T2026", "course-v1:MITx+2+1T2026"),
+                    course_readable_ids=("course-v1:MITx+1",),
                     needs_attention=needs_attention,
                 ),
                 _TODAY,
@@ -389,6 +390,12 @@ _HAND_WRITTEN = [
         _DASHBOARD,
         dashboard_settings.learner_records_schema,
         lambda: learner_queries.course_runs("org", 1),
+    ),
+    _Query(
+        "learner_queries.courses",
+        _DASHBOARD,
+        dashboard_settings.learner_records_schema,
+        lambda: learner_queries.courses("org", 1),
     ),
 ]
 
