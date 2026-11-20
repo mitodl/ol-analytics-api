@@ -353,21 +353,25 @@ _HAND_WRITTEN = [
         for sort in learner_queries.SortKey
         for include_inactive in (False, True)
     ),
-    _Query(
-        "learner_queries.learners",
-        _DASHBOARD,
-        dashboard_settings.learner_records_schema,
-        lambda: learner_queries.learners(
-            learner_queries.LearnerFilters(
-                "org",
-                1,
-                search="a",
-                completion_statuses=("passed", "unknown"),
-                courserun_readable_ids=("course-v1:MITx+1+1T2026", "course-v1:MITx+2+1T2026"),
-                needs_attention=False,
+    # needs_attention switches off the not_enrolled branch, so a case per branch.
+    *(
+        _Query(
+            f"learner_queries.learners (needs_attention={needs_attention})",
+            _DASHBOARD,
+            dashboard_settings.learner_records_schema,
+            lambda needs_attention=needs_attention: learner_queries.learners(
+                learner_queries.LearnerFilters(
+                    "org",
+                    1,
+                    search="a",
+                    completion_statuses=("passed", "unknown", learner_queries.NOT_ENROLLED),
+                    courserun_readable_ids=("course-v1:MITx+1+1T2026", "course-v1:MITx+2+1T2026"),
+                    needs_attention=needs_attention,
+                ),
+                _TODAY,
             ),
-            _TODAY,
-        ),
+        )
+        for needs_attention in (False, None)
     ),
     *(
         _Query(
