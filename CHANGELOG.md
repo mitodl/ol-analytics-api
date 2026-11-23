@@ -6,6 +6,25 @@ the switch to scriv were reconstructed from the git history.
 
 <!-- scriv-insert-here -->
 
+<a id='changelog-2026.11.23.1'></a>
+## 2026.11.23.1 (2026-11-23)
+
+### Added
+
+- `b2b_dashboard`: `/learners` lists every current member of the contract, including members with no active enrollment, whose `enrollments` is empty, and `total_count` counts them. `completion_status` accepts `not_enrolled`, which selects learners missing an active enrollment in at least one of the selected `courserun_readable_id` modules, or in at least one of the contract's modules when none is selected, as the other statuses match a learner who has them in any selected module. `/learners` now reads `mv_b2b_contract_member_enrollment` instead of `mv_b2b_learner_enrollment`, so a learner whose contract membership ended drops off, and a learner with an enrollment under the contract who hasn't agreed to share their progress isn't listed, which leaves `unknown` and `outcomes_withheld_count` with nothing to match. `/learner-progress` and the dashboard counts don't change. Requires `mv_b2b_contract_member_enrollment` from ol-data-platform#3368 in the target environment; until it is built, `/learners` fails.
+
+- `b2b_dashboard`: `/courses` lists a contract's courses in the learner dashboard's order, the courses with a run on the contract that are in one of its programs, for the Learners page's columns and module filter. `/learners` accepts a repeatable `course_readable_id` filter, and each of its `enrollments` carries `course_readable_id` and `course_title`. Requires `course_readable_id` and `course_title` on `mv_b2b_contract_courserun` and `mv_b2b_contract_member_enrollment` from ol-data-platform#3425 in the target environment; until both views are rebuilt with them, `/learners` and `/courses` fail.
+
+### Changed
+
+- `b2b_dashboard`: `/course-runs` lists a contract's modules in the learner dashboard's order, by the contract's program order and then by each course's place in its program's requirement tree, and by start date after that, instead of by start date alone. Modules in a program MITx Online never ordered come after the ordered programs, and modules in none of the contract's programs, or reached only through a nested program, come last. Requires `program_sort_order` and `course_order_in_program` on `mv_b2b_contract_courserun` from ol-data-platform#3360 in the target environment; until the view is rebuilt with them, `/course-runs` fails.
+
+- `b2b_dashboard`: `/learners` returns one entry per course in `/courses` instead of one per course run, so the Learners page agrees with the learner's own dashboard (mitodl/hq#14464). When a learner has more than one run of a course, the entry is the run the dashboard shows: a certified run, else the run open now, else the next to start, else the one that started most recently. Its status, progress, last activity and needs attention, and every filter, read that run. `courserun_readable_id` matches the run an entry shows. A run of a course `/courses` doesn't list has no entry, though its learner is still listed. `not_enrolled` counts missing courses rather than missing runs. `/course-runs` and `/learner-progress` don't change.
+
+### Fixed
+
+- `b2b_dashboard`: the organization `/content-engagement` now guards what the contract `/content-engagement` withholds. A course run offered under two of an organization's contracts has contract rows that sum to its organization row, so a withheld contract row was recoverable as the organization row minus the published one. This was latent: as of 2026-10-15, no organization's run spanned two contracts (measured on production, 0 of 1,379 organization x course-run pairs had learners under more than one contract). When a contract row for a run is withheld whole, the organization row for that run is left out too, and `total_count` counts only the rows returned. When every contract row is published but one withholds a count, the organization row withholds that count and the totals and rates computed from it (e.g. `chatbot_users`, `total_chatbot_interactions` and `chatbot_adoption_pct`). A rate or average is also withheld when the total in its numerator is withheld. A run offered under one contract is unchanged. The response schema is unchanged, and `total_enrolled_learners` is still always an integer.
+
 <a id='changelog-2026.11.12.1'></a>
 ## 2026.11.12.1 (2026-11-12)
 
