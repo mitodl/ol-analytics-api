@@ -78,9 +78,9 @@ class CompletionStatusFilter(StrEnum):
     UNKNOWN = "unknown"
 
 
-# /learners' status filter: CompletionStatusFilter plus `not_enrolled`, which
-# matches a missing enrollment, so /learner-progress, one row per enrollment,
-# has nothing for it to select.
+# /learners' status filter: CompletionStatusFilter plus `not_enrolled` and
+# `not_enrolled_in_any`, which match a missing enrollment, so /learner-progress,
+# one row per enrollment, has nothing for them to select.
 class LearnerStatusFilter(StrEnum):
     NOT_STARTED = "not_started"
     IN_PROGRESS = "in_progress"
@@ -88,6 +88,7 @@ class LearnerStatusFilter(StrEnum):
     CERTIFIED = "certified"
     UNKNOWN = "unknown"
     NOT_ENROLLED = learner_queries.NOT_ENROLLED
+    NOT_ENROLLED_IN_ANY = learner_queries.NOT_ENROLLED_IN_ANY
 
 
 SearchParam = Annotated[
@@ -108,7 +109,8 @@ LearnerStatusParam = Annotated[
             "Repeat for several. `unknown` matches nobody, because learners with withheld "
             "outcomes aren't listed. `not_enrolled` selects learners missing an enrollment "
             "in at least one selected module, or in at least one of the contract's modules "
-            "when none is selected."
+            "when none is selected. `not_enrolled_in_any` selects learners with no "
+            "enrollment in any of them."
         ),
         default_factory=list,
     ),
@@ -240,14 +242,14 @@ async def learner_progress(  # noqa: PLR0913
         "here. Otherwise a learner is "
         "listed when at least one of their entries matches every filter at once, "
         "or, for `not_enrolled`, when they have no entry for at least one of the "
-        "selected courses. "
+        "selected courses, or, for `not_enrolled_in_any`, for any of them. "
         "Their other entries are returned too, whether or not they match. `limit` "
         "and `offset` count learners, not enrollments. `completion_status`, "
         "`course_readable_id`, `courserun_readable_id` and `needs_attention` narrow "
         "together: several values of one filter OR, and different filters AND on a single "
         "entry. `courserun_readable_id` matches the run an entry shows, and selects that "
-        "run's course for `not_enrolled`. `needs_attention` "
-        "never matches `not_enrolled`, which has no enrollment to judge."
+        "run's course for `not_enrolled` and `not_enrolled_in_any`. `needs_attention` "
+        "never matches either, since neither has an enrollment to judge."
     ),
 )
 async def learners(  # noqa: PLR0913

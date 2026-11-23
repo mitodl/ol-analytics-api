@@ -1,0 +1,3 @@
+### Added
+
+- `b2b_dashboard`: `/learners`' `completion_status` accepts `not_enrolled_in_any`, which selects learners with no entry for any of the selected courses, or for any of the contract's courses when none is selected, so the dashboard's Not enrolled tile can count and link to members with no enrollment (mitodl/hq#14470). It is the counterpart of `not_enrolled`, which selects learners missing at least one. A learner enrolled only in courses `/courses` doesn't list has no entry, so it selects them too. As with `not_enrolled`, a selected course that isn't on the contract selects nobody, and `needs_attention` never matches it.
