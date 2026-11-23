@@ -722,6 +722,18 @@ def test_not_enrolled_in_any_counts_a_learner_only_in_unlisted_courses(mv):
     assert _shape(_run(mv, completion_statuses=_NOT_ENROLLED_IN_ANY)[0]) == {"uma": []}
 
 
+def test_not_enrolled_in_any_is_every_member_when_the_contract_lists_no_course(mv):
+    # Every course in a nested program, say, so the Learners page has no column.
+    modules = f"{settings.learner_records_schema}.{learner_queries.CONTRACT_COURSERUN_MV}"
+    mv.conn.execute(f"UPDATE {modules} SET course_order_in_program = NULL")  # noqa: S608
+    mv.member(_NED)
+    assert _run(mv, completion_statuses=_NOT_ENROLLED_IN_ANY) == _run(mv)
+    # A selection still needs a course on the contract, as for not_enrolled.
+    selected = {"courserun_readable_ids": ("run-1",)}
+    assert _run(mv, completion_statuses=_NOT_ENROLLED_IN_ANY, **selected) == ([], 0)
+    assert _run(mv, completion_statuses=_NOT_ENROLLED) == ([], 0)
+
+
 @pytest.mark.parametrize("missing", [_NOT_ENROLLED, _NOT_ENROLLED_IN_ANY])
 def test_not_enrolled_ignores_modules_not_on_the_contract(mv, missing):
     mv.member(_NED)

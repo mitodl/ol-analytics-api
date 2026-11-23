@@ -542,14 +542,17 @@ def _learner_match(
         alternatives.append(f"{_any_enrollment(predicates)} = 1")
         params.extend(row_params)
     # A row that isn't an entry joins no module, so it adds nothing to either
-    # count. With no module to have, as for a selected id that isn't on the
-    # contract, neither matches anyone.
+    # count.
     if missing and NOT_ENROLLED in statuses:
-        # Has fewer of the modules than there are.
+        # Has fewer of the modules than there are, so nobody when there are none.
         alternatives.append("COUNT(DISTINCT module_id) < MIN(module_count)")
     if missing and NOT_ENROLLED_IN_ANY in statuses:
-        # Has none of them.
-        alternatives.append("(COUNT(DISTINCT module_id) = 0 AND MIN(module_count) > 0)")
+        # Has none of them. A selection with none on the contract matches nobody,
+        # as for not_enrolled, but with none selected, a contract with no listed
+        # course has every member here, since none of them has an entry.
+        none = "COUNT(DISTINCT module_id) = 0"
+        selected = filters.courserun_readable_ids or filters.course_readable_ids
+        alternatives.append(f"({none} AND MIN(module_count) > 0)" if selected else none)
     return f" HAVING {' OR '.join(alternatives) or 'FALSE'}", tuple(params)
 
 
