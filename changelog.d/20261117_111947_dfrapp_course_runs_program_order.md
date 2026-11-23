@@ -1,3 +1,0 @@
-### Changed
-
-- `b2b_dashboard`: `/course-runs` lists a contract's modules in the learner dashboard's order, by the contract's program order and then by each course's place in its program's requirement tree, and by start date after that, instead of by start date alone. Modules in a program MITx Online never ordered come after the ordered programs, and modules in none of the contract's programs, or reached only through a nested program, come last. Requires `program_sort_order` and `course_order_in_program` on `mv_b2b_contract_courserun` from ol-data-platform#3360 in the target environment; until the view is rebuilt with them, `/course-runs` fails.
