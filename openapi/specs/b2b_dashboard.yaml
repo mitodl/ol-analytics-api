@@ -667,14 +667,24 @@ paths:
     get:
       tags:
       - learners
-      summary: Each learner under the contract with all of their enrollments, paged
+      summary: Each learner under the contract with one enrollment per course, paged
         by learner
-      description: 'A learner is listed when at least one of their active enrollments
-        matches every filter at once. Their other active enrollments are returned
-        too, whether or not they match. `limit` and `offset` count learners, not enrollments.
-        `completion_status`, `courserun_readable_id` and `needs_attention` narrow
+      description: '`enrollments` has one entry per course in `/courses`: when a learner
+        has active enrollments in more than one run of a course, the run their own
+        dashboard shows, and every field and filter reads that run. A run of a course
+        `/courses` doesn''t list has no entry. With no filter, every current member
+        of the contract is listed, including those with no active enrollment, whose
+        `enrollments` is empty. A member who enrolled but hasn''t agreed to share
+        their progress isn''t listed, so `unknown` matches nobody here. Otherwise
+        a learner is listed when at least one of their entries matches every filter
+        at once, or, for `not_enrolled`, when they have no entry for at least one
+        of the selected courses. Their other entries are returned too, whether or
+        not they match. `limit` and `offset` count learners, not enrollments. `completion_status`,
+        `course_readable_id`, `courserun_readable_id` and `needs_attention` narrow
         together: several values of one filter OR, and different filters AND on a
-        single enrollment.'
+        single entry. `courserun_readable_id` matches the run an entry shows, and
+        selects that run''s course for `not_enrolled`. `needs_attention` never matches
+        `not_enrolled`, which has no enrollment to judge.'
       operationId: learners_list
       parameters:
       - name: organization_id
@@ -707,10 +717,30 @@ paths:
         schema:
           type: array
           items:
-            $ref: '#/components/schemas/CompletionStatusFilter'
-          description: Repeat for several. `unknown` selects rows with withheld outcomes.
+            $ref: '#/components/schemas/LearnerStatusFilter'
+          description: Repeat for several. `unknown` matches nobody, because learners
+            with withheld outcomes aren't listed. `not_enrolled` selects learners
+            missing an enrollment in at least one selected module, or in at least
+            one of the contract's modules when none is selected.
           title: Completion Status
-        description: Repeat for several. `unknown` selects rows with withheld outcomes.
+        description: Repeat for several. `unknown` matches nobody, because learners
+          with withheld outcomes aren't listed. `not_enrolled` selects learners missing
+          an enrollment in at least one selected module, or in at least one of the
+          contract's modules when none is selected.
+      - name: course_readable_id
+        in: query
+        required: false
+        schema:
+          type: array
+          items:
+            type: string
+            minLength: 1
+          maxItems: 50
+          description: Repeat for several modules; they OR together and AND with the
+            other filters. At most 50.
+          title: Course Readable Id
+        description: Repeat for several modules; they OR together and AND with the
+          other filters. At most 50.
       - name: courserun_readable_id
         in: query
         required: false
@@ -733,12 +763,10 @@ paths:
           - type: boolean
           - type: 'null'
           description: Keep only learners with an enrollment that needs attention,
-            or with one that doesn't. Rows with withheld outcomes match neither, so
-            omit this to see them.
+            or with one that doesn't.
           title: Needs Attention
         description: Keep only learners with an enrollment that needs attention, or
-          with one that doesn't. Rows with withheld outcomes match neither, so omit
-          this to see them.
+          with one that doesn't.
       - name: limit
         in: query
         required: false
@@ -819,6 +847,63 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CourseRunsResponse'
+        '404':
+          description: The organization or contract has not been loaded into the warehouse
+            yet
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataNotLoadedResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/analytics/organizations/{organization_id}/contracts/{contract_id}/courses:
+    get:
+      tags:
+      - learners
+      summary: Courses under the contract, in the learner dashboard's order, for the
+        Learners page
+      operationId: learners_courses_retrieve
+      parameters:
+      - name: organization_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Organization Id
+      - name: contract_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Contract Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 100
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CoursesResponse'
         '404':
           description: The organization or contract has not been loaded into the warehouse
             yet
@@ -1321,6 +1406,17 @@ components:
         double the SUM.
 
 
+        That attribution also makes the contract rows for a run sum to its org
+
+        row, so the org endpoint guards what the contract endpoint withholds (see
+
+        ``ContractContentEngagementDepth``). A run with a contract row withheld
+
+        whole is withheld whole here too, and a count a contract row withholds is
+
+        withheld here with the totals and rates computed over it.
+
+
         ``total_enrolled_learners`` is the deprecated name for
 
         ``actively_enrolled_learners``, kept until clients read the new name. A
@@ -1500,24 +1596,36 @@ components:
         the same reason as ``ContractMonthlyEngagementTrend``.
 
 
-        Unlike the trend view, these rows ARE a strict partition of the org-level
+        Unlike the trend view, these rows partition the org-level view''s rows.
 
-        view: a course run belongs to exactly one contract, so naming the contract
+        Since ol-data-platform PR #2982 each learner''s course run is attributed to
 
-        labels a row rather than splitting it, and every count here equals its
+        the one contract they enrolled under. A run offered under one of an org''s
 
-        org-level counterpart for the same course run.
+        contracts is only labelled, and its counts equal its org-level ones. A run
+
+        offered under two is split, and its contract rows sum to the org row,
+
+        learner counts included.
 
 
-        That equality is why this pair needs no cross-grain guard, where the trend
+        So the pair needs a cross-grain guard, as the trend pair does: a contract
 
-        pair does. Nothing is aggregated away going from contract grain to org
+        row withheld here is recoverable as the org row minus the published
 
-        grain, so there is no remainder to subtract: a course run''s org row and its
+        contract rows for the run, and the org row''s rates can pin it too. The org
 
-        contract row hold the same numbers, the floor makes the same call on both,
+        endpoint scans this view and drops the org row for a run whose contract
 
-        and a caller reading one learns nothing the other withholds.'
+        row is withheld whole, and blanks any count a published contract row
+
+        withholds, with the totals and rates computed over it (see
+
+        ``routers.organizations._FinerGrain``). For a run under one contract the
+
+        two rows hold the same numbers, the floor makes the same call on both, and
+
+        the guard changes nothing.'
     ContractMonthlyEngagementTrend:
       properties:
         organization_key:
@@ -1945,6 +2053,23 @@ components:
         always equal to it and floored the same way, kept until clients read the
 
         new name. ``active_learners`` is the same for ``actively_enrolled_learners``.'
+    Course:
+      properties:
+        course_readable_id:
+          type: string
+          title: Course Readable Id
+          description: The course's ID, e.g. course-v1:MITxT+14.310x. Its runs share
+            it.
+        course_title:
+          type: string
+          title: Course Title
+          description: The course's title, as the learner's dashboard shows it.
+      type: object
+      required:
+      - course_readable_id
+      - course_title
+      title: Course
+      description: One course under the contract, for the Learners page's columns.
     CourseRun:
       properties:
         courserun_id:
@@ -2012,6 +2137,41 @@ components:
         ``data``),
 
         matching ``LearnerProgressResponse``''s shape.'
+    CoursesResponse:
+      properties:
+        organization_id:
+          type: string
+          title: Organization Id
+          description: The organization's ID.
+        as_of:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: As Of
+          description: When the data was last updated. Empty before the first update.
+        total_count:
+          type: integer
+          title: Total Count
+          description: Courses under the contract, across all pages.
+        data:
+          items:
+            $ref: '#/components/schemas/Course'
+          type: array
+          title: Data
+          description: 'This page of courses, in the order the learner''s dashboard
+            lists them: by program, then by each course''s place in its program.'
+      type: object
+      required:
+      - organization_id
+      - as_of
+      - total_count
+      - data
+      title: CoursesResponse
+      description: 'The org envelope (``organization_id``, ``as_of``, ``total_count``,
+        ``data``),
+
+        matching ``CourseRunsResponse``''s shape.'
     DataNotLoaded:
       properties:
         code:
@@ -2375,6 +2535,15 @@ components:
             activity was at least 30 days ago. False while they are passing or hold
             an unrevoked certificate, since going quiet after finishing is expected.
             Hidden if the learner hasn''t agreed to share their progress.'
+        course_readable_id:
+          type: string
+          title: Course Readable Id
+          description: The course's ID, e.g. course-v1:MITxT+14.310x. Its runs share
+            it.
+        course_title:
+          type: string
+          title: Course Title
+          description: The course's title, as the learner's dashboard shows it.
       type: object
       required:
       - courserun_readable_id
@@ -2399,13 +2568,13 @@ components:
       - problems_attempted
       - chatbot_interactions
       - needs_attention
+      - course_readable_id
+      - course_title
       title: LearnerEnrollment
-      description: 'One enrollment in one course run under the contract.
+      description: 'A learner''s enrollment in one course under the contract, in the
+        run
 
-
-        Holds the ``_gate_outcomes`` validator, so every model built from it gates
-
-        outcomes the same way.'
+        their own dashboard shows.'
     LearnerProgress:
       properties:
         learner_id:
@@ -2665,6 +2834,16 @@ components:
         ``data``) plus ``outcomes_withheld_count``, so a client can show how many
 
         rows carry withheld outcomes without paging through all of them.'
+    LearnerStatusFilter:
+      type: string
+      enum:
+      - not_started
+      - in_progress
+      - passed
+      - certified
+      - unknown
+      - not_enrolled
+      title: LearnerStatusFilter
     LearnerWithEnrollments:
       properties:
         learner_id:
@@ -2690,8 +2869,12 @@ components:
             $ref: '#/components/schemas/LearnerEnrollment'
           type: array
           title: Enrollments
-          description: Every course the learner is enrolled in under the contract,
-            including the ones that didn't match the filters.
+          description: 'One per course the learner is enrolled in under the contract,
+            including the ones that didn''t match the filters. When they have more
+            than one run of a course, it''s the one their own dashboard shows: a run
+            they earned a certificate in, else the run open now, else the next to
+            start, else the one that started most recently. Empty if they haven''t
+            enrolled in any yet.'
       type: object
       required:
       - learner_id
@@ -2699,7 +2882,7 @@ components:
       - full_name
       - enrollments
       title: LearnerWithEnrollments
-      description: One learner under the contract, with all of their active enrollments.
+      description: One learner under the contract, with one enrollment per course.
     LearnersResponse:
       properties:
         organization_id:
@@ -2716,15 +2899,13 @@ components:
         total_count:
           type: integer
           title: Total Count
-          description: Learners with at least one enrollment that matches the filters,
-            across all pages.
+          description: Learners on the contract who match the filters, across all
+            pages.
         outcomes_withheld_count:
           type: integer
           title: Outcomes Withheld Count
           description: How many of those learners haven't agreed to share their progress.
-            Always 0 when filtering exclusively by known completion statuses (without
-            unknown), or by needs attention either way, because withheld enrollments
-            can't match those filters.
+            Always 0, because this endpoint doesn't list them.
         data:
           items:
             $ref: '#/components/schemas/LearnerWithEnrollments'
