@@ -1,0 +1,3 @@
+### Fixed
+
+- `b2b_dashboard`: a learner count declared a subset of another count is now withheld, with the totals and rates computed from it, when it is larger than that count and that count is withheld. The same check already applied when the containing count was published. This is defensive: it fires only when a view's containment declaration is false for a row, and the current views do not produce such rows. Before, a row with 3 active learners (withheld) and 6 video watchers would have returned `video_watchers: 6` and `total_videos_watched`, telling the reader the withheld active count was at least 6. When a contract row withholds a count this way, the organization engagement trend also blanks the matching organization total.

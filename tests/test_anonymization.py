@@ -234,6 +234,66 @@ def test_negative_complement_fails_closed():
     assert row["video_watchers"] is None
 
 
+def _trend_policy():
+    """The trend's shape: the activity cohort is a secondary that can be
+    withheld on its own while the row survives on the primary."""
+    return CohortPolicy(
+        primary="contributing_learners",
+        secondary=("monthly_active_learners", "video_watchers"),
+        derived={"total_videos_watched": ("video_watchers",)},
+        contained_in={"video_watchers": "monthly_active_learners"},
+        uncontained=("monthly_active_learners",),
+    )
+
+
+def test_subset_above_a_withheld_container_fails_closed():
+    # 3 active learners is under the floor, so the active count is withheld.
+    # 6 video watchers cannot be inside 3 active learners, and publishing it
+    # would tell the reader the hidden active count is at least 6. The
+    # declaration is false for this row, which fails closed as it does when
+    # the container is visible, and the total derived from the watchers goes
+    # with them.
+    rows = [
+        {
+            "contributing_learners": 12,
+            "monthly_active_learners": 3,
+            "video_watchers": 6,
+            "total_videos_watched": 40,
+        }
+    ]
+    (row,) = suppress_small_cohorts(rows, _trend_policy(), floor=5)
+    assert row["monthly_active_learners"] is None
+    assert row["video_watchers"] is None
+    assert row["total_videos_watched"] is None
+
+
+def test_subset_within_a_withheld_container_is_kept():
+    # engaged_learners is withheld on its complement (2 within the enrolled).
+    # 30 watchers fits inside 40 engaged, so the declaration holds and the
+    # watchers' own complement within the enrolled (12) clears the floor.
+    rows = [{"total_enrolled_learners": 42, "engaged_learners": 40, "video_watchers": 30}]
+    (row,) = suppress_small_cohorts(rows, _depth_policy(), floor=5)
+    assert row["engaged_learners"] is None
+    assert row["video_watchers"] == 30
+
+
+def test_subset_of_a_null_container_is_kept():
+    # A NULL container is withheld, but there is no value for the subset to
+    # exceed, so the declaration cannot be shown false.
+    rows = [
+        {
+            "contributing_learners": 12,
+            "monthly_active_learners": None,
+            "video_watchers": 6,
+            "total_videos_watched": 40,
+        }
+    ]
+    (row,) = suppress_small_cohorts(rows, _trend_policy(), floor=5)
+    assert row["monthly_active_learners"] is None
+    assert row["video_watchers"] == 6
+    assert row["total_videos_watched"] == 40
+
+
 def test_complement_is_checked_transitively_when_the_inner_cohort_is_suppressed():
     # engaged_learners goes first (complement 2 within the enrolled). That
     # hides the container of the (video_watchers, engaged_learners) pair, so
