@@ -75,8 +75,11 @@ CONTRACT_COURSERUN_MV = "mv_b2b_contract_courserun"
 # has no course to group by, so it isn't one either.
 _LISTED_COURSE = "course_order_in_program IS NOT NULL AND course_readable_id IS NOT NULL"
 
-# The /learners status for a member with no enrollment in the selected modules.
+# The /learners statuses for a member with no enrollment in at least one of the
+# selected modules, and in any of them.
 NOT_ENROLLED = "not_enrolled"
+NOT_ENROLLED_IN_ANY = "not_enrolled_in_any"
+_MISSING = (NOT_ENROLLED, NOT_ENROLLED_IN_ANY)
 
 # needs_attention_since is defined against the UTC date, so ask for that
 # explicitly rather than CURRENT_DATE(), which follows the session timezone.
@@ -485,8 +488,8 @@ def _listed_courses(filters: LearnerFilters, *, narrowed: bool) -> tuple[str, tu
 
 
 def _modules(filters: LearnerFilters) -> tuple[str, tuple[Any, ...]]:
-    """The modules ``not_enrolled`` checks, as two CTEs to append after
-    ``records``, and their params.
+    """The modules ``not_enrolled`` and ``not_enrolled_in_any`` check, as two
+    CTEs to append after ``records``, and their params.
 
     ``modules`` is the selected courses, or every course the Learners page
     has a column for when none is selected. ``modules_total`` counts them.
@@ -501,7 +504,7 @@ def _modules(filters: LearnerFilters) -> tuple[str, tuple[Any, ...]]:
 
 
 def _learner_match(
-    records: _Records, filters: LearnerFilters, *, not_enrolled: bool
+    records: _Records, filters: LearnerFilters, *, missing: bool
 ) -> tuple[str, tuple[Any, ...]]:
     """Which learners ``filters`` select, as a `` HAVING ...`` over each
     learner's rows (or empty), and its params.
@@ -510,10 +513,11 @@ def _learner_match(
     once, as in ``_predicates``. So with several modules selected, a status matches
     a learner who has it in any one of them. ``not_enrolled`` follows the same
     rule: it matches a learner with no entry for at least one of
-    ``_modules``, which ``learners`` joins in when ``not_enrolled`` is true.
-    That can't be a row predicate, since there is no row for the enrollment
-    that's missing. It has no needs-attention value either, so
-    ``needs_attention`` leaves it out, as it leaves out withheld rows.
+    ``_modules``, which ``learners`` joins in when ``missing`` is true.
+    ``not_enrolled_in_any`` is its counterpart: no entry for any of them.
+    Neither can be a row predicate, since there is no row for the enrollment
+    that's missing. Neither has a needs-attention value either, so
+    ``needs_attention`` leaves them out, as it leaves out withheld rows.
     """
     statuses = filters.completion_statuses
     if not (
@@ -525,7 +529,7 @@ def _learner_match(
         return "", ()
     alternatives: list[str] = []
     params: list[Any] = []
-    row_statuses = tuple(status for status in statuses if status != NOT_ENROLLED)
+    row_statuses = tuple(status for status in statuses if status not in _MISSING)
     if row_statuses or not statuses:
         predicates, row_params = _predicates(
             records,
@@ -537,10 +541,18 @@ def _learner_match(
         )
         alternatives.append(f"{_any_enrollment(predicates)} = 1")
         params.extend(row_params)
-    if not_enrolled:
-        # Has fewer of the modules than there are. A row that isn't an entry
-        # joins no module, so it adds nothing to the count.
+    # A row that isn't an entry joins no module, so it adds nothing to either
+    # count.
+    if missing and NOT_ENROLLED in statuses:
+        # Has fewer of the modules than there are, so nobody when there are none.
         alternatives.append("COUNT(DISTINCT module_id) < MIN(module_count)")
+    if missing and NOT_ENROLLED_IN_ANY in statuses:
+        # Has none of them. A selection with none on the contract matches nobody,
+        # as for not_enrolled, but with none selected, a contract with no listed
+        # course has every member here, since none of them has an entry.
+        none = "COUNT(DISTINCT module_id) = 0"
+        selected = filters.courserun_readable_ids or filters.course_readable_ids
+        alternatives.append(f"({none} AND MIN(module_count) > 0)" if selected else none)
     return f" HAVING {' OR '.join(alternatives) or 'FALSE'}", tuple(params)
 
 
@@ -569,7 +581,8 @@ def learners(filters: LearnerFilters, today: dt.date) -> ProgressQuery:
     page of learners, and the final select joins that page back to the
     unfiltered ``records``, so a matched learner's other entries come back
     too. The count counts ``matched``, so ``total_count`` counts exactly the
-    learners the pages walk through. For ``not_enrolled``, ``matched`` also
+    learners the pages walk through. For ``not_enrolled`` and
+    ``not_enrolled_in_any``, ``matched`` also
     left-joins each row to ``_modules`` and cross-joins their one-row total.
     ``modules`` holds each course once, so neither join repeats a row.
 
@@ -620,16 +633,18 @@ def learners(filters: LearnerFilters, today: dt.date) -> ProgressQuery:
         records, search=filters.search, completion_statuses=(), needs_attention=None
     )
     where = _where(predicates)
-    not_enrolled = NOT_ENROLLED in filters.completion_statuses and filters.needs_attention is None
+    missing = filters.needs_attention is None and any(
+        status in _MISSING for status in filters.completion_statuses
+    )
     modules, joins = "", ""
     modules_params: tuple[Any, ...] = ()
-    if not_enrolled:
+    if missing:
         modules, modules_params = _modules(filters)
         joins = (
             " LEFT JOIN modules ON records.listed_course = modules.module_id"
             " CROSS JOIN modules_total"
         )
-    having, having_params = _learner_match(records, filters, not_enrolled=not_enrolled)
+    having, having_params = _learner_match(records, filters, missing=missing)
     matched = (
         "SELECT learner_id AS page_learner_id, MIN(full_name) AS page_full_name,"  # noqa: S608
         f" MIN(email) AS page_email, {_any_enrollment([f'NOT {records.shared}'])} AS withheld"

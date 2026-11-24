@@ -364,7 +364,12 @@ _HAND_WRITTEN = [
                     "org",
                     1,
                     search="a",
-                    completion_statuses=("passed", "unknown", learner_queries.NOT_ENROLLED),
+                    completion_statuses=(
+                        "passed",
+                        "unknown",
+                        learner_queries.NOT_ENROLLED,
+                        learner_queries.NOT_ENROLLED_IN_ANY,
+                    ),
                     courserun_readable_ids=("course-v1:MITx+1+1T2026", "course-v1:MITx+2+1T2026"),
                     course_readable_ids=("course-v1:MITx+1",),
                     needs_attention=needs_attention,

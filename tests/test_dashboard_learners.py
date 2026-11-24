@@ -249,7 +249,8 @@ async def test_page_and_count_share_one_filter_and_one_date(app):
 
 async def test_not_enrolled_is_a_status_of_learners_only(app):
     # A status added to /learner-progress's filter must reach /learners' too.
-    assert set(LearnerStatusFilter) == {*CompletionStatusFilter, learner_queries.NOT_ENROLLED}
+    missing = {learner_queries.NOT_ENROLLED, learner_queries.NOT_ENROLLED_IN_ANY}
+    assert set(LearnerStatusFilter) == {*CompletionStatusFilter, *missing}
     params = {"completion_status": ["not_enrolled"]}
     pool = _FakePool()
     assert (await _get(app, pool, params=params)).status_code == 200
@@ -640,6 +641,7 @@ def test_withheld_count_is_zero_under_outcome_filters(mv, filters):
 # A member with no active enrollment and no consent recorded.
 _NED = ("ned", "Ned Ma", "ned@x", None)
 _NOT_ENROLLED = (learner_queries.NOT_ENROLLED,)
+_NOT_ENROLLED_IN_ANY = (learner_queries.NOT_ENROLLED_IN_ANY,)
 
 
 @pytest.mark.parametrize("decision", [True, False, None])
@@ -691,17 +693,54 @@ def test_not_enrolled_is_a_missing_enrollment_in_any_selected_module(mv):
     assert (list(_shape(learners)), total) == (missing_run_3, 7)
 
 
-def test_not_enrolled_ignores_modules_not_on_the_contract(mv):
+@pytest.mark.parametrize("decision", [True, False, None])
+def test_not_enrolled_in_any_is_no_enrollment_in_any_selected_module(mv, decision):
+    mv.member(("ned", "Ned Ma", "ned@x", decision))
+    # With no module selected, every module on the contract: only ned has none.
+    assert _shape(_run(mv, completion_statuses=_NOT_ENROLLED_IN_ANY)[0]) == {"ned": []}
+    # One module: the same learners as not_enrolled.
+    for run in _MODULES:
+        assert _run(
+            mv, completion_statuses=_NOT_ENROLLED_IN_ANY, courserun_readable_ids=(run,)
+        ) == _run(mv, completion_statuses=_NOT_ENROLLED, courserun_readable_ids=(run,))
+    # Several: missing every one of them. gus-b has run-2; ann has both.
+    learners, total = _run(
+        mv, completion_statuses=_NOT_ENROLLED_IN_ANY, courserun_readable_ids=("run-2", "run-3")
+    )
+    assert (list(_shape(learners)), total) == (["gus-a", "ned", "cy", "dee"], 4)
+    # Every course selected, as the dashboard tile links, is the same as none.
+    every_course = tuple(_course(run) for run in _MODULES)
+    assert _run(mv, completion_statuses=_NOT_ENROLLED_IN_ANY, course_readable_ids=every_course) == (
+        _run(mv, completion_statuses=_NOT_ENROLLED_IN_ANY)
+    )
+
+
+def test_not_enrolled_in_any_counts_a_learner_only_in_unlisted_courses(mv):
+    # course-u has a contract run but is in none of its programs, so uma has no entry.
+    mv.listed("u-1", "course-u", order=None)
+    mv.insert(("uma", "Uma", "uma@x", True), "u-1", {"course_readable_id": "course-u", **_PASSED})
+    assert _shape(_run(mv, completion_statuses=_NOT_ENROLLED_IN_ANY)[0]) == {"uma": []}
+
+
+def test_not_enrolled_in_any_is_every_member_when_the_contract_lists_no_course(mv):
+    # Every course in a nested program, say, so the Learners page has no column.
+    modules = f"{settings.learner_records_schema}.{learner_queries.CONTRACT_COURSERUN_MV}"
+    mv.conn.execute(f"UPDATE {modules} SET course_order_in_program = NULL")  # noqa: S608
+    mv.member(_NED)
+    assert _run(mv, completion_statuses=_NOT_ENROLLED_IN_ANY) == _run(mv)
+    # A selection still needs a course on the contract, as for not_enrolled.
+    selected = {"courserun_readable_ids": ("run-1",)}
+    assert _run(mv, completion_statuses=_NOT_ENROLLED_IN_ANY, **selected) == ([], 0)
+    assert _run(mv, completion_statuses=_NOT_ENROLLED) == ([], 0)
+
+
+@pytest.mark.parametrize("missing", [_NOT_ENROLLED, _NOT_ENROLLED_IN_ANY])
+def test_not_enrolled_ignores_modules_not_on_the_contract(mv, missing):
     mv.member(_NED)
     # No column for run-404 or run-8, so nobody can be missing them.
     for modules in (("run-404",), ("run-8",)):
-        assert _run(mv, completion_statuses=_NOT_ENROLLED, courserun_readable_ids=modules) == (
-            [],
-            0,
-        )
-    learners, _ = _run(
-        mv, completion_statuses=_NOT_ENROLLED, courserun_readable_ids=("run-3", "run-404")
-    )
+        assert _run(mv, completion_statuses=missing, courserun_readable_ids=modules) == ([], 0)
+    learners, _ = _run(mv, completion_statuses=missing, courserun_readable_ids=("run-3", "run-404"))
     assert "ann" not in _shape(learners)
 
 
@@ -713,20 +752,25 @@ def test_not_enrolled_ors_with_the_other_statuses(mv):
     # ann passed run-1; gus-b and ned have no run-1 enrollment; eve's pass is withheld.
     assert (list(_shape(learners)), total) == (["ann", "gus-b", "ned"], 3)
     # Every status at once lists every member, as no filter does.
-    every = ("not_started", "in_progress", "passed", "certified", "unknown", *_NOT_ENROLLED)
+    every = (
+        *("not_started", "in_progress", "passed", "certified", "unknown"),
+        *_NOT_ENROLLED,
+        *_NOT_ENROLLED_IN_ANY,
+    )
     assert _run(mv, completion_statuses=every) == _run(mv)
     for modules in (("run-1",), ("run-1", "run-3")):
         learners, total = _run(mv, completion_statuses=every, courserun_readable_ids=modules)
         assert (list(_shape(learners)), total) == ([*_ALL_ORDER[:5], "ned", *_ALL_ORDER[5:]], 8)
 
 
+@pytest.mark.parametrize("missing", [_NOT_ENROLLED, _NOT_ENROLLED_IN_ANY])
 @pytest.mark.parametrize("needs_attention", [True, False])
-def test_needs_attention_never_matches_not_enrolled(mv, needs_attention):
+def test_needs_attention_never_matches_not_enrolled(mv, needs_attention, missing):
     mv.member(_NED)
-    assert _run(mv, completion_statuses=_NOT_ENROLLED, needs_attention=needs_attention) == ([], 0)
+    assert _run(mv, completion_statuses=missing, needs_attention=needs_attention) == ([], 0)
     # It still narrows the other statuses: ann's in-progress run-2 is quiet.
     learners, _ = _run(
-        mv, completion_statuses=("in_progress", *_NOT_ENROLLED), needs_attention=needs_attention
+        mv, completion_statuses=("in_progress", *missing), needs_attention=needs_attention
     )
     assert list(_shape(learners)) == (["ann"] if needs_attention else ["bob", "cy", "dee"])
 
